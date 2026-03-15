@@ -1,0 +1,32 @@
+{
+  "name": "oconnor-household-ai",
+  "version": "1.0.0",
+  "description": "Private household AI chat app for Rob and Elle",
+  "private": true,
+  "type": "module",
+  "main": "kitchenbot.mjs",
+  "scripts": {
+    "start": "node kitchenbot.mjs",
+    "dev": "node kitchenbot.mjs",
+    "test": "echo \"No tests configured\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "anthropic",
+    "express",
+    "sqlite",
+    "household-ai",
+    "kitchenbot"
+  ],
+  "author": "Rob O'Connor",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "sqlite3": "^6.0.1",
+    "ws": "^8.18.0"
+  }
+}
