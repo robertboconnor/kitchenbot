@@ -27,6 +27,7 @@ import {
   shouldTriggerCompliment,
   recordCompliment,
   selectComplimentAvoidingRecent,
+  setElleLoveBoost,
 } from './db.mjs';
 import 'dotenv/config';
 import os from 'os';
@@ -151,7 +152,14 @@ function getHelpReply(name) {
     '• !rename `<string>` — Rename this chat manually',
     '• !help — Show this message',
   ];
-  if (name === 'Rob') return base.join('\n');
+  if (name === 'Rob') {
+    return (
+      base.join('\n') +
+      '\n' +
+      '\nLove & compliments' +
+      '\n• !love — Temporarily boost Elle compliment chances'
+    );
+  }
   if (name === 'Elle') {
     return 'No special commands — just chat with KitchenBot as usual.\n\n' +
       '• !rename — Have KitchenBot rename this chat\n' +
@@ -1200,6 +1208,9 @@ app.get('/', (req, res) => {
                 const msg = JSON.parse(event.data);
                 const msgChatId = msg.chatId != null ? Number(msg.chatId) : null;
                 if (msg.type === 'chat_updated' && msgChatId === currentChatId) {
+                  if (msg.user && msg.user === currentUserName) {
+                    return;
+                  }
                   remoteStreamBodyEl = null;
                   if (!weAreStreamingThisChat) loadHistory();
                   return;
@@ -1799,11 +1810,8 @@ app.get('/', (req, res) => {
 
               const chunk = decoder.decode(value, { stream: true });
               fullReply += chunk;
-              // UI updates from WebSocket stream_delta (works behind buffering proxies); only accumulate here for final markdown
-              if (!remoteStreamBodyEl || remoteStreamBodyEl.textContent.length < fullReply.length) {
-                thinkingBody.textContent = fullReply;
-                chat.scrollTop = chat.scrollHeight;
-              }
+              // For the sender, streaming text comes from WebSocket stream_delta;
+              // here we only accumulate the full reply for final markdown rendering.
             }
 
             thinkingBody.textContent = '';
@@ -2118,9 +2126,20 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
       }
     }
 
+    if (prompt === '!love') {
+      if (name !== 'Rob') {
+        const reply = 'The !love command is only available to Rob.';
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.end(reply);
+      }
+      await setElleLoveBoost(true);
+      const reply = 'Love boost activated for Elle. Her next few messages are extra likely to get a compliment.';
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      return res.end(reply);
+    }
+
     if (prompt === '!help') {
       const reply = '📋 KitchenBot commands\n\n' + getHelpReply(name);
-      await addMessage(chatId, 'user', name, prompt);
       if (name === 'Elle') {
         await incrementElleMessageCount();
       }
@@ -2131,8 +2150,7 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     const renameMatch = prompt?.match(/^!rename\s*(.*)$/);
     if (renameMatch) {
       const arg = typeof renameMatch[1] === 'string' ? renameMatch[1].trim() : '';
-      await addMessage(chatId, 'user', name, prompt);
-       if (name === 'Elle') {
+      if (name === 'Elle') {
         await incrementElleMessageCount();
       }
       let title;
@@ -2166,45 +2184,36 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
       }
       await updateChatTitle(chatId, title);
       const reply = `Renamed this chat to "${title}".`;
-      await addMessage(chatId, 'assistant', 'KitchenBot', reply);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
     }
 
     if (prompt === '!resetguest') {
       if (name !== 'Rob') {
-        await addMessage(chatId, 'user', name, prompt);
         if (name === 'Elle') {
           await incrementElleMessageCount();
         }
         const reply = 'The !resetguest command is only available to Rob.';
-        await addMessage(chatId, 'assistant', 'KitchenBot', reply);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         return res.end(reply);
       }
-      await addMessage(chatId, 'user', name, prompt);
       await resetGuestMessageCount();
       const reply = 'Guest message count has been reset to 0.';
-      await addMessage(chatId, 'assistant', 'KitchenBot', reply);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
     }
 
     if (prompt === '!bootguest') {
       if (name !== 'Rob') {
-        await addMessage(chatId, 'user', name, prompt);
         if (name === 'Elle') {
           await incrementElleMessageCount();
         }
         const reply = 'The !bootguest command is only available to Rob.';
-        await addMessage(chatId, 'assistant', 'KitchenBot', reply);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         return res.end(reply);
       }
-      await addMessage(chatId, 'user', name, prompt);
       await setGuestMustRelogin(true);
       const reply = 'Guest sessions invalidated. Guest must log in again.';
-      await addMessage(chatId, 'assistant', 'KitchenBot', reply);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
     }
@@ -2212,7 +2221,6 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     const guestPasswordMatch = prompt?.match(/^!guestpassword\s*=\s*(.+)$/);
     if (guestPasswordMatch) {
       if (name !== 'Rob') {
-        await addMessage(chatId, 'user', name, prompt);
         if (name === 'Elle') {
           await incrementElleMessageCount();
         }
@@ -2221,7 +2229,6 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
         return res.end(reply);
       }
       const newPassword = guestPasswordMatch[1].trim();
-      await addMessage(chatId, 'user', name, prompt);
       await setGuestPassword(newPassword);
       const reply = 'Guest password has been updated.';
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -2236,25 +2243,19 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     if (memoriesCommand) {
       if (name !== 'Rob') {
         const reply = 'The !memories command is only available to Rob.';
-        await addMessage(chatId, 'user', name, prompt);
         if (name === 'Elle') {
           await incrementElleMessageCount();
         }
-        await addMessage(chatId, 'assistant', 'KitchenBot', reply);
 
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         return res.end(reply);
       }
-
-      await addMessage(chatId, 'user', name, prompt);
 
       const memories = await getMemories();
 
       const reply = memories.length
         ? 'Current memories:\n' + memories.map(memory => `- ${memory.key}: ${memory.value}`).join('\n')
         : 'No memories stored.';
-
-      await addMessage(chatId, 'assistant', 'KitchenBot', reply);
 
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
@@ -2263,11 +2264,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     if (memoryCommand) {
       if (name !== 'Rob') {
         const reply = 'The !remember command is only available to Rob.';
-        await addMessage(chatId, 'user', name, prompt);
         if (name === 'Elle') {
           await incrementElleMessageCount();
         }
-        await addMessage(chatId, 'assistant', 'KitchenBot', reply);
 
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         return res.end(reply);
@@ -2286,17 +2285,14 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     if (groceryListCommand) {
       if (name !== 'Rob') {
         const reply = 'The !grocerylist command is only available to Rob.';
-        await addMessage(chatId, 'user', name, prompt);
         if (name === 'Elle') {
           await incrementElleMessageCount();
         }
-        await addMessage(chatId, 'assistant', 'KitchenBot', reply);
 
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         return res.end(reply);
       }
 
-      await addMessage(chatId, 'user', name, prompt);
       if (name === 'Elle') {
         await incrementElleMessageCount();
       }
@@ -2395,11 +2391,9 @@ Where:
 
     if (prompt.trim().startsWith('!')) {
       const reply = 'Unknown command.\n\n' + getHelpReply(name);
-      await addMessage(chatId, 'user', name, prompt);
       if (name === 'Elle') {
         await incrementElleMessageCount();
       }
-      await addMessage(chatId, 'assistant', 'KitchenBot', reply);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
     }
@@ -2412,7 +2406,9 @@ Where:
     if (name === 'Elle') {
       await incrementElleMessageCount();
     }
-    if (typeof broadcastToChat === 'function') broadcastToChat(chatId, { type: 'chat_updated', chatId });
+    if (typeof broadcastToChat === 'function') {
+      broadcastToChat(chatId, { type: 'chat_updated', chatId, user: name });
+    }
 
     const conversation = await getMessages(chatId);
     const conversationForContext = conversation.filter(
@@ -2491,7 +2487,9 @@ Where:
         const delta = event.delta.text;
         finalReply += delta;
         res.write(delta);
-        if (typeof broadcastToChat === 'function') broadcastToChat(chatId, { type: 'stream_delta', chatId, delta });
+        if (typeof broadcastToChat === 'function') {
+          broadcastToChat(chatId, { type: 'stream_delta', chatId, delta, user: name });
+        }
       }
     }
 
@@ -2512,7 +2510,9 @@ Where:
     /* ---- END OF COMPLIMENT LOGIC ---- */
 
     await addMessage(chatId, 'assistant', 'KitchenBot', finalReply);
-    if (typeof broadcastToChat === 'function') broadcastToChat(chatId, { type: 'chat_updated', chatId });
+    if (typeof broadcastToChat === 'function') {
+      broadcastToChat(chatId, { type: 'chat_updated', chatId, user: name });
+    }
 
     if (name === 'Guest') {
       await incrementGuestMessageCount();

@@ -62,7 +62,8 @@ db.serialize(() => {
       messages_since_last_compliment INTEGER DEFAULT 0,
       last_compliment_timestamp TEXT,
       recent_compliments TEXT,
-      recent_templates TEXT
+      recent_templates TEXT,
+      boost_mode INTEGER DEFAULT 0
     )
   `);
 
@@ -72,9 +73,10 @@ db.serialize(() => {
       messages_since_last_compliment,
       last_compliment_timestamp,
       recent_compliments,
-      recent_templates
+      recent_templates,
+      boost_mode
     )
-    VALUES (1, 0, NULL, '[]', '[]')
+    VALUES (1, 0, NULL, '[]', '[]', 0)
   `);
 
   db.run(`
@@ -455,6 +457,7 @@ export function getElleComplimentState() {
           last_compliment_timestamp: safeRow.last_compliment_timestamp || null,
           recent_compliments: recentCompliments,
           recent_templates: recentTemplates,
+          boost_mode: safeRow.boost_mode ? 1 : 0,
         });
       }
     );
@@ -483,27 +486,9 @@ export function shouldTriggerCompliment(state, now = new Date()) {
 
   const count = state.messages_since_last_compliment || 0;
 
-  let baseProb = 0;
-  const table = {
-    10: 0.10,
-    11: 0.15,
-    12: 0.20,
-    13: 0.30,
-    14: 0.40,
-    15: 0.50,
-    16: 0.65,
-    17: 0.80,
-    18: 0.90,
-    19: 0.97,
-  };
-
-  if (count >= 20) {
-    baseProb = 1;
-  } else if (table[count] != null) {
-    baseProb = table[count];
-  } else {
-    baseProb = 0;
-  }
+  // Baseline probability: small but non-zero from the start, increasing with message count.
+  // Example: 1% base + 2% per message, capped so we don't explode before time multipliers.
+  let baseProb = 0.01 + Math.min(count, 30) * 0.02;
 
   let multiplier = 1;
   const lastTs = state.last_compliment_timestamp;
@@ -524,6 +509,11 @@ export function shouldTriggerCompliment(state, now = new Date()) {
   }
 
   let finalProb = baseProb * multiplier;
+
+  // Temporary boost mode (from !love) overrides organic probability.
+  if (state.boost_mode) {
+    finalProb = Math.max(finalProb, 0.5);
+  }
   if (finalProb > 1) finalProb = 1;
   if (finalProb < 0) finalProb = 0;
 
@@ -574,7 +564,8 @@ export function recordCompliment(compliment, template, now = new Date()) {
           messages_since_last_compliment = 0,
           last_compliment_timestamp = ?,
           recent_compliments = ?,
-          recent_templates = ?
+          recent_templates = ?,
+          boost_mode = 0
         WHERE id = 1
         `,
         [
@@ -588,5 +579,22 @@ export function recordCompliment(compliment, template, now = new Date()) {
         }
       );
     });
+  });
+}
+
+export function setElleLoveBoost(active) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+      UPDATE elle_compliment_state
+      SET boost_mode = ?
+      WHERE id = 1
+      `,
+      [active ? 1 : 0],
+      function (err) {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
   });
 }
