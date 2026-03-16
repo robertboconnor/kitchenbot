@@ -79,17 +79,29 @@ db.serialize(() => {
     VALUES (1, 0, NULL, '[]', '[]', 0)
   `);
 
-  // In case the table was created before boost_mode existed, try to add it.
-  // This ALTER is safe to run on every startup; if the column already exists,
-  // SQLite will return an error, which we ignore.
-  db.run(
-    `ALTER TABLE elle_compliment_state ADD COLUMN boost_mode INTEGER DEFAULT 0`,
+  // Safe, idempotent migration for existing databases that may lack boost_mode.
+  // We inspect the current schema and only run ALTER TABLE if boost_mode is missing.
+  db.all(
+    `PRAGMA table_info(elle_compliment_state)`,
     [],
-    (err) => {
-      // Ignore "duplicate column" style errors; they just mean we're already up to date.
-      if (err && err.code !== 'SQLITE_ERROR') {
-        // For unexpected errors, log but don't crash the process.
-        console.error('elle_compliment_state migration error:', err);
+    (err, rows) => {
+      if (err) {
+        console.error('Failed to read elle_compliment_state schema:', err);
+        return;
+      }
+      const hasBoost = Array.isArray(rows) && rows.some((col) => col.name === 'boost_mode');
+      if (!hasBoost) {
+        db.run(
+          `ALTER TABLE elle_compliment_state ADD COLUMN boost_mode INTEGER DEFAULT 0`,
+          [],
+          (alterErr) => {
+            if (alterErr) {
+              console.error('Failed to add boost_mode to elle_compliment_state:', alterErr);
+            } else {
+              console.log('Added boost_mode column to elle_compliment_state');
+            }
+          }
+        );
       }
     }
   );
