@@ -67,8 +67,11 @@ db.serialize(() => {
     )
   `);
 
-  // Safe, idempotent migration for existing databases that may lack boost_mode.
-  // We inspect the current schema and only run ALTER TABLE if boost_mode is missing.
+  // Ordered, idempotent migration for existing databases that may lack boost_mode.
+  // We:
+  // 1) Inspect schema
+  // 2) ALTER TABLE to add boost_mode if missing
+  // 3) Seed the singleton row once the schema is correct
   db.all(
     `PRAGMA table_info(elle_compliment_state)`,
     [],
@@ -77,7 +80,31 @@ db.serialize(() => {
         console.error('Failed to read elle_compliment_state schema:', err);
         return;
       }
+
       const hasBoost = Array.isArray(rows) && rows.some((col) => col.name === 'boost_mode');
+
+      const seedElleComplimentState = () => {
+        db.run(
+          `
+          INSERT OR IGNORE INTO elle_compliment_state (
+            id,
+            messages_since_last_compliment,
+            last_compliment_timestamp,
+            recent_compliments,
+            recent_templates,
+            boost_mode
+          )
+          VALUES (1, 0, NULL, '[]', '[]', 0)
+          `,
+          [],
+          (seedErr) => {
+            if (seedErr) {
+              console.error('Failed to seed elle_compliment_state:', seedErr);
+            }
+          }
+        );
+      };
+
       if (!hasBoost) {
         db.run(
           `ALTER TABLE elle_compliment_state ADD COLUMN boost_mode INTEGER DEFAULT 0`,
@@ -88,23 +115,16 @@ db.serialize(() => {
             } else {
               console.log('Added boost_mode column to elle_compliment_state');
             }
+            // Whether ALTER succeeded or not, attempt to seed; if ALTER failed,
+            // seed will also fail and log, but we won't proceed with half-applied state.
+            seedElleComplimentState();
           }
         );
+      } else {
+        seedElleComplimentState();
       }
     }
   );
-
-  db.run(`
-    INSERT OR IGNORE INTO elle_compliment_state (
-      id,
-      messages_since_last_compliment,
-      last_compliment_timestamp,
-      recent_compliments,
-      recent_templates,
-      boost_mode
-    )
-    VALUES (1, 0, NULL, '[]', '[]', 0)
-  `);
 
   db.run(`
     INSERT OR IGNORE INTO memories (key, value) VALUES
