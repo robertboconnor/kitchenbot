@@ -22,6 +22,11 @@ import {
   resetGuestMessageCount,
   setGuestMustRelogin,
   setGuestPassword,
+  getElleComplimentState,
+  incrementElleMessageCount,
+  shouldTriggerCompliment,
+  recordCompliment,
+  selectComplimentAvoidingRecent,
 } from './db.mjs';
 import 'dotenv/config';
 import os from 'os';
@@ -1199,7 +1204,7 @@ app.get('/', (req, res) => {
                   if (!weAreStreamingThisChat) loadHistory();
                   return;
                 }
-                if (msg.type === 'stream_delta' && msgChatId === currentChatId && !weAreStreamingThisChat) {
+                if (msg.type === 'stream_delta' && msgChatId === currentChatId) {
                   if (!remoteStreamBodyEl) {
                     const wrap = document.createElement('div');
                     wrap.className = 'message assistant';
@@ -1755,6 +1760,7 @@ app.get('/', (req, res) => {
           thinkingDiv.appendChild(thinkingBody);
           chat.appendChild(thinkingDiv);
           chat.scrollTop = chat.scrollHeight;
+          remoteStreamBodyEl = thinkingBody;
 
           try {
             const response = await fetch('/chat', {
@@ -1764,6 +1770,7 @@ app.get('/', (req, res) => {
             });
 
             if (!response.ok) {
+              remoteStreamBodyEl = null;
               weAreStreamingThisChat = false;
               if (response.status === 401) {
                 thinkingBody.textContent = 'Please log in.';
@@ -1792,13 +1799,17 @@ app.get('/', (req, res) => {
 
               const chunk = decoder.decode(value, { stream: true });
               fullReply += chunk;
-              thinkingBody.textContent = fullReply;
-              chat.scrollTop = chat.scrollHeight;
+              // UI updates from WebSocket stream_delta (works behind buffering proxies); only accumulate here for final markdown
+              if (!remoteStreamBodyEl || remoteStreamBodyEl.textContent.length < fullReply.length) {
+                thinkingBody.textContent = fullReply;
+                chat.scrollTop = chat.scrollHeight;
+              }
             }
 
             thinkingBody.textContent = '';
             thinkingBody.appendChild(renderMarkdown(fullReply));
             chat.scrollTop = chat.scrollHeight;
+            remoteStreamBodyEl = null;
             weAreStreamingThisChat = false;
 
             try {
@@ -1813,6 +1824,7 @@ app.get('/', (req, res) => {
           
           catch (error) {
             thinkingBody.textContent = 'Something went wrong.';
+            remoteStreamBodyEl = null;
             weAreStreamingThisChat = false;
           }
         });
@@ -2109,6 +2121,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     if (prompt === '!help') {
       const reply = '📋 KitchenBot commands\n\n' + getHelpReply(name);
       await addMessage(chatId, 'user', name, prompt);
+      if (name === 'Elle') {
+        await incrementElleMessageCount();
+      }
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
     }
@@ -2117,6 +2132,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     if (renameMatch) {
       const arg = typeof renameMatch[1] === 'string' ? renameMatch[1].trim() : '';
       await addMessage(chatId, 'user', name, prompt);
+       if (name === 'Elle') {
+        await incrementElleMessageCount();
+      }
       let title;
       if (arg) {
         title = arg.slice(0, 200);
@@ -2156,6 +2174,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     if (prompt === '!resetguest') {
       if (name !== 'Rob') {
         await addMessage(chatId, 'user', name, prompt);
+        if (name === 'Elle') {
+          await incrementElleMessageCount();
+        }
         const reply = 'The !resetguest command is only available to Rob.';
         await addMessage(chatId, 'assistant', 'KitchenBot', reply);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -2172,6 +2193,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     if (prompt === '!bootguest') {
       if (name !== 'Rob') {
         await addMessage(chatId, 'user', name, prompt);
+        if (name === 'Elle') {
+          await incrementElleMessageCount();
+        }
         const reply = 'The !bootguest command is only available to Rob.';
         await addMessage(chatId, 'assistant', 'KitchenBot', reply);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -2189,6 +2213,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
     if (guestPasswordMatch) {
       if (name !== 'Rob') {
         await addMessage(chatId, 'user', name, prompt);
+        if (name === 'Elle') {
+          await incrementElleMessageCount();
+        }
         const reply = 'The !guestpassword command is only available to Rob.';
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         return res.end(reply);
@@ -2210,6 +2237,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
       if (name !== 'Rob') {
         const reply = 'The !memories command is only available to Rob.';
         await addMessage(chatId, 'user', name, prompt);
+        if (name === 'Elle') {
+          await incrementElleMessageCount();
+        }
         await addMessage(chatId, 'assistant', 'KitchenBot', reply);
 
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -2234,6 +2264,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
       if (name !== 'Rob') {
         const reply = 'The !remember command is only available to Rob.';
         await addMessage(chatId, 'user', name, prompt);
+        if (name === 'Elle') {
+          await incrementElleMessageCount();
+        }
         await addMessage(chatId, 'assistant', 'KitchenBot', reply);
 
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -2254,6 +2287,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
       if (name !== 'Rob') {
         const reply = 'The !grocerylist command is only available to Rob.';
         await addMessage(chatId, 'user', name, prompt);
+        if (name === 'Elle') {
+          await incrementElleMessageCount();
+        }
         await addMessage(chatId, 'assistant', 'KitchenBot', reply);
 
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -2261,6 +2297,9 @@ app.post('/chat', requireAuth, rateLimitChatMiddleware, async (req, res) => {
       }
 
       await addMessage(chatId, 'user', name, prompt);
+      if (name === 'Elle') {
+        await incrementElleMessageCount();
+      }
 
       const conversation = await getMessages(chatId);
       const conversationForContext = conversation.filter(
@@ -2357,6 +2396,9 @@ Where:
     if (prompt.trim().startsWith('!')) {
       const reply = 'Unknown command.\n\n' + getHelpReply(name);
       await addMessage(chatId, 'user', name, prompt);
+      if (name === 'Elle') {
+        await incrementElleMessageCount();
+      }
       await addMessage(chatId, 'assistant', 'KitchenBot', reply);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
@@ -2367,6 +2409,9 @@ Where:
     }
 
     await addMessage(chatId, 'user', name, prompt);
+    if (name === 'Elle') {
+      await incrementElleMessageCount();
+    }
     if (typeof broadcastToChat === 'function') broadcastToChat(chatId, { type: 'chat_updated', chatId });
 
     const conversation = await getMessages(chatId);
@@ -2375,10 +2420,6 @@ Where:
     );
     const recentConversation =
       conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
-
-    let elleMessageCount = conversation.filter(
-      m => m.role === 'user' && m.name === 'Elle'
-    ).length;
 
     const memories = await getMemories();
 
@@ -2457,18 +2498,14 @@ Where:
     /* ---- COMPLIMENT LOGIC ---- */
 
     if (name === 'Elle') {
-      const trigger = Math.floor(Math.random() * 11) + 10;
+      const state = await getElleComplimentState();
+      const { trigger } = shouldTriggerCompliment(state);
 
-      if (elleMessageCount % trigger === 0) {
-        const compliment =
-          compliments[Math.floor(Math.random() * compliments.length)];
-
-        const template =
-          complimentTemplates[Math.floor(Math.random() * complimentTemplates.length)];
-
-        const complimentLine = template.replace("%s", compliment);
-
-        finalReply += "\n\n" + complimentLine;
+      if (trigger) {
+        const { compliment, template } = selectComplimentAvoidingRecent(compliments, complimentTemplates, state);
+        const complimentLine = template.replace('%s', compliment);
+        finalReply += '\n\n' + complimentLine;
+        await recordCompliment(compliment, template);
       }
     }
 

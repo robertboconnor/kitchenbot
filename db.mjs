@@ -57,6 +57,27 @@ db.serialize(() => {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS elle_compliment_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      messages_since_last_compliment INTEGER DEFAULT 0,
+      last_compliment_timestamp TEXT,
+      recent_compliments TEXT,
+      recent_templates TEXT
+    )
+  `);
+
+  db.run(`
+    INSERT OR IGNORE INTO elle_compliment_state (
+      id,
+      messages_since_last_compliment,
+      last_compliment_timestamp,
+      recent_compliments,
+      recent_templates
+    )
+    VALUES (1, 0, NULL, '[]', '[]')
+  `);
+
+  db.run(`
     INSERT OR IGNORE INTO memories (key, value) VALUES
       ('child_nickname', 'Bizzy'),
       ('rob_style', 'concise'),
@@ -389,5 +410,183 @@ export function setGuestPassword(password) {
         else resolve();
       }
     );
+  });
+}
+
+export function getElleComplimentState() {
+  return new Promise((resolve, reject) => {
+    db.get(
+      `
+      SELECT
+        messages_since_last_compliment,
+        last_compliment_timestamp,
+        recent_compliments,
+        recent_templates
+      FROM elle_compliment_state
+      WHERE id = 1
+      `,
+      [],
+      (err, row) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        const safeRow = row || {};
+        let recentCompliments = [];
+        let recentTemplates = [];
+        try {
+          if (safeRow.recent_compliments) {
+            recentCompliments = JSON.parse(safeRow.recent_compliments);
+            if (!Array.isArray(recentCompliments)) recentCompliments = [];
+          }
+        } catch {
+          recentCompliments = [];
+        }
+        try {
+          if (safeRow.recent_templates) {
+            recentTemplates = JSON.parse(safeRow.recent_templates);
+            if (!Array.isArray(recentTemplates)) recentTemplates = [];
+          }
+        } catch {
+          recentTemplates = [];
+        }
+        resolve({
+          messages_since_last_compliment: safeRow.messages_since_last_compliment || 0,
+          last_compliment_timestamp: safeRow.last_compliment_timestamp || null,
+          recent_compliments: recentCompliments,
+          recent_templates: recentTemplates,
+        });
+      }
+    );
+  });
+}
+
+export function incrementElleMessageCount() {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+      UPDATE elle_compliment_state
+      SET messages_since_last_compliment = messages_since_last_compliment + 1
+      WHERE id = 1
+      `,
+      [],
+      function (err) {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+export function shouldTriggerCompliment(state, now = new Date()) {
+  if (!state) return { trigger: false, probability: 0 };
+
+  const count = state.messages_since_last_compliment || 0;
+
+  let baseProb = 0;
+  const table = {
+    10: 0.10,
+    11: 0.15,
+    12: 0.20,
+    13: 0.30,
+    14: 0.40,
+    15: 0.50,
+    16: 0.65,
+    17: 0.80,
+    18: 0.90,
+    19: 0.97,
+  };
+
+  if (count >= 20) {
+    baseProb = 1;
+  } else if (table[count] != null) {
+    baseProb = table[count];
+  } else {
+    baseProb = 0;
+  }
+
+  let multiplier = 1;
+  const lastTs = state.last_compliment_timestamp;
+  if (!lastTs) {
+    multiplier = 3;
+  } else {
+    const last = new Date(lastTs);
+    if (!Number.isNaN(last.getTime())) {
+      const diffMs = now.getTime() - last.getTime();
+      const oneDay = 24 * 60 * 60 * 1000;
+      const threeDays = 3 * oneDay;
+      if (diffMs > threeDays) {
+        multiplier = 5;
+      } else if (diffMs > oneDay) {
+        multiplier = 3;
+      }
+    }
+  }
+
+  let finalProb = baseProb * multiplier;
+  if (finalProb > 1) finalProb = 1;
+  if (finalProb < 0) finalProb = 0;
+
+  const rnd = Math.random();
+  const trigger = rnd < finalProb;
+
+  return { trigger, probability: finalProb };
+}
+
+export function selectComplimentAvoidingRecent(compliments, templates, state) {
+  const recentCompliments = state?.recent_compliments || [];
+  const recentTemplates = state?.recent_templates || [];
+
+  const complimentPool = compliments.filter(c => !recentCompliments.includes(c));
+  const templatePool = templates.filter(t => !recentTemplates.includes(t));
+
+  const availableCompliments = complimentPool.length > 0 ? complimentPool : compliments;
+  const availableTemplates = templatePool.length > 0 ? templatePool : templates;
+
+  const compliment =
+    availableCompliments[Math.floor(Math.random() * availableCompliments.length)];
+  const template =
+    availableTemplates[Math.floor(Math.random() * availableTemplates.length)];
+
+  return { compliment, template };
+}
+
+export function recordCompliment(compliment, template, now = new Date()) {
+  return getElleComplimentState().then((state) => {
+    const recentCompliments = Array.isArray(state.recent_compliments)
+      ? state.recent_compliments.slice()
+      : [];
+    const recentTemplates = Array.isArray(state.recent_templates)
+      ? state.recent_templates.slice()
+      : [];
+
+    recentCompliments.push(compliment);
+    recentTemplates.push(template);
+
+    const trimmedCompliments = recentCompliments.slice(-5);
+    const trimmedTemplates = recentTemplates.slice(-5);
+
+    return new Promise((resolve, reject) => {
+      db.run(
+        `
+        UPDATE elle_compliment_state
+        SET
+          messages_since_last_compliment = 0,
+          last_compliment_timestamp = ?,
+          recent_compliments = ?,
+          recent_templates = ?
+        WHERE id = 1
+        `,
+        [
+          now.toISOString(),
+          JSON.stringify(trimmedCompliments),
+          JSON.stringify(trimmedTemplates),
+        ],
+        function (err) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
   });
 }
