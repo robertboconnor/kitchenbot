@@ -27,6 +27,7 @@ import 'dotenv/config';
 import os from 'os';
 import http from 'http';
 import express from 'express';
+import { createClient } from 'redis';
 import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
 import crypto from 'crypto';
@@ -900,10 +901,10 @@ app.get('/', (req, res) => {
 
         #input-area #send {
           flex-shrink: 0;
-          width: 36px;
-          height: 36px;
-          min-width: 36px;
-          min-height: 36px;
+          width: 44px;
+          height: 44px;
+          min-width: 44px;
+          min-height: 44px;
           padding: 0;
           border-radius: 50%;
           display: inline-flex;
@@ -2440,6 +2441,7 @@ Where:
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('X-Accel-Buffering', 'no');
 
     let finalReply = '';
 
@@ -2494,17 +2496,30 @@ const wss = new WebSocketServer({ server });
 
 const wsConnections = new Map();
 
-function broadcastToChat(chatId, payload, excludeWs = null) {
+let redisPub = null;
+
+function doLocalBroadcast(chatId, payload, opts = {}) {
+  const { excludeUser = null, excludeWs = null } = opts;
   const msg = JSON.stringify(payload);
   for (const [ws, data] of wsConnections) {
-    if (ws === excludeWs || ws.readyState !== 1) continue;
+    if (ws.readyState !== 1) continue;
     if (data.chatId !== chatId) continue;
+    if (excludeUser != null && data.user === excludeUser) continue;
+    if (excludeWs != null && ws === excludeWs) continue;
     try {
       ws.send(msg);
     } catch (e) {
       // ignore
     }
   }
+}
+
+function broadcastToChat(chatId, payload, excludeWs = null, excludeUser = null) {
+  if (redisPub) {
+    redisPub.publish('kitchenbot:broadcast', JSON.stringify({ chatId, payload, excludeUser })).catch(() => {});
+    return;
+  }
+  doLocalBroadcast(chatId, payload, { excludeWs, excludeUser });
 }
 
 wss.on('connection', (ws) => {
@@ -2523,11 +2538,11 @@ wss.on('connection', (ws) => {
         return;
       }
       if (msg.type === 'typing' && data.user && msg.chatId != null) {
-        broadcastToChat(Number(msg.chatId), { type: 'user_typing', chatId: Number(msg.chatId), user: data.user }, ws);
+        broadcastToChat(Number(msg.chatId), { type: 'user_typing', chatId: Number(msg.chatId), user: data.user }, ws, data.user);
         return;
       }
       if (msg.type === 'stopped_typing' && data.user && msg.chatId != null) {
-        broadcastToChat(Number(msg.chatId), { type: 'user_stopped_typing', chatId: Number(msg.chatId), user: data.user }, ws);
+        broadcastToChat(Number(msg.chatId), { type: 'user_stopped_typing', chatId: Number(msg.chatId), user: data.user }, ws, data.user);
         return;
       }
     } catch (e) {
@@ -2537,13 +2552,40 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (data.user != null && data.chatId != null) {
-      broadcastToChat(data.chatId, { type: 'user_stopped_typing', chatId: data.chatId, user: data.user }, ws);
+      broadcastToChat(data.chatId, { type: 'user_stopped_typing', chatId: data.chatId, user: data.user }, ws, data.user);
     }
     wsConnections.delete(ws);
   });
 });
 
-server.listen(port, '0.0.0.0', () => {
+async function connectRedis() {
+  const url = process.env.REDIS_URL;
+  if (!url) return;
+  try {
+    const pub = createClient({ url });
+    pub.on('error', (err) => console.error('Redis pub error:', err));
+    await pub.connect();
+    const sub = pub.duplicate();
+    sub.on('error', (err) => console.error('Redis sub error:', err));
+    await sub.connect();
+    await sub.subscribe('kitchenbot:broadcast', (message) => {
+      try {
+        const { chatId, payload, excludeUser } = JSON.parse(message);
+        doLocalBroadcast(chatId, payload, { excludeUser });
+      } catch (e) {
+        // ignore
+      }
+    });
+    redisPub = pub;
+    console.log('Redis pub/sub connected');
+  } catch (e) {
+    console.error('Redis connect failed:', e.message);
+  }
+}
+
+(async () => {
+  await connectRedis();
+  server.listen(port, '0.0.0.0', () => {
   const nets = os.networkInterfaces();
   let lanIp = '';
   for (const name of Object.keys(nets)) {
@@ -2557,4 +2599,5 @@ server.listen(port, '0.0.0.0', () => {
   }
   console.log(`Server running at http://localhost:${port}`);
   if (lanIp) console.log(`Local network:  http://${lanIp}:${port}`);
-});
+  });
+})();
