@@ -67,18 +67,6 @@ db.serialize(() => {
     )
   `);
 
-  db.run(`
-    INSERT OR IGNORE INTO elle_compliment_state (
-      id,
-      messages_since_last_compliment,
-      last_compliment_timestamp,
-      recent_compliments,
-      recent_templates,
-      boost_mode
-    )
-    VALUES (1, 0, NULL, '[]', '[]', 0)
-  `);
-
   // Safe, idempotent migration for existing databases that may lack boost_mode.
   // We inspect the current schema and only run ALTER TABLE if boost_mode is missing.
   db.all(
@@ -105,6 +93,18 @@ db.serialize(() => {
       }
     }
   );
+
+  db.run(`
+    INSERT OR IGNORE INTO elle_compliment_state (
+      id,
+      messages_since_last_compliment,
+      last_compliment_timestamp,
+      recent_compliments,
+      recent_templates,
+      boost_mode
+    )
+    VALUES (1, 0, NULL, '[]', '[]', 0)
+  `);
 
   db.run(`
     INSERT OR IGNORE INTO memories (key, value) VALUES
@@ -450,7 +450,8 @@ export function getElleComplimentState() {
         messages_since_last_compliment,
         last_compliment_timestamp,
         recent_compliments,
-        recent_templates
+        recent_templates,
+        boost_mode
       FROM elle_compliment_state
       WHERE id = 1
       `,
