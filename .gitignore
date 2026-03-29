@@ -1,4 +1,4 @@
 node_modules
 .env
-chat.db
+kitchenbot.db
 .DS_Store
