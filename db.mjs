@@ -387,6 +387,20 @@ export function createHouseholdWithInitialOwner({ householdName, householdKey, o
 
 /** For global admin: all households with users and Anthropic summary (no raw API keys). */
 export async function listAllHouseholdsSummary() {
+  const countRows = await new Promise((resolve, reject) => {
+    db.all(
+      `SELECT household_id, COUNT(*) AS total_messages FROM messages GROUP BY household_id`,
+      [],
+      (err, r) => {
+        if (err) reject(err);
+        else resolve(r || []);
+      }
+    );
+  });
+  const messageCountByHouseholdId = new Map();
+  for (const row of countRows) {
+    messageCountByHouseholdId.set(Number(row.household_id), Number(row.total_messages));
+  }
   const rows = await new Promise((resolve, reject) => {
     db.all(
       `SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key FROM households ORDER BY id ASC`,
@@ -417,6 +431,7 @@ export async function listAllHouseholdsSummary() {
       anthropicKeyMode: mode,
       hasHouseholdKey: hasKey,
       anthropicStatusLabel,
+      totalMessages: messageCountByHouseholdId.get(h.id) ?? 0,
       users: users.map((u) => ({ id: u.id, displayName: u.display_name, role: u.role })),
     });
   }

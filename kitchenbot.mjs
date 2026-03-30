@@ -3041,8 +3041,24 @@ app.get('/', (req, res) => {
               for (const hh of households) {
                 const row = document.createElement('div');
                 row.style.marginBottom = '6px';
+                const n =
+                  hh.totalMessages != null && Number.isFinite(Number(hh.totalMessages))
+                    ? Number(hh.totalMessages)
+                    : 0;
+                const msgLabel = n === 1 ? 'msg' : 'msgs';
                 row.textContent =
-                  '#' + hh.id + ' · ' + hh.name + ' · key ' + hh.householdKey + ' · ' + hh.anthropicStatusLabel;
+                  '#' +
+                  hh.id +
+                  ' · ' +
+                  hh.name +
+                  ' · key ' +
+                  hh.householdKey +
+                  ' · ' +
+                  n +
+                  ' ' +
+                  msgLabel +
+                  ' · ' +
+                  hh.anthropicStatusLabel;
                 listEl.appendChild(row);
               }
             }
