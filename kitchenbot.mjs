@@ -4,7 +4,6 @@ import {
   listAllChats,
   touchChat,
   updateChatTitle,
-  deleteChat,
   deleteChatById,
   addMessage,
   getMessages,
@@ -3392,6 +3391,9 @@ app.get('/', (req, res) => {
                     }
                   }
                   renderChats();
+                  try {
+                    await refreshAdminHouseholdsList();
+                  } catch (e) {}
                 } catch (e) {}
               });
               li.appendChild(delBtn);
@@ -4719,7 +4721,10 @@ app.delete(
     if (!Number.isFinite(chatId)) {
       return res.status(400).json({ error: 'Invalid chat id.' });
     }
-    await deleteChatById(chatId, req.householdId);
+    const deleted = await deleteChatById(chatId, req.householdId);
+    if (deleted === 0) {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
     res.json({ ok: true });
   } catch (error) {
     console.error(error);

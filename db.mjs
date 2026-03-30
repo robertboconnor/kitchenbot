@@ -712,33 +712,27 @@ export function clearMessages(chatId, householdId) {
 
 export function deleteChat(owner, chatId, householdId) {
   return new Promise((resolve, reject) => {
-    db.serialize(() => {
-      db.run(`DELETE FROM messages WHERE chat_id = ? AND household_id = ?`, [chatId, householdId], function (err) {
+    db.run(
+      `DELETE FROM chats WHERE id = ? AND household_id = ? AND owner = ?`,
+      [chatId, householdId, owner],
+      function (err) {
         if (err) reject(err);
-      });
-      db.run(
-        `DELETE FROM chats WHERE id = ? AND household_id = ? AND owner = ?`,
-        [chatId, householdId, owner],
-        function (err) {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+        else resolve(this.changes);
+      }
+    );
   });
 }
 
 export function deleteChatById(chatId, householdId) {
   return new Promise((resolve, reject) => {
-    db.serialize(() => {
-      db.run(`DELETE FROM messages WHERE chat_id = ? AND household_id = ?`, [chatId, householdId], function (err) {
+    db.run(
+      `DELETE FROM chats WHERE id = ? AND household_id = ?`,
+      [chatId, householdId],
+      function (err) {
         if (err) reject(err);
-      });
-      db.run(`DELETE FROM chats WHERE id = ? AND household_id = ?`, [chatId, householdId], function (err) {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+        else resolve(this.changes);
+      }
+    );
   });
 }
 
