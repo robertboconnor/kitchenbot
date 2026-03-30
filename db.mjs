@@ -72,8 +72,9 @@ db.serialize(() => {
       display_name TEXT NOT NULL,
       role TEXT NOT NULL,
       pin_hash TEXT,
-      compliments_enabled INTEGER NOT NULL DEFAULT 1,
+      compliments_enabled INTEGER NOT NULL DEFAULT 0,
       chat_color TEXT NOT NULL DEFAULT 'blue',
+      session_version INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(household_id, display_name)
     )
@@ -143,6 +144,20 @@ export function ensureHouseholdUserChatColorColumnAsync() {
       if ((cols || []).some((c) => c.name === 'chat_color')) return resolve();
       db.run(
         `ALTER TABLE household_users ADD COLUMN chat_color TEXT NOT NULL DEFAULT 'blue'`,
+        () => resolve()
+      );
+    });
+  });
+}
+
+/** For DB files created before session_version existed; existing rows default to 0. */
+export function ensureHouseholdUserSessionVersionColumnAsync() {
+  return new Promise((resolve) => {
+    db.all(`PRAGMA table_info(household_users)`, [], (err, cols) => {
+      if (err) return resolve();
+      if ((cols || []).some((c) => c.name === 'session_version')) return resolve();
+      db.run(
+        `ALTER TABLE household_users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0`,
         () => resolve()
       );
     });
@@ -339,7 +354,7 @@ export function createHouseholdWithInitialOwner({ householdName, householdKey, o
           }
           const householdId = this.lastID;
           db.run(
-            `INSERT INTO household_users (household_id, display_name, role, pin_hash) VALUES (?, ?, 'owner', ?)`,
+            `INSERT INTO household_users (household_id, display_name, role, pin_hash, compliments_enabled) VALUES (?, ?, 'owner', ?, 0)`,
             [householdId, ownerDisplayName, pinHashOwner],
             function (err2) {
               if (err2) {
@@ -454,7 +469,7 @@ export function getUserByHouseholdAndDisplayName(householdId, displayName) {
   return new Promise((resolve, reject) => {
     db.get(
       `
-      SELECT id, household_id, display_name, role, pin_hash, compliments_enabled, chat_color
+      SELECT id, household_id, display_name, role, pin_hash, compliments_enabled, chat_color, session_version
       FROM household_users
       WHERE household_id = ? AND display_name = ?
       `,
@@ -471,7 +486,7 @@ export function getHouseholdUserById(householdId, userId) {
   return new Promise((resolve, reject) => {
     db.get(
       `
-      SELECT id, household_id, display_name, role, pin_hash, compliments_enabled, chat_color
+      SELECT id, household_id, display_name, role, pin_hash, compliments_enabled, chat_color, session_version
       FROM household_users
       WHERE household_id = ? AND id = ?
       `,
@@ -488,7 +503,7 @@ export function createHouseholdUser(householdId, { displayName, role, pin }) {
   const pinHash = hashPin(pin);
   return new Promise((resolve, reject) => {
     db.run(
-      `INSERT INTO household_users (household_id, display_name, role, pin_hash) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO household_users (household_id, display_name, role, pin_hash, compliments_enabled) VALUES (?, ?, ?, ?, 0)`,
       [householdId, displayName, role, pinHash],
       function (err) {
         if (err) {
@@ -509,6 +524,23 @@ export function updateHouseholdUserComplimentsEnabled(householdId, userId, enabl
     db.run(
       `UPDATE household_users SET compliments_enabled = ? WHERE id = ? AND household_id = ?`,
       [enabled ? 1 : 0, userId, householdId],
+      function (err) {
+        if (err) reject(err);
+        else if (this.changes === 0) reject(new Error('User not found'));
+        else resolve();
+      }
+    );
+  });
+}
+
+export function updateHouseholdUserRole(householdId, userId, role) {
+  if (role !== 'owner' && role !== 'member') {
+    return Promise.reject(new Error('invalid_role'));
+  }
+  return new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE household_users SET role = ? WHERE id = ? AND household_id = ?`,
+      [role, userId, householdId],
       function (err) {
         if (err) reject(err);
         else if (this.changes === 0) reject(new Error('User not found'));
@@ -542,7 +574,7 @@ export function updateHouseholdUserPin(householdId, userId, pin) {
   const pinHash = hashPin(pin);
   return new Promise((resolve, reject) => {
     db.run(
-      `UPDATE household_users SET pin_hash = ? WHERE id = ? AND household_id = ?`,
+      `UPDATE household_users SET pin_hash = ?, session_version = session_version + 1 WHERE id = ? AND household_id = ?`,
       [pinHash, userId, householdId],
       function (err) {
         if (err) reject(err);
@@ -781,6 +813,19 @@ export function getMemories(householdId) {
       (err, rows) => {
         if (err) reject(err);
         else resolve(rows);
+      }
+    );
+  });
+}
+
+export function deleteMemory(householdId, key) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `DELETE FROM memories WHERE household_id = ? AND key = ?`,
+      [householdId, key],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.changes);
       }
     );
   });

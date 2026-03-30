@@ -11,6 +11,7 @@ import {
   getMemories,
   clearMessages,
   upsertMemory,
+  deleteMemory,
   deleteLegacySeedMemories,
   addGroceryItems,
   getGroceryItems,
@@ -29,6 +30,7 @@ import {
   updateHouseholdUserComplimentsEnabled,
   updateHouseholdUserChatColor,
   ensureHouseholdUserChatColorColumnAsync,
+  ensureHouseholdUserSessionVersionColumnAsync,
   normalizeChatColor,
   needsBootstrap,
   bootstrapFirstHousehold,
@@ -42,6 +44,7 @@ import {
   getHouseholdUserById,
   createHouseholdUser,
   updateHouseholdUserPin,
+  updateHouseholdUserRole,
   updateHouseholdAnthropicSettings,
   setHouseholdAnthropicMode,
   setHouseholdAnthropicApiKey,
@@ -156,15 +159,51 @@ if (!COOKIE_SECRET) {
   throw new Error('Missing KITCHENBOT_SECRET');
 }
 
-/** @param {{ householdId: number, userId: number, displayName: string }} payload */
+/**
+ * @param {{
+ *   householdId: number,
+ *   userId: number,
+ *   displayName: string,
+ *   sessionVersion: number,
+ *   isImpersonating?: boolean,
+ *   impersonationReadOnly?: boolean,
+ *   adminUserId?: number,
+ *   adminHouseholdId?: number,
+ *   adminDisplayName?: string,
+ * }} payload
+ */
 function signToken(payload) {
-  const { householdId, userId, displayName } = payload;
-  const json = JSON.stringify({ householdId, userId, displayName });
+  const householdId = Number(payload.householdId);
+  const userId = Number(payload.userId);
+  const displayName = String(payload.displayName ?? '');
+  const sessionVersion = Math.trunc(Number(payload.sessionVersion ?? 0));
+  const o = { householdId, userId, displayName, sessionVersion };
+  if (payload.isImpersonating) {
+    const adminUserId = Number(payload.adminUserId);
+    const adminHouseholdId = Number(payload.adminHouseholdId);
+    if (!Number.isFinite(adminUserId) || !Number.isFinite(adminHouseholdId)) {
+      throw new Error('Invalid impersonation admin ids');
+    }
+    o.isImpersonating = true;
+    o.impersonationReadOnly = payload.impersonationReadOnly !== false;
+    o.adminUserId = adminUserId;
+    o.adminHouseholdId = adminHouseholdId;
+    o.adminDisplayName = String(payload.adminDisplayName ?? '');
+  }
+  const json = JSON.stringify(o);
   const hmac = crypto.createHmac('sha256', COOKIE_SECRET);
   hmac.update(json);
   const sig = hmac.digest('hex');
   const b64 = Buffer.from(json, 'utf8').toString('base64url');
   return `v2.${b64}.${sig}`;
+}
+
+function setAuthCookie(res, token) {
+  const cookieParts = [`${COOKIE_NAME}=${encodeURIComponent(token)}`, 'HttpOnly', 'Path=/', 'SameSite=Lax'];
+  if (process.env.NODE_ENV === 'production') {
+    cookieParts.push('Secure');
+  }
+  res.setHeader('Set-Cookie', cookieParts.join('; '));
 }
 
 function verifyToken(token) {
@@ -208,7 +247,25 @@ function verifyToken(token) {
   if (!Number.isFinite(householdId) || !Number.isFinite(userId)) {
     return null;
   }
-  return { householdId, userId, displayName: data.displayName };
+  let sessionVersion = 0;
+  if (Object.prototype.hasOwnProperty.call(data, 'sessionVersion') && data.sessionVersion != null) {
+    const sv = Number(data.sessionVersion);
+    if (!Number.isFinite(sv)) return null;
+    sessionVersion = Math.trunc(sv);
+  }
+  const out = { householdId, userId, displayName: data.displayName, sessionVersion };
+  if (data.isImpersonating === true) {
+    const adminUserId = Number(data.adminUserId);
+    const adminHouseholdId = Number(data.adminHouseholdId);
+    if (!Number.isFinite(adminUserId) || !Number.isFinite(adminHouseholdId)) return null;
+    if (typeof data.adminDisplayName !== 'string') return null;
+    out.isImpersonating = true;
+    out.impersonationReadOnly = data.impersonationReadOnly !== false;
+    out.adminUserId = adminUserId;
+    out.adminHouseholdId = adminHouseholdId;
+    out.adminDisplayName = data.adminDisplayName;
+  }
+  return out;
 }
 
 function parseCookies(req) {
@@ -234,11 +291,52 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
+  try {
+    const u = await getHouseholdUserById(auth.householdId, auth.userId);
+    if (!u) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const tokenSv = Math.trunc(Number(auth.sessionVersion ?? 0));
+    const dbSv = Math.trunc(Number(u.session_version != null ? u.session_version : 0));
+    if (tokenSv !== dbSv) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+  } catch (e) {
+    return next(e);
+  }
+
   req.user = auth.displayName;
   req.userId = auth.userId;
   req.householdId = auth.householdId;
+  req.isImpersonating = !!auth.isImpersonating;
+  req.impersonationReadOnly = !!(auth.isImpersonating && auth.impersonationReadOnly);
+  req.adminUserId = auth.adminUserId;
+  req.adminHouseholdId = auth.adminHouseholdId;
+  req.adminDisplayName = auth.adminDisplayName;
 
   next();
+}
+
+function requireNotImpersonatingReadOnly(req, res, next) {
+  if (req.impersonationReadOnly) {
+    return res.status(403).json({ error: 'God Mode is read-only. Exit God Mode to make changes.' });
+  }
+  next();
+}
+
+function requireNotAlreadyImpersonating(req, res, next) {
+  if (req.isImpersonating) {
+    return res.status(400).json({ error: 'Exit God Mode before starting a new impersonation.' });
+  }
+  next();
+}
+
+async function isRequestGlobalAdmin(req) {
+  const uid =
+    req.isImpersonating && req.adminUserId != null && Number.isFinite(Number(req.adminUserId))
+      ? Number(req.adminUserId)
+      : req.userId;
+  return isGlobalAdminUser(uid);
 }
 
 async function requireOwner(req, res, next) {
@@ -256,6 +354,19 @@ async function requireOwner(req, res, next) {
 async function requireGlobalAdmin(req, res, next) {
   try {
     const ok = await isGlobalAdminUser(req.userId);
+    if (!ok) {
+      return res.status(403).json({ error: 'Global admin only' });
+    }
+    next();
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** Global admin or read-only God Mode with a global admin in the cookie (admin reads while impersonating). */
+async function requireGlobalAdminRead(req, res, next) {
+  try {
+    const ok = await isRequestGlobalAdmin(req);
     if (!ok) {
       return res.status(403).json({ error: 'Global admin only' });
     }
@@ -285,7 +396,7 @@ async function resolveAnthropicTargetHouseholdId(req, res, rawHouseholdId) {
       res.status(400).json({ error: 'Invalid householdId' });
       return null;
     }
-    const admin = await isGlobalAdminUser(req.userId);
+    const admin = await isRequestGlobalAdmin(req);
     if (!admin) {
       res.status(403).json({ error: 'Forbidden' });
       return null;
@@ -300,22 +411,61 @@ async function resolveAnthropicTargetHouseholdId(req, res, rawHouseholdId) {
   return req.householdId;
 }
 
-function parseMemoryCommand(prompt) {
-  const match = prompt.match(/^!remember\s+([a-zA-Z0-9_]+)\s*=\s*(.+)$/);
-  if (!match) return null;
+function normalizeRememberKey(raw) {
+  let s = String(raw ?? '').trim().toLowerCase();
+  s = s.replace(/\s+/g, ' ');
+  s = s.replace(/ /g, '_');
+  return s;
+}
 
-  return {
-    key: match[1].trim(),
-    value: match[2].trim()
-  };
+/** @returns {null | { key: string, value: string } | { error: string }} */
+function parseMemoryCommand(prompt) {
+  const trimmed = String(prompt ?? '').trim();
+  if (!/^!remember(\s|$)/i.test(trimmed)) return null;
+  const rest = trimmed.replace(/^!remember\s*/i, '').trim();
+  const eq = rest.indexOf('=');
+  if (eq === -1) {
+    return { error: 'Usage: !remember <key> = <value>' };
+  }
+  const rawKey = rest.slice(0, eq);
+  const rawVal = rest.slice(eq + 1);
+  const key = normalizeRememberKey(rawKey);
+  const value = String(rawVal).trim();
+  if (!key) {
+    return { error: 'Memory key cannot be empty.' };
+  }
+  if (!value) {
+    return { error: 'Memory value cannot be empty.' };
+  }
+  return { key, value };
 }
 
 function isMemoriesCommand(prompt) {
   return prompt === '!memories';
 }
 
+/**
+ * Private chat commands: reply goes only to the HTTP client (sender). No server-side
+ * persistence for these exchanges and no broadcastToChat — other household members see no trace.
+ * Shared commands use isSharedChatCommand (see below).
+ */
+function isPrivateChatCommand(prompt) {
+  const p = String(prompt ?? '').trim();
+  if (p === '!help') return true;
+  if (isMemoriesCommand(p)) return true;
+  if (/^!love(?:\s|$)/.test(p)) return true;
+  return false;
+}
+
 function isGroceryListCommand(prompt) {
-  return prompt === '!grocerylist';
+  return String(prompt ?? '').trim() === '!grocerylist';
+}
+
+/** Shared chat commands: !remember (non-null memoryParsed) and !grocerylist — addMessage + broadcastToChat. */
+function isSharedChatCommand(prompt, memoryParsed) {
+  if (memoryParsed != null) return true;
+  if (isGroceryListCommand(prompt)) return true;
+  return false;
 }
 
 function getHelpReply() {
@@ -406,7 +556,7 @@ app.post('/bootstrap', async (req, res) => {
   }
 });
 
-app.get('/admin/households', requireHousehold, requireAuth, requireGlobalAdmin, async (req, res) => {
+app.get('/admin/households', requireHousehold, requireAuth, requireGlobalAdminRead, async (req, res) => {
   try {
     const households = await listAllHouseholdsSummary();
     return res.json({ households });
@@ -416,7 +566,7 @@ app.get('/admin/households', requireHousehold, requireAuth, requireGlobalAdmin, 
   }
 });
 
-app.get('/admin/households/:id', requireHousehold, requireAuth, requireGlobalAdmin, async (req, res) => {
+app.get('/admin/households/:id', requireHousehold, requireAuth, requireGlobalAdminRead, async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
@@ -449,6 +599,7 @@ app.post(
   '/admin/households/:householdId/users/:userId/pin',
   requireHousehold,
   requireAuth,
+  requireNotImpersonatingReadOnly,
   requireGlobalAdmin,
   async (req, res) => {
     try {
@@ -482,7 +633,13 @@ app.post(
   }
 );
 
-app.post('/admin/households', requireHousehold, requireAuth, requireGlobalAdmin, async (req, res) => {
+app.post(
+  '/admin/households',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireGlobalAdmin,
+  async (req, res) => {
   try {
     const householdName = req.body.householdName?.trim();
     const householdKey = req.body.householdKey?.trim();
@@ -516,6 +673,71 @@ app.post('/admin/households', requireHousehold, requireAuth, requireGlobalAdmin,
     }
     console.error(e);
     return res.status(500).json({ error: e.message || 'Failed to create household' });
+  }
+});
+
+app.post(
+  '/admin/impersonate',
+  requireHousehold,
+  requireAuth,
+  requireNotAlreadyImpersonating,
+  requireGlobalAdmin,
+  async (req, res) => {
+    try {
+      const targetHid = Number(req.body.householdId);
+      const targetUid = Number(req.body.userId);
+      if (!Number.isFinite(targetHid) || !Number.isFinite(targetUid)) {
+        return res.status(400).json({ error: 'householdId and userId are required' });
+      }
+      const target = await getHouseholdUserById(targetHid, targetUid);
+      if (!target) {
+        return res.status(404).json({ error: 'User not found in this household' });
+      }
+      const adminRow = await getHouseholdUserById(req.householdId, req.userId);
+      if (!adminRow) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      const token = signToken({
+        householdId: targetHid,
+        userId: targetUid,
+        displayName: target.display_name,
+        sessionVersion: target.session_version != null ? Math.trunc(Number(target.session_version)) : 0,
+        isImpersonating: true,
+        impersonationReadOnly: true,
+        adminUserId: req.userId,
+        adminHouseholdId: req.householdId,
+        adminDisplayName: adminRow.display_name,
+      });
+      setAuthCookie(res, token);
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: 'Impersonation failed' });
+    }
+  }
+);
+
+app.post('/admin/impersonate/exit', requireHousehold, requireAuth, async (req, res) => {
+  try {
+    const auth = getUserFromRequest(req);
+    if (!auth || !auth.isImpersonating) {
+      return res.status(400).json({ error: 'Not in God Mode.' });
+    }
+    const adminUser = await getHouseholdUserById(auth.adminHouseholdId, auth.adminUserId);
+    if (!adminUser) {
+      return res.status(401).json({ error: 'Admin session invalid. Log in again.' });
+    }
+    const token = signToken({
+      householdId: adminUser.household_id,
+      userId: adminUser.id,
+      displayName: adminUser.display_name,
+      sessionVersion: adminUser.session_version != null ? Math.trunc(Number(adminUser.session_version)) : 0,
+    });
+    setAuthCookie(res, token);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Failed to exit God Mode' });
   }
 });
 
@@ -1173,6 +1395,26 @@ app.get('/', (req, res) => {
           border: 1px solid rgba(229, 231, 235, 0.95);
           border-radius: 8px;
           background: rgba(249, 250, 251, 0.9);
+          transition: box-shadow 0.2s ease, background 0.2s ease;
+        }
+
+        .settings-user-row.settings-user-row-role-flash {
+          box-shadow: 0 0 0 2px var(--accent-strong);
+          background: rgba(255, 122, 162, 0.14);
+        }
+
+        .settings-user-row-role-col {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          align-items: flex-start;
+        }
+
+        .settings-user-row-role-feedback {
+          font-size: 12px;
+          line-height: 1.35;
+          min-height: 1.35em;
+          max-width: 280px;
         }
 
         #my-settings-msg {
@@ -1660,6 +1902,19 @@ app.get('/', (req, res) => {
       </div>
 
       <div id="app" style="display:none;">
+        <div
+          id="god-mode-banner"
+          style="display: none; flex-shrink: 0; width: 100%; box-sizing: border-box; padding: 10px 14px; background: #4c1d95; color: #faf5ff; font-size: 14px; border-bottom: 2px solid #7c3aed; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;"
+        >
+          <div id="god-mode-banner-text" style="flex: 1; min-width: 200px; line-height: 1.4;"></div>
+          <button
+            type="button"
+            id="god-mode-exit-btn"
+            style="padding: 8px 14px; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; background: #f5f3ff; color: #4c1d95;"
+          >
+            Exit God Mode
+          </button>
+        </div>
         <div id="chat" class="panel panel-active"></div>
 
         <div id="typing-indicator" aria-live="polite"></div>
@@ -1753,6 +2008,26 @@ app.get('/', (req, res) => {
               <input id="settings-new-pin" type="password" placeholder="PIN" autocomplete="new-password" />
               <button type="button" id="settings-add-submit">Add user</button>
             </div>
+            <div id="my-settings-memories-wrap">
+              <h3>Household memories</h3>
+              <p style="margin: 0 0 8px; font-size: 13px; color: var(--text-soft); max-width: 520px;">
+                These entries are included in chat context for everyone in this household.
+              </p>
+              <div id="my-settings-memories-list" style="margin-bottom: 12px; font-size: 13px;"></div>
+              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 8px;">
+                <div>
+                  <label for="my-settings-memory-key" style="font-size: 12px; color: var(--text-soft); display: block;">Key</label>
+                  <input id="my-settings-memory-key" type="text" autocomplete="off" placeholder="e.g. dietary_notes" style="width: 180px;" />
+                </div>
+                <div style="flex: 1; min-width: 160px;">
+                  <label for="my-settings-memory-value" style="font-size: 12px; color: var(--text-soft); display: block;">Value</label>
+                  <input id="my-settings-memory-value" type="text" autocomplete="off" placeholder="Value" style="width: 100%; max-width: 360px;" />
+                </div>
+                <button type="button" id="my-settings-memory-save">Save</button>
+                <button type="button" id="my-settings-memory-cancel-edit" style="display: none;">Cancel</button>
+              </div>
+              <div id="my-settings-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
+            </div>
             <div id="my-settings-msg"></div>
           </div>
 
@@ -1772,7 +2047,7 @@ app.get('/', (req, res) => {
               <div id="admin-detail-usage" style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-subtle);"></div>
               <div style="margin-top: 8px;"><strong>Users (this household only)</strong></div>
               <table style="width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 13px;">
-                <thead><tr><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">Display name</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">Role</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">PIN (global admin)</th></tr></thead>
+                <thead><tr><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">Display name</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">Role</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">PIN (global admin)</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">View as</th></tr></thead>
                 <tbody id="admin-detail-users-body"></tbody>
               </table>
               <p id="admin-pin-global-msg" style="margin: 8px 0 0; font-size: 13px; color: var(--accent-strong);"></p>
@@ -1867,6 +2142,8 @@ app.get('/', (req, res) => {
         let currentHouseholdId = null;
         let currentUserId = null;
         let isCurrentUserOwner = false;
+        let godModeReadOnly = false;
+        let editingMemoryKey = null;
         let chatColorByName = {};
         const CHAT_COLOR_OPTIONS = [
           { key: 'pink', label: 'Pink' },
@@ -1887,6 +2164,71 @@ app.get('/', (req, res) => {
         let chatsCache = [];
         let lastDeletedGrocery = null;
         let lastDeletedTimeout = null;
+        let lastMePayload = null;
+
+        function applyGodModeFromMe(data) {
+          if (data && typeof data.name === 'string' && data.householdId != null) {
+            lastMePayload = data;
+          }
+          const ro = !!(data && data.impersonationReadOnly && data.isImpersonating);
+          godModeReadOnly = ro;
+          const banner = document.getElementById('god-mode-banner');
+          const textEl = document.getElementById('god-mode-banner-text');
+          if (banner && textEl) {
+            if (data && data.isImpersonating) {
+              textEl.textContent = '';
+              const strong = document.createElement('strong');
+              strong.textContent =
+                'Viewing as ' +
+                String(data.name || 'user') +
+                ' in ' +
+                String(data.householdName || 'this household');
+              textEl.appendChild(strong);
+              textEl.appendChild(document.createElement('br'));
+              const sub = document.createElement('span');
+              sub.style.opacity = '0.92';
+              sub.textContent = 'Read-only God Mode';
+              textEl.appendChild(sub);
+              banner.style.display = 'flex';
+            } else {
+              textEl.textContent = '';
+              banner.style.display = 'none';
+            }
+          }
+          if (promptInput) {
+            promptInput.readOnly = ro;
+            promptInput.style.opacity = ro ? '0.65' : '';
+          }
+          if (sendButton) {
+            sendButton.disabled = ro;
+            sendButton.style.opacity = ro ? '0.5' : '';
+          }
+          if (newChatButton) {
+            newChatButton.disabled = ro;
+            newChatButton.style.opacity = ro ? '0.5' : '';
+          }
+          const gas = document.getElementById('settings-anthropic-owner-key-save');
+          const sas = document.getElementById('settings-add-submit');
+          const memSave = document.getElementById('my-settings-memory-save');
+          const adminModeSave = document.getElementById('admin-anthropic-mode-save');
+          const adminNewHh = document.getElementById('admin-new-hh-submit');
+          if (gas) gas.disabled = ro;
+          if (sas) sas.disabled = ro;
+          if (memSave) memSave.disabled = ro;
+          if (adminModeSave) adminModeSave.disabled = ro;
+          if (adminNewHh) adminNewHh.disabled = ro;
+          if (groceryAddName) {
+            groceryAddName.readOnly = ro;
+            groceryAddName.style.opacity = ro ? '0.65' : '';
+          }
+          if (groceryAddAmount) {
+            groceryAddAmount.readOnly = ro;
+            groceryAddAmount.style.opacity = ro ? '0.65' : '';
+          }
+          if (groceryAddSection) groceryAddSection.disabled = ro;
+          if (groceryAddSubmit) groceryAddSubmit.disabled = ro;
+          if (groceryClearButton) groceryClearButton.disabled = ro;
+        }
 
         let typingWs = null;
         const typingUsers = new Set();
@@ -2058,6 +2400,98 @@ app.get('/', (req, res) => {
           if (tab === 'settings') loadSettingsPanel();
         }
 
+        function syncMemoriesWrapVisibility() {
+          const w = document.getElementById('my-settings-memories-wrap');
+          if (w) w.style.display = isCurrentUserOwner ? '' : 'none';
+        }
+
+        function resetMemoryEditForm() {
+          editingMemoryKey = null;
+          const keyIn = document.getElementById('my-settings-memory-key');
+          const valIn = document.getElementById('my-settings-memory-value');
+          const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
+          if (keyIn) {
+            keyIn.value = '';
+            keyIn.readOnly = false;
+          }
+          if (valIn) valIn.value = '';
+          if (cancelBtn) cancelBtn.style.display = 'none';
+        }
+
+        async function loadHouseholdMemoriesEditor() {
+          const listEl = document.getElementById('my-settings-memories-list');
+          const memMsg = document.getElementById('my-settings-memories-msg');
+          if (!listEl || !isCurrentUserOwner) return;
+          try {
+            const r = await fetch('/settings/household/memories');
+            if (!r.ok) {
+              listEl.innerHTML = '';
+              if (memMsg) memMsg.textContent = 'Could not load memories.';
+              return;
+            }
+            const data = await r.json();
+            listEl.innerHTML = '';
+            for (const m of data.memories || []) {
+              if (m.key === 'assistant_name') continue;
+              const row = document.createElement('div');
+              row.style.cssText =
+                'display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border-subtle);';
+              const kv = document.createElement('div');
+              kv.style.flex = '1';
+              kv.style.minWidth = '0';
+              const strong = document.createElement('strong');
+              strong.style.fontSize = '13px';
+              strong.textContent = m.key;
+              kv.appendChild(strong);
+              kv.appendChild(document.createTextNode(': '));
+              const span = document.createElement('span');
+              span.style.wordBreak = 'break-word';
+              span.textContent = m.value;
+              kv.appendChild(span);
+              row.appendChild(kv);
+              const editBtn = document.createElement('button');
+              editBtn.type = 'button';
+              editBtn.textContent = 'Edit';
+              editBtn.addEventListener('click', () => {
+                editingMemoryKey = m.key;
+                const keyIn = document.getElementById('my-settings-memory-key');
+                const valIn = document.getElementById('my-settings-memory-value');
+                const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
+                if (keyIn) {
+                  keyIn.value = m.key;
+                  keyIn.readOnly = true;
+                }
+                if (valIn) valIn.value = m.value;
+                if (cancelBtn) cancelBtn.style.display = '';
+                if (memMsg) memMsg.textContent = '';
+              });
+              const delBtn = document.createElement('button');
+              delBtn.type = 'button';
+              delBtn.textContent = 'Delete';
+              delBtn.addEventListener('click', async () => {
+                if (!confirm('Delete memory "' + m.key + '"?')) return;
+                const dr = await fetch('/settings/household/memories/' + encodeURIComponent(m.key), {
+                  method: 'DELETE',
+                });
+                const errBody = await dr.json().catch(() => ({}));
+                if (memMsg) {
+                  memMsg.textContent = dr.ok ? 'Memory deleted.' : errBody.error || 'Delete failed';
+                }
+                if (dr.ok) {
+                  resetMemoryEditForm();
+                  await loadHouseholdMemoriesEditor();
+                }
+              });
+              row.appendChild(editBtn);
+              row.appendChild(delBtn);
+              listEl.appendChild(row);
+            }
+          } catch (e) {
+            listEl.innerHTML = '';
+            if (memMsg) memMsg.textContent = 'Load failed.';
+          }
+        }
+
         async function loadMyHouseholdView() {
           const msgEl = document.getElementById('my-settings-msg');
           const nameEl = document.getElementById('my-settings-hh-name');
@@ -2079,7 +2513,101 @@ app.get('/', (req, res) => {
               row.className = 'settings-user-row';
               const label = document.createElement('span');
               label.style.flex = '1';
-              label.textContent = u.displayName + ' — ' + u.role;
+              label.textContent = u.displayName;
+              const roleCol = document.createElement('div');
+              roleCol.className = 'settings-user-row-role-col';
+              const roleWrap = document.createElement('div');
+              roleWrap.style.display = 'flex';
+              roleWrap.style.alignItems = 'center';
+              roleWrap.style.flexWrap = 'wrap';
+              roleWrap.style.gap = '6px';
+              const roleLbl = document.createElement('span');
+              roleLbl.textContent = 'Role';
+              roleLbl.style.fontSize = '13px';
+              roleLbl.style.color = 'var(--text-soft)';
+              const roleSel = document.createElement('select');
+              roleSel.setAttribute('aria-label', 'Role for ' + u.displayName);
+              [['owner', 'Owner'], ['member', 'Member']].forEach(([val, lab]) => {
+                const o = document.createElement('option');
+                o.value = val;
+                o.textContent = lab;
+                roleSel.appendChild(o);
+              });
+              roleSel.value = u.role === 'owner' ? 'owner' : 'member';
+              let prevRole = roleSel.value;
+              const roleBtn = document.createElement('button');
+              roleBtn.type = 'button';
+              roleBtn.textContent = 'Update role';
+              const roleFeedback = document.createElement('div');
+              roleFeedback.className = 'settings-user-row-role-feedback';
+              roleFeedback.setAttribute('aria-live', 'polite');
+              const isSelf = u.id === data.currentUser.id;
+              function syncRoleButtonState() {
+                if (isSelf) return;
+                roleBtn.disabled = roleSel.value === prevRole;
+              }
+              if (isSelf) {
+                roleSel.disabled = true;
+                roleBtn.disabled = true;
+              } else {
+                roleSel.addEventListener('change', () => {
+                  roleFeedback.textContent = '';
+                  syncRoleButtonState();
+                });
+                syncRoleButtonState();
+              }
+              roleBtn.addEventListener('click', async () => {
+                const newRole = roleSel.value;
+                if (newRole === prevRole) {
+                  roleFeedback.textContent = 'No changes';
+                  roleFeedback.style.color = 'var(--text-soft)';
+                  return;
+                }
+                const originalBtnText = 'Update role';
+                roleBtn.textContent = 'Saving...';
+                roleBtn.disabled = true;
+                if (!isSelf) roleSel.disabled = true;
+                roleFeedback.textContent = '';
+                try {
+                  const rr = await fetch('/settings/household/users/' + u.id + '/role', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ role: newRole }),
+                  });
+                  const errBody = await rr.json().catch(() => ({}));
+                  if (rr.ok) {
+                    prevRole = newRole;
+                    roleFeedback.textContent = 'Role updated';
+                    roleFeedback.style.color = 'var(--accent-strong)';
+                    row.classList.add('settings-user-row-role-flash');
+                    setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
+                  } else {
+                    roleFeedback.textContent = errBody.error || 'Failed to update role';
+                    roleFeedback.style.color = '#b91c1c';
+                    roleSel.value = prevRole;
+                  }
+                } catch (e) {
+                  roleFeedback.textContent = 'Request failed';
+                  roleFeedback.style.color = '#b91c1c';
+                  roleSel.value = prevRole;
+                } finally {
+                  roleBtn.textContent = originalBtnText;
+                  if (!isSelf) roleSel.disabled = false;
+                  if (!isSelf) syncRoleButtonState();
+                }
+              });
+              roleWrap.appendChild(roleLbl);
+              roleWrap.appendChild(roleSel);
+              roleWrap.appendChild(roleBtn);
+              roleCol.appendChild(roleWrap);
+              roleCol.appendChild(roleFeedback);
+              const pinCol = document.createElement('div');
+              pinCol.className = 'settings-user-row-role-col';
+              const pinRow = document.createElement('div');
+              pinRow.style.display = 'flex';
+              pinRow.style.flexWrap = 'wrap';
+              pinRow.style.gap = '6px';
+              pinRow.style.alignItems = 'center';
               const pinIn = document.createElement('input');
               pinIn.type = 'password';
               pinIn.placeholder = 'new PIN';
@@ -2087,54 +2615,122 @@ app.get('/', (req, res) => {
               const btn = document.createElement('button');
               btn.type = 'button';
               btn.textContent = 'Update PIN';
+              const pinFeedback = document.createElement('div');
+              pinFeedback.className = 'settings-user-row-role-feedback';
+              pinFeedback.setAttribute('aria-live', 'polite');
+              let pinSaving = false;
+              function syncPinButton() {
+                if (pinSaving) return;
+                btn.disabled = pinIn.value.trim() === '';
+              }
+              syncPinButton();
+              pinIn.addEventListener('input', () => {
+                pinFeedback.textContent = '';
+                syncPinButton();
+              });
               btn.addEventListener('click', async () => {
+                if (pinSaving) return;
                 const pin = pinIn.value.trim();
                 if (!pin) {
-                  if (msgEl) msgEl.textContent = 'Enter a PIN.';
+                  pinFeedback.textContent = 'Enter a PIN.';
+                  pinFeedback.style.color = 'var(--text-soft)';
                   return;
                 }
-                const rr = await fetch('/settings/household/users/' + u.id + '/pin', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ pin }),
-                });
-                const errBody = await rr.json().catch(() => ({}));
-                if (msgEl) {
-                  msgEl.textContent = rr.ok ? ('PIN updated for ' + u.displayName) : (errBody.error || 'Failed');
+                pinSaving = true;
+                btn.disabled = true;
+                pinIn.disabled = true;
+                btn.textContent = 'Saving...';
+                pinFeedback.textContent = '';
+                try {
+                  const rr = await fetch('/settings/household/users/' + u.id + '/pin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pin }),
+                  });
+                  const errBody = await rr.json().catch(() => ({}));
+                  if (rr.ok) {
+                    pinIn.value = '';
+                    pinFeedback.textContent = 'PIN updated';
+                    pinFeedback.style.color = 'var(--accent-strong)';
+                    row.classList.add('settings-user-row-role-flash');
+                    setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
+                  } else {
+                    pinFeedback.textContent = errBody.error || 'Failed to update PIN';
+                    pinFeedback.style.color = '#b91c1c';
+                  }
+                } catch (e) {
+                  pinFeedback.textContent = 'Request failed';
+                  pinFeedback.style.color = '#b91c1c';
+                } finally {
+                  pinSaving = false;
+                  pinIn.disabled = false;
+                  btn.textContent = 'Update PIN';
+                  syncPinButton();
                 }
-                if (rr.ok) pinIn.value = '';
               });
+              pinRow.appendChild(pinIn);
+              pinRow.appendChild(btn);
+              pinCol.appendChild(pinRow);
+              pinCol.appendChild(pinFeedback);
               row.appendChild(label);
-              row.appendChild(pinIn);
-              row.appendChild(btn);
+              row.appendChild(roleCol);
+              row.appendChild(pinCol);
+              const complCol = document.createElement('div');
+              complCol.className = 'settings-user-row-role-col';
+              complCol.style.marginLeft = '8px';
               const complWrap = document.createElement('label');
               complWrap.style.display = 'flex';
               complWrap.style.alignItems = 'center';
               complWrap.style.gap = '6px';
-              complWrap.style.marginLeft = '8px';
               complWrap.style.fontSize = '13px';
               const complChk = document.createElement('input');
               complChk.type = 'checkbox';
               complChk.checked = u.complimentsEnabled !== false;
+              const complFeedback = document.createElement('div');
+              complFeedback.className = 'settings-user-row-role-feedback';
+              complFeedback.setAttribute('aria-live', 'polite');
+              let complimentsSaving = false;
               complChk.addEventListener('change', async () => {
-                const rr = await fetch('/settings/household/users/' + u.id + '/compliments', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ complimentsEnabled: complChk.checked }),
-                });
-                const errBody = await rr.json().catch(() => ({}));
-                if (msgEl) {
-                  msgEl.textContent = rr.ok
-                    ? ('Compliments ' + (complChk.checked ? 'on' : 'off') + ' for ' + u.displayName)
-                    : (errBody.error || 'Failed to update compliments');
+                if (complimentsSaving) return;
+                const desired = complChk.checked;
+                complimentsSaving = true;
+                complChk.disabled = true;
+                complFeedback.textContent = '';
+                try {
+                  const rr = await fetch('/settings/household/users/' + u.id + '/compliments', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ complimentsEnabled: desired }),
+                  });
+                  const errBody = await rr.json().catch(() => ({}));
+                  if (rr.ok) {
+                    complFeedback.textContent = desired ? 'Compliments enabled' : 'Compliments disabled';
+                    complFeedback.style.color = 'var(--accent-strong)';
+                    row.classList.add('settings-user-row-role-flash');
+                    setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
+                  } else {
+                    complChk.checked = !desired;
+                    complFeedback.textContent = errBody.error || 'Failed to update compliments';
+                    complFeedback.style.color = '#b91c1c';
+                  }
+                } catch (e) {
+                  complChk.checked = !desired;
+                  complFeedback.textContent = 'Request failed';
+                  complFeedback.style.color = '#b91c1c';
+                } finally {
+                  complimentsSaving = false;
+                  complChk.disabled = false;
                 }
-                if (!rr.ok) complChk.checked = !complChk.checked;
               });
               const complLbl = document.createElement('span');
               complLbl.textContent = 'Compliments';
               complWrap.appendChild(complChk);
               complWrap.appendChild(complLbl);
-              row.appendChild(complWrap);
+              complCol.appendChild(complWrap);
+              complCol.appendChild(complFeedback);
+              row.appendChild(complCol);
+              const colorCol = document.createElement('div');
+              colorCol.className = 'settings-user-row-role-col';
               const colorWrap = document.createElement('div');
               colorWrap.style.display = 'flex';
               colorWrap.style.alignItems = 'center';
@@ -2154,33 +2750,56 @@ app.get('/', (req, res) => {
               });
               colorSel.value = u.chatColor || 'blue';
               let prevChatColor = colorSel.value;
+              const colorFeedback = document.createElement('div');
+              colorFeedback.className = 'settings-user-row-role-feedback';
+              colorFeedback.setAttribute('aria-live', 'polite');
+              let chatColorSaving = false;
               colorSel.addEventListener('change', async () => {
+                if (chatColorSaving) return;
                 const attempted = colorSel.value;
-                const rr = await fetch('/settings/household/users/' + u.id + '/chat-color', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ chatColor: attempted }),
-                });
-                const errBody = await rr.json().catch(() => ({}));
-                if (msgEl) {
-                  msgEl.textContent = rr.ok
-                    ? ('Chat color updated for ' + u.displayName)
-                    : (errBody.error || 'Failed to update chat color');
-                }
-                if (rr.ok) {
-                  chatColorByName[u.displayName] = attempted;
-                  prevChatColor = attempted;
-                  if (currentChatId) await loadHistory();
-                } else {
+                chatColorSaving = true;
+                colorSel.disabled = true;
+                colorFeedback.textContent = 'Saving...';
+                colorFeedback.style.color = 'var(--text-soft)';
+                try {
+                  const rr = await fetch('/settings/household/users/' + u.id + '/chat-color', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chatColor: attempted }),
+                  });
+                  const errBody = await rr.json().catch(() => ({}));
+                  if (rr.ok) {
+                    chatColorByName[u.displayName] = attempted;
+                    prevChatColor = attempted;
+                    colorSel.value = attempted;
+                    colorFeedback.textContent = 'Chat color updated';
+                    colorFeedback.style.color = 'var(--accent-strong)';
+                    row.classList.add('settings-user-row-role-flash');
+                    setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
+                    if (currentChatId) await loadHistory();
+                  } else {
+                    colorSel.value = prevChatColor;
+                    colorFeedback.textContent = errBody.error || 'Failed to update chat color';
+                    colorFeedback.style.color = '#b91c1c';
+                  }
+                } catch (e) {
                   colorSel.value = prevChatColor;
+                  colorFeedback.textContent = 'Request failed';
+                  colorFeedback.style.color = '#b91c1c';
+                } finally {
+                  chatColorSaving = false;
+                  colorSel.disabled = false;
                 }
               });
               colorWrap.appendChild(colorLbl);
               colorWrap.appendChild(colorSel);
-              row.appendChild(colorWrap);
+              colorCol.appendChild(colorWrap);
+              colorCol.appendChild(colorFeedback);
+              row.appendChild(colorCol);
               listEl.appendChild(row);
             }
             if (msgEl) msgEl.textContent = '';
+            await loadHouseholdMemoriesEditor();
           } catch (e) {
             if (msgEl) msgEl.textContent = 'Load failed.';
           }
@@ -2198,6 +2817,7 @@ app.get('/', (req, res) => {
             await loadGlobalAdminView();
           }
           showSettingsSubView(currentSettingsSubView);
+          if (lastMePayload) applyGodModeFromMe(lastMePayload);
         }
 
         function loadGlobalAdminView() {
@@ -2300,10 +2920,12 @@ app.get('/', (req, res) => {
               pinIn.autocomplete = 'new-password';
               pinIn.style.maxWidth = '120px';
               pinIn.style.padding = '4px 6px';
+              pinIn.disabled = godModeReadOnly;
               const btn = document.createElement('button');
               btn.type = 'button';
               btn.textContent = 'Set PIN';
               btn.style.marginLeft = '6px';
+              btn.disabled = godModeReadOnly;
               btn.addEventListener('click', async () => {
                 const pin = pinIn.value.trim();
                 if (!pin) {
@@ -2328,9 +2950,40 @@ app.get('/', (req, res) => {
               });
               td3.appendChild(pinIn);
               td3.appendChild(btn);
+              const td4 = document.createElement('td');
+              td4.style.padding = '4px';
+              if (!godModeReadOnly) {
+                const viewAsBtn = document.createElement('button');
+                viewAsBtn.type = 'button';
+                viewAsBtn.textContent = 'View as';
+                viewAsBtn.style.padding = '4px 8px';
+                viewAsBtn.addEventListener('click', async () => {
+                  try {
+                    const rr = await fetch('/admin/impersonate', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ householdId: hh.id, userId: u.id }),
+                    });
+                    const errBody = await rr.json().catch(() => ({}));
+                    if (!rr.ok) {
+                      if (pinGlobalMsg) {
+                        pinGlobalMsg.textContent = errBody.error || 'Could not start God Mode.';
+                      }
+                      return;
+                    }
+                    location.reload();
+                  } catch (e) {
+                    if (pinGlobalMsg) pinGlobalMsg.textContent = 'Request failed.';
+                  }
+                });
+                td4.appendChild(viewAsBtn);
+              } else {
+                td4.textContent = '—';
+              }
               tr.appendChild(td1);
               tr.appendChild(td2);
               tr.appendChild(td3);
+              tr.appendChild(td4);
               tbody.appendChild(tr);
             }
           }
@@ -2450,6 +3103,7 @@ app.get('/', (req, res) => {
         }
 
         function sendTyping(isTyping) {
+          if (godModeReadOnly) return;
           if (!typingWs || typingWs.readyState !== 1 || !currentChatId) return;
           if (currentHouseholdId == null || !Number.isFinite(Number(currentHouseholdId))) return;
           typingWs.send(
@@ -2470,6 +3124,7 @@ app.get('/', (req, res) => {
         });
 
         promptInput.addEventListener('input', () => {
+          if (godModeReadOnly) return;
           if (!currentChatId) return;
           sendTyping(true);
           if (typingStopTimeout) clearTimeout(typingStopTimeout);
@@ -2566,6 +3221,7 @@ app.get('/', (req, res) => {
               const checkbox = document.createElement('input');
               checkbox.type = 'checkbox';
               checkbox.checked = !!item.checked;
+              checkbox.disabled = godModeReadOnly;
               checkbox.addEventListener('change', async () => {
                 li.classList.toggle('g-item-checked', checkbox.checked);
                 try {
@@ -2597,6 +3253,7 @@ app.get('/', (req, res) => {
               const del = document.createElement('button');
               del.className = 'g-delete';
               del.textContent = '×';
+              del.disabled = godModeReadOnly;
               del.addEventListener('click', async () => {
                 const removedItem = { ...item };
                 li.remove();
@@ -2694,7 +3351,7 @@ app.get('/', (req, res) => {
 
             li.appendChild(contentDiv);
 
-            if (isCurrentUserOwner) {
+            if (isCurrentUserOwner && !godModeReadOnly) {
               const delBtn = document.createElement('button');
               delBtn.textContent = '×';
               delBtn.className = 'g-delete';
@@ -2743,6 +3400,12 @@ app.get('/', (req, res) => {
           const data = await response.json();
           chatsCache = data.chats || [];
           if (chatsCache.length === 0) {
+            if (godModeReadOnly) {
+              currentChatId = null;
+              chat.innerHTML = '';
+              renderChats();
+              return;
+            }
             const createResp = await fetch('/chats', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -2793,6 +3456,8 @@ app.get('/', (req, res) => {
             currentHouseholdId = data.householdId != null ? Number(data.householdId) : null;
             currentUserId = data.userId != null ? Number(data.userId) : null;
             isCurrentUserOwner = !!data.isOwner;
+            applyGodModeFromMe(data);
+            syncMemoriesWrapVisibility();
             chatColorByName =
               data.chatColors && typeof data.chatColors === 'object' && !Array.isArray(data.chatColors)
                 ? data.chatColors
@@ -2983,6 +3648,51 @@ app.get('/', (req, res) => {
             } catch (e) {
               if (msgEl) msgEl.textContent = 'Request failed.';
             }
+          });
+        }
+
+        const memSaveBtn = document.getElementById('my-settings-memory-save');
+        const memCancelBtn = document.getElementById('my-settings-memory-cancel-edit');
+        if (memSaveBtn) {
+          memSaveBtn.addEventListener('click', async () => {
+            const keyIn = document.getElementById('my-settings-memory-key');
+            const valIn = document.getElementById('my-settings-memory-value');
+            const memMsg = document.getElementById('my-settings-memories-msg');
+            const key =
+              editingMemoryKey != null ? editingMemoryKey : keyIn && String(keyIn.value).trim();
+            const value = valIn && String(valIn.value).trim();
+            if (!key) {
+              if (memMsg) memMsg.textContent = 'Key is required.';
+              return;
+            }
+            if (!value) {
+              if (memMsg) memMsg.textContent = 'Value is required.';
+              return;
+            }
+            try {
+              const r = await fetch('/settings/household/memories', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key, value }),
+              });
+              const errBody = await r.json().catch(() => ({}));
+              if (memMsg) {
+                memMsg.textContent = r.ok ? 'Saved.' : errBody.error || 'Save failed';
+              }
+              if (r.ok) {
+                resetMemoryEditForm();
+                await loadHouseholdMemoriesEditor();
+              }
+            } catch (e) {
+              if (memMsg) memMsg.textContent = 'Request failed.';
+            }
+          });
+        }
+        if (memCancelBtn) {
+          memCancelBtn.addEventListener('click', () => {
+            const memMsg = document.getElementById('my-settings-memories-msg');
+            resetMemoryEditForm();
+            if (memMsg) memMsg.textContent = '';
           });
         }
 
@@ -3180,11 +3890,16 @@ app.get('/', (req, res) => {
             currentHouseholdId = data.householdId != null ? Number(data.householdId) : null;
             currentUserId = data.userId != null ? Number(data.userId) : null;
             isCurrentUserOwner = !!data.isOwner;
+            syncMemoriesWrapVisibility();
             showApp(resolvedName);
             await loadChatsAndEnsureOne();
             await loadHistory();
             connectTypingWs();
             refreshOwnerSettingsTab();
+            try {
+              const meR = await fetch('/me');
+              if (meR.ok) applyGodModeFromMe(await meR.json());
+            } catch (e) {}
           } catch (error) {
             loginStatus.textContent = 'Login failed.';
           }
@@ -3231,7 +3946,19 @@ app.get('/', (req, res) => {
 
         checkAuth();
 
+        const godModeExitBtn = document.getElementById('god-mode-exit-btn');
+        if (godModeExitBtn) {
+          godModeExitBtn.addEventListener('click', async () => {
+            try {
+              const r = await fetch('/admin/impersonate/exit', { method: 'POST' });
+              if (!r.ok) return;
+              location.reload();
+            } catch (e) {}
+          });
+        }
+
         sendButton.addEventListener('click', async () => {
+          if (godModeReadOnly) return;
           const prompt = promptInput.value.trim();
 
           if (!prompt) return;
@@ -3358,6 +4085,9 @@ app.get('/', (req, res) => {
           currentHouseholdId = null;
           currentUserId = null;
           isCurrentUserOwner = false;
+          lastMePayload = null;
+          applyGodModeFromMe({ isImpersonating: false, impersonationReadOnly: false });
+          syncMemoriesWrapVisibility();
           chatColorByName = {};
           showLogin();
           chat.innerHTML = '';
@@ -3430,12 +4160,9 @@ app.post('/login', async (req, res) => {
       householdId: user.household_id,
       userId: user.id,
       displayName: user.display_name,
+      sessionVersion: user.session_version != null ? Math.trunc(Number(user.session_version)) : 0,
     });
-    const cookieParts = [`${COOKIE_NAME}=${encodeURIComponent(token)}`, 'HttpOnly', 'Path=/', 'SameSite=Lax'];
-    if (process.env.NODE_ENV === 'production') {
-      cookieParts.push('Secure');
-    }
-    res.setHeader('Set-Cookie', cookieParts.join('; '));
+    setAuthCookie(res, token);
     return res.json({
       householdId: user.household_id,
       householdKey: household.household_key,
@@ -3457,12 +4184,31 @@ app.get('/me', requireHousehold, requireAuth, async (req, res) => {
       chatColors[u.display_name] = normalizeChatColor(u.chat_color);
     }
     const me = await getHouseholdUserById(req.householdId, req.userId);
+    const h = await getHouseholdById(req.householdId);
+    const householdName = h ? h.name : '';
+    const globalAdminCheckId =
+      req.isImpersonating && req.adminUserId != null ? req.adminUserId : req.userId;
+    const isGlobalAdmin = await isGlobalAdminUser(globalAdminCheckId);
     return res.json({
       name: req.user,
       chatColors,
       householdId: req.householdId,
       userId: req.userId,
       isOwner: !!(me && me.role === 'owner'),
+      householdName,
+      isGlobalAdmin,
+      isImpersonating: !!req.isImpersonating,
+      impersonationReadOnly: !!req.impersonationReadOnly,
+      ...(req.isImpersonating
+        ? {
+            adminDisplayName: req.adminDisplayName,
+            realUserId: req.adminUserId,
+            realHouseholdId: req.adminHouseholdId,
+          }
+        : {
+            realUserId: req.userId,
+            realHouseholdId: req.householdId,
+          }),
     });
   } catch (e) {
     console.error(e);
@@ -3511,7 +4257,75 @@ app.get('/settings/household', requireHousehold, requireAuth, requireOwner, asyn
   }
 });
 
-app.post('/settings/household/users/:id/chat-color', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.get('/settings/household/memories', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+  try {
+    const rows = (await getMemories(req.householdId)).filter((r) => r.key !== 'assistant_name');
+    res.json({
+      memories: rows.map((r) => ({ key: r.key, value: r.value })),
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load memories' });
+  }
+});
+
+app.post(
+  '/settings/household/memories',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
+  try {
+    const key = req.body.key != null ? String(req.body.key).trim() : '';
+    const value = req.body.value != null ? String(req.body.value).trim() : '';
+    if (!key) {
+      return res.status(400).json({ error: 'Key is required' });
+    }
+    if (!value) {
+      return res.status(400).json({ error: 'Value is required' });
+    }
+    if (key === 'assistant_name') {
+      return res.status(403).json({ error: 'assistant_name is a system memory and cannot be modified' });
+    }
+    await upsertMemory(req.householdId, key, value);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Failed to save memory' });
+  }
+});
+
+app.delete(
+  '/settings/household/memories/:key',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
+  try {
+    const key = String(req.params.key ?? '').trim();
+    if (!key) {
+      return res.status(400).json({ error: 'Invalid key' });
+    }
+    if (key === 'assistant_name') {
+      return res.status(403).json({ error: 'assistant_name is a system memory and cannot be modified' });
+    }
+    await deleteMemory(req.householdId, key);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Failed to delete memory' });
+  }
+});
+
+app.post(
+  '/settings/household/users/:id/chat-color',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
   try {
     const userId = Number(req.params.id);
     if (!Number.isFinite(userId)) {
@@ -3541,7 +4355,13 @@ app.post('/settings/household/users/:id/chat-color', requireHousehold, requireAu
   }
 });
 
-app.post('/settings/household/users/:id/compliments', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.post(
+  '/settings/household/users/:id/compliments',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
   try {
     const userId = Number(req.params.id);
     if (!Number.isFinite(userId)) {
@@ -3565,7 +4385,13 @@ app.post('/settings/household/users/:id/compliments', requireHousehold, requireA
   }
 });
 
-app.post('/settings/household/users', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.post(
+  '/settings/household/users',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
   try {
     const displayName = req.body.displayName?.trim();
     const role = req.body.role?.trim();
@@ -3597,7 +4423,13 @@ app.post('/settings/household/users', requireHousehold, requireAuth, requireOwne
   }
 });
 
-app.post('/settings/household/users/:id/pin', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.post(
+  '/settings/household/users/:id/pin',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
   try {
     const userId = Number(req.params.id);
     if (!Number.isFinite(userId)) {
@@ -3622,13 +4454,57 @@ app.post('/settings/household/users/:id/pin', requireHousehold, requireAuth, req
   }
 });
 
+app.post(
+  '/settings/household/users/:userId/role',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
+  try {
+    const targetUserId = Number(req.params.userId);
+    if (!Number.isFinite(targetUserId)) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    if (targetUserId === req.userId) {
+      return res.status(400).json({ error: 'Cannot change your own role' });
+    }
+    const role = req.body.role;
+    if (role !== 'owner' && role !== 'member') {
+      return res.status(400).json({ error: 'role must be owner or member' });
+    }
+    const target = await getHouseholdUserById(req.householdId, targetUserId);
+    if (!target) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    if (target.role === 'owner' && role === 'member') {
+      const householdUsers = await listHouseholdUsers(req.householdId);
+      const ownerCount = householdUsers.filter((u) => u.role === 'owner').length;
+      if (ownerCount <= 1) {
+        return res.status(400).json({ error: 'Cannot remove the last owner from the household' });
+      }
+    }
+    await updateHouseholdUserRole(req.householdId, targetUserId, role);
+    return res.json({ ok: true, userId: targetUserId, role });
+  } catch (e) {
+    if (e && e.message === 'User not found') {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    if (e && e.message === 'invalid_role') {
+      return res.status(400).json({ error: 'role must be owner or member' });
+    }
+    console.error(e);
+    return res.status(500).json({ error: e.message || 'Failed to update role' });
+  }
+});
+
 const ANTHROPIC_MODES = new Set(['shared', 'household']);
 
 app.get('/settings/anthropic', requireHousehold, requireAuth, async (req, res) => {
   try {
     const targetId = await resolveAnthropicTargetHouseholdId(req, res, req.query.householdId);
     if (targetId == null) return;
-    const globalAdmin = await isGlobalAdminUser(req.userId);
+    const globalAdmin = await isRequestGlobalAdmin(req);
     const sessionUser = await getHouseholdUserById(req.householdId, req.userId);
     const isOwnerSession = sessionUser && sessionUser.role === 'owner';
     if (targetId === req.householdId) {
@@ -3683,7 +4559,13 @@ app.get('/settings/anthropic', requireHousehold, requireAuth, async (req, res) =
   }
 });
 
-app.post('/settings/anthropic/mode', requireHousehold, requireAuth, requireGlobalAdmin, async (req, res) => {
+app.post(
+  '/settings/anthropic/mode',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireGlobalAdmin,
+  async (req, res) => {
   try {
     const householdId = Number(req.body.householdId);
     if (!Number.isFinite(householdId)) {
@@ -3703,7 +4585,12 @@ app.post('/settings/anthropic/mode', requireHousehold, requireAuth, requireGloba
   }
 });
 
-app.post('/settings/anthropic/key', requireHousehold, requireAuth, async (req, res) => {
+app.post(
+  '/settings/anthropic/key',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  async (req, res) => {
   try {
     const u = await getHouseholdUserById(req.householdId, req.userId);
     if (!u || u.role !== 'owner') {
@@ -3792,7 +4679,7 @@ app.get('/chats', requireHousehold, requireAuth, async (req, res) => {
   }
 });
 
-app.post('/chats', requireHousehold, requireAuth, async (req, res) => {
+app.post('/chats', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
   try {
     const owner = req.user;
     const title = req.body.title?.trim() || 'New chat';
@@ -3804,7 +4691,13 @@ app.post('/chats', requireHousehold, requireAuth, async (req, res) => {
   }
 });
 
-app.delete('/chats/:id', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.delete(
+  '/chats/:id',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
   try {
     const chatId = Number(req.params.id);
     if (!Number.isFinite(chatId)) {
@@ -3920,7 +4813,7 @@ app.get('/groceries', requireHousehold, requireAuth, async (req, res) => {
   }
 });
 
-app.post('/groceries', requireHousehold, requireAuth, async (req, res) => {
+app.post('/groceries', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
   try {
     const normalized = normalizeGroceryItemsForPost(req.body.items);
     if (normalized.length === 0) {
@@ -3934,7 +4827,7 @@ app.post('/groceries', requireHousehold, requireAuth, async (req, res) => {
   }
 });
 
-app.patch('/groceries/:id', requireHousehold, requireAuth, async (req, res) => {
+app.patch('/groceries/:id', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const { checked } = req.body;
@@ -3949,7 +4842,7 @@ app.patch('/groceries/:id', requireHousehold, requireAuth, async (req, res) => {
   }
 });
 
-app.delete('/groceries/:id', requireHousehold, requireAuth, async (req, res) => {
+app.delete('/groceries/:id', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
@@ -3963,7 +4856,13 @@ app.delete('/groceries/:id', requireHousehold, requireAuth, async (req, res) => 
   }
 });
 
-app.post('/groceries/clear', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.post(
+  '/groceries/clear',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
   try {
     await clearGroceryItems(req.householdId);
     res.json({ ok: true });
@@ -3973,7 +4872,13 @@ app.post('/groceries/clear', requireHousehold, requireAuth, requireOwner, async 
   }
 });
 
-app.post('/chat', requireHousehold, requireAuth, rateLimitChatMiddleware, async (req, res) => {
+app.post(
+  '/chat',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  rateLimitChatMiddleware,
+  async (req, res) => {
   try {
     const prompt = req.body.prompt?.trim();
     const name = req.user || req.body.name?.trim() || 'Rob';
@@ -3982,7 +4887,8 @@ app.post('/chat', requireHousehold, requireAuth, rateLimitChatMiddleware, async 
       return res.status(400).json({ reply: 'chatId is required.' });
     }
 
-    if (/^!love(?:\s|$)/.test(prompt)) {
+    // Private commands (!love, !help, !memories): isPrivateChatCommand — HTTP reply to sender only; no addMessage / broadcastToChat.
+    if (isPrivateChatCommand(prompt) && /^!love(?:\s|$)/.test(prompt)) {
       const loveRest = prompt.match(/^!love\s*(.*)$/);
       const targetName = loveRest && loveRest[1] != null ? String(loveRest[1]).trim() : '';
       if (!targetName) {
@@ -4007,7 +4913,7 @@ app.post('/chat', requireHousehold, requireAuth, rateLimitChatMiddleware, async 
       return res.end(reply);
     }
 
-    if (prompt === '!help') {
+    if (prompt === '!help' && isPrivateChatCommand(prompt)) {
       const reply = '📋 KitchenBot commands\n\n' + getHelpReply();
       await incrementUserMessageCountForSender(req);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -4067,11 +4973,11 @@ app.post('/chat', requireHousehold, requireAuth, rateLimitChatMiddleware, async 
 
     const memoriesCommand = isMemoriesCommand(prompt);
 
-    const memoryCommand = parseMemoryCommand(prompt);
+    const memoryParsed = parseMemoryCommand(prompt);
     const groceryListCommand = isGroceryListCommand(prompt);
 
-    if (memoriesCommand) {
-      const memories = await getMemories(req.householdId);
+    if (memoriesCommand && isPrivateChatCommand(prompt)) {
+      const memories = (await getMemories(req.householdId)).filter((m) => m.key !== 'assistant_name');
 
       const reply = memories.length
         ? 'Current memories:\n' + memories.map(memory => `- ${memory.key}: ${memory.value}`).join('\n')
@@ -4081,18 +4987,45 @@ app.post('/chat', requireHousehold, requireAuth, rateLimitChatMiddleware, async 
       return res.end(reply);
     }
 
-    if (memoryCommand) {
+    // Shared command !remember: isSharedChatCommand (memoryParsed); persist + broadcast.
+    if (memoryParsed && isSharedChatCommand(prompt, memoryParsed)) {
       await addMessage(chatId, req.householdId, 'user', name, prompt);
-      await upsertMemory(req.householdId, memoryCommand.key, memoryCommand.value);
-
-      const reply = `Got it. I saved memory \`${memoryCommand.key}\` = "${memoryCommand.value}".`;
-      await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-
+      let reply;
+      if (memoryParsed.error) {
+        reply = memoryParsed.error;
+        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+      } else {
+        const newValue = memoryParsed.value;
+        const rows = await getMemories(req.householdId);
+        const existing = rows.find((r) => r.key === memoryParsed.key);
+        if (!existing) {
+          await upsertMemory(req.householdId, memoryParsed.key, newValue);
+          reply = `Got it. I saved memory \`${memoryParsed.key}\` = "${newValue}".`;
+        } else {
+          const existingValue = String(existing.value ?? '');
+          if (existingValue.includes(newValue)) {
+            reply = `No change — \`${memoryParsed.key}\` already includes that.`;
+          } else {
+            const storedValue = existingValue ? `${existingValue}; ${newValue}` : newValue;
+            await upsertMemory(req.householdId, memoryParsed.key, storedValue);
+            reply = `Got it. I saved memory \`${memoryParsed.key}\` = "${storedValue}".`;
+          }
+        }
+        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+      }
+      if (typeof broadcastToChat === 'function') {
+        broadcastToChat(chatId, {
+          type: 'chat_updated',
+          householdId: req.householdId,
+          chatId,
+          user: name,
+        });
+      }
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
     }
 
-    if (groceryListCommand) {
+    if (groceryListCommand && isSharedChatCommand(prompt, memoryParsed)) {
       await incrementUserMessageCountForSender(req);
 
       const conversation = await getMessages(chatId, req.householdId);
@@ -4177,7 +5110,16 @@ Where:
           ? 'I updated the grocery list. Head over to the Grocery List tab to check it.'
           : 'I was not able to build a grocery list from our conversation.';
 
+      await addMessage(chatId, req.householdId, 'user', name, prompt);
       await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+      if (typeof broadcastToChat === 'function') {
+        broadcastToChat(chatId, {
+          type: 'chat_updated',
+          householdId: req.householdId,
+          chatId,
+          user: name,
+        });
+      }
 
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
@@ -4481,6 +5423,7 @@ async function connectRedis() {
 
 (async () => {
   await ensureHouseholdUserChatColorColumnAsync();
+  await ensureHouseholdUserSessionVersionColumnAsync();
   await connectRedis();
   try {
     const n = await deleteLegacySeedMemories();
