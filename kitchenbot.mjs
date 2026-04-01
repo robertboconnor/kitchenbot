@@ -2314,6 +2314,35 @@ app.get('/', (req, res) => {
         let lastDeletedTimeout = null;
         let lastMePayload = null;
 
+        /** @returns {'God mode' | 'Demo mode' | 'Read-only mode'} */
+        function impersonationReadOnlyModeLabel() {
+          if (!lastMePayload || !lastMePayload.isImpersonating) return 'Read-only mode';
+          return lastMePayload.isGlobalAdmin === true ? 'God mode' : 'Demo mode';
+        }
+
+        function impersonationReadOnlyNoticeText() {
+          const mode = impersonationReadOnlyModeLabel();
+          if (mode === 'Read-only mode') {
+            return 'Read-only mode. Exit to make changes.';
+          }
+          if (mode === 'God mode') {
+            return 'God Mode is read-only. Exit God Mode to make changes.';
+          }
+          return 'Demo mode is read-only. Exit Demo Mode to make changes.';
+        }
+
+        /** Maps server 403 God Mode copy to Demo Mode when the session is read-only Demo impersonation. */
+        function mapServerReadOnlyErrorMessage(rawError) {
+          const s = rawError == null ? '' : String(rawError);
+          if (!godModeReadOnly || !lastMePayload || !lastMePayload.isImpersonating) {
+            return s || 'Request failed.';
+          }
+          if (/God Mode is read-only|Exit God Mode to make changes/i.test(s)) {
+            return impersonationReadOnlyNoticeText();
+          }
+          return s || 'Request failed.';
+        }
+
         function applyGodModeFromMe(data) {
           if (data && typeof data.name === 'string' && data.householdId != null) {
             lastMePayload = data;
@@ -2641,7 +2670,9 @@ app.get('/', (req, res) => {
                 });
                 const errBody = await dr.json().catch(() => ({}));
                 if (memMsg) {
-                  memMsg.textContent = dr.ok ? 'Memory deleted.' : errBody.error || 'Delete failed';
+                  memMsg.textContent = dr.ok
+                    ? 'Memory deleted.'
+                    : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
                 }
                 if (dr.ok) {
                   resetMemoryEditForm();
@@ -2754,7 +2785,8 @@ app.get('/', (req, res) => {
                     row.classList.add('settings-user-row-role-flash');
                     setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
                   } else {
-                    roleFeedback.textContent = errBody.error || 'Failed to update role';
+                    roleFeedback.textContent =
+                      mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update role';
                     roleFeedback.style.color = '#b91c1c';
                     roleSel.value = prevRole;
                   }
@@ -2827,7 +2859,8 @@ app.get('/', (req, res) => {
                     row.classList.add('settings-user-row-role-flash');
                     setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
                   } else {
-                    pinFeedback.textContent = errBody.error || 'Failed to update PIN';
+                    pinFeedback.textContent =
+                      mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update PIN';
                     pinFeedback.style.color = '#b91c1c';
                   }
                 } catch (e) {
@@ -2882,7 +2915,8 @@ app.get('/', (req, res) => {
                     setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
                   } else {
                     complChk.checked = !desired;
-                    complFeedback.textContent = errBody.error || 'Failed to update compliments';
+                    complFeedback.textContent =
+                      mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update compliments';
                     complFeedback.style.color = '#b91c1c';
                   }
                 } catch (e) {
@@ -2951,7 +2985,8 @@ app.get('/', (req, res) => {
                     if (currentChatId) await loadHistory();
                   } else {
                     colorSel.value = prevChatColor;
-                    colorFeedback.textContent = errBody.error || 'Failed to update chat color';
+                    colorFeedback.textContent =
+                      mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update chat color';
                     colorFeedback.style.color = '#b91c1c';
                   }
                 } catch (e) {
@@ -3116,7 +3151,7 @@ app.get('/', (req, res) => {
                 if (pinGlobalMsg) {
                   pinGlobalMsg.textContent = rr.ok
                     ? 'PIN updated for #' + hh.id + ' — ' + hh.name + ' / user "' + u.displayName + '" (id ' + u.id + ').'
-                    : errBody.error || 'Failed to update PIN.';
+                    : mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update PIN.';
                 }
                 if (rr.ok) pinIn.value = '';
               });
@@ -3739,7 +3774,7 @@ app.get('/', (req, res) => {
               });
               const errBody = await r.json().catch(() => ({}));
               if (!r.ok) {
-                if (msgEl) msgEl.textContent = errBody.error || 'Save failed';
+                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
                 return;
               }
               if (msgEl) msgEl.textContent = 'Mode saved.';
@@ -3769,7 +3804,7 @@ app.get('/', (req, res) => {
               });
               const errBody = await r.json().catch(() => ({}));
               if (!r.ok) {
-                if (msgEl) msgEl.textContent = errBody.error || 'Save failed';
+                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
                 return;
               }
               if (msgEl) msgEl.textContent = 'Saved.';
@@ -3798,7 +3833,7 @@ app.get('/', (req, res) => {
               });
               const errBody = await r.json().catch(() => ({}));
               if (!r.ok) {
-                if (msgEl) msgEl.textContent = errBody.error || 'Save failed';
+                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
                 return;
               }
               if (msgEl) msgEl.textContent = 'Key saved.';
@@ -3832,7 +3867,7 @@ app.get('/', (req, res) => {
               });
               const data = await r.json().catch(() => ({}));
               if (!r.ok) {
-                if (msgEl) msgEl.textContent = data.error || 'Failed';
+                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(data.error) || 'Failed';
                 return;
               }
               if (msgEl) {
@@ -3882,7 +3917,7 @@ app.get('/', (req, res) => {
               });
               const data = await r.json().catch(() => ({}));
               if (!r.ok) {
-                if (msgEl) msgEl.textContent = data.error || 'Failed';
+                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(data.error) || 'Failed';
                 return;
               }
               document.getElementById('settings-new-display').value = '';
@@ -3910,7 +3945,7 @@ app.get('/', (req, res) => {
               const r = await fetch('/demo/view', { method: 'POST' });
               const errBody = await r.json().catch(() => ({}));
               if (!r.ok) {
-                if (msgEl) msgEl.textContent = errBody.error || 'Could not open demo view.';
+                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Could not open demo view.';
                 return;
               }
               location.reload();
@@ -3946,7 +3981,7 @@ app.get('/', (req, res) => {
               });
               const errBody = await r.json().catch(() => ({}));
               if (memMsg) {
-                memMsg.textContent = r.ok ? 'Saved.' : errBody.error || 'Save failed';
+                memMsg.textContent = r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
               }
               if (r.ok) {
                 resetMemoryEditForm();
