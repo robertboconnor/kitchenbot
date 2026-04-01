@@ -37,6 +37,7 @@ import {
   getFirstHouseholdId,
   getHouseholdById,
   getHouseholdByKey,
+  setHouseholdWebSearchEnabled,
   listHouseholdUsers,
   getUserByHouseholdAndDisplayName,
   getHouseholdUserById,
@@ -49,6 +50,8 @@ import {
   verifyPin,
   getHouseholdMessageStats,
   getUserMessageCountsInHousehold,
+  getChatThreadContext,
+  upsertChatThreadContext,
 } from './db.mjs';
 import 'dotenv/config';
 import os from 'os';
@@ -120,19 +123,52 @@ async function getAnthropicClient(householdId) {
   if (!h) {
     throw new Error('Household not found.');
   }
+  const webSearchEnabled = Number(h.web_search_enabled) === 1;
   const mode = h.anthropic_key_mode || 'shared';
   if (mode === 'household') {
     const k = h.anthropic_api_key && String(h.anthropic_api_key).trim();
     if (!k) {
       throw new Error('This household does not have an Anthropic API key configured.');
     }
-    return new Anthropic({ apiKey: k });
+    return { client: new Anthropic({ apiKey: k }), webSearchEnabled };
   }
   const shared = process.env.ANTHROPIC_API_KEY && String(process.env.ANTHROPIC_API_KEY).trim();
   if (!shared) {
     throw new Error('Shared Anthropic API key is not configured on this server.');
   }
-  return new Anthropic({ apiKey: shared });
+  return { client: new Anthropic({ apiKey: shared }), webSearchEnabled };
+}
+
+/** Heuristic: attach Anthropic web search only when the user message likely needs live web context. */
+function shouldEnableWebSearchForPrompt(prompt) {
+  const s = String(prompt ?? '').trim();
+  if (!s) return false;
+
+  if (/https?:\/\/\S|www\.\S/i.test(s)) return true;
+
+  if (
+    /\b(?:current|latest|today|tonight|right now|this week|this year|live|breaking|as of|updated|recently|up to date|up-to-date|news|headlines)\b/i.test(
+      s
+    )
+  ) {
+    return true;
+  }
+
+  if (/\b(?:according to|per the|via)\s+[A-Z]/.test(s)) return true;
+
+  if (/\b(?:from|on|at)\s+(?:the\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/.test(s)) return true;
+
+  if (/\b(?:from|on)\s+(?:the\s+)?[A-Z][a-zA-Z]+(?:'s)?\s+(?:recipe|recipes|article|articles|guide|page|post)\b/.test(s)) {
+    return true;
+  }
+
+  if (
+    /\b[A-Z][a-z]+\s+[A-Z][a-z]+\b[\s\S]{0,240}\b(?:recipe|recipes|article|articles)\b/i.test(s)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 async function requireHousehold(req, res, next) {
@@ -1589,6 +1625,17 @@ app.get('/', (req, res) => {
           white-space: normal;
         }
 
+        .kb-thinking {
+          color: var(--text-soft);
+        }
+        .kb-thinking-anim {
+          animation: kb-thinking-pulse 1.35s ease-in-out infinite;
+        }
+        @keyframes kb-thinking-pulse {
+          0%, 100% { opacity: 0.5; }
+          50% { opacity: 1; }
+        }
+
         .message.assistant .md-wrap {
           white-space: normal;
         }
@@ -2138,6 +2185,18 @@ app.get('/', (req, res) => {
               <button type="button" id="admin-anthropic-mode-save" style="margin-top: 8px;">Save mode</button>
               <span id="admin-anthropic-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
             </div>
+            <h4 style="margin: 16px 0 8px; font-size: 15px;">Anthropic web search</h4>
+            <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px; max-width: 560px;">
+              For the <strong>selected</strong> household only: when enabled, KitchenBot may attach Anthropic&apos;s web search tool on messages that look like they need live web context (URLs, current/latest info, or references to a named external source). Ordinary recipe chat stays on regular requests without web search.
+            </p>
+            <label style="display: flex; align-items: flex-start; gap: 8px; max-width: 520px;">
+              <input type="checkbox" id="admin-web-search-enabled" style="margin-top: 3px;" />
+              <span>Enable web search for this household</span>
+            </label>
+            <div style="margin-top: 8px;">
+              <button type="button" id="admin-web-search-save">Save web search setting</button>
+              <span id="admin-web-search-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
+            </div>
             <h4 style="margin: 20px 0 8px; font-size: 15px;">Create household</h4>
             <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px;">Creates a new household with only the owner user. Share the household key and owner PIN separately.</p>
             <div style="display: flex; flex-direction: column; gap: 6px; max-width: 420px;">
@@ -2397,6 +2456,14 @@ app.get('/', (req, res) => {
                 }
                 if (msg.type === 'stream_delta' && msgChatId === currentChatId) {
                   if (msgHid != null && currentHouseholdId != null && msgHid !== Number(currentHouseholdId)) {
+                    return;
+                  }
+                  if (
+                    weAreStreamingThisChat &&
+                    msg.user &&
+                    currentUserName &&
+                    msg.user === currentUserName
+                  ) {
                     return;
                   }
                   if (!remoteStreamBodyEl) {
@@ -3122,11 +3189,24 @@ app.get('/', (req, res) => {
             } else {
               sharedRadio.checked = true;
             }
+            const webCb = document.getElementById('admin-web-search-enabled');
+            if (webCb) {
+              webCb.checked = !!d.household.webSearchEnabled;
+              webCb.disabled = godModeReadOnly;
+            }
+            const webSaveBtn = document.getElementById('admin-web-search-save');
+            if (webSaveBtn) webSaveBtn.disabled = godModeReadOnly;
             if (statEl) {
-              statEl.textContent = 'Anthropic: ' + (d.statusBrief || d.statusText || '');
+              statEl.textContent =
+                'Anthropic: ' +
+                (d.statusBrief || d.statusText || '') +
+                ' · Web search: ' +
+                (d.household.webSearchEnabled ? 'on' : 'off');
             }
             updateAdminAnthropicFormVisibility();
             if (msgEl) msgEl.textContent = '';
+            const webMsg = document.getElementById('admin-web-search-msg');
+            if (webMsg) webMsg.textContent = '';
           } catch (e) {}
         }
 
@@ -3163,7 +3243,8 @@ app.get('/', (req, res) => {
                   ' ' +
                   msgLabel +
                   ' · ' +
-                  hh.anthropicStatusLabel;
+                  hh.anthropicStatusLabel +
+                  (hh.webSearchEnabled ? ' · web search on' : '');
                 listEl.appendChild(row);
               }
             }
@@ -3669,6 +3750,36 @@ app.get('/', (req, res) => {
           });
         }
 
+        const adminWebSearchSave = document.getElementById('admin-web-search-save');
+        if (adminWebSearchSave) {
+          adminWebSearchSave.addEventListener('click', async () => {
+            const sel = document.getElementById('admin-anthropic-household-select');
+            const hid = sel && sel.value ? Number(sel.value) : NaN;
+            const msgEl = document.getElementById('admin-web-search-msg');
+            const cb = document.getElementById('admin-web-search-enabled');
+            if (!Number.isFinite(hid)) {
+              if (msgEl) msgEl.textContent = 'Select a household.';
+              return;
+            }
+            try {
+              const r = await fetch('/settings/anthropic/web-search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ householdId: hid, webSearchEnabled: !!(cb && cb.checked) }),
+              });
+              const errBody = await r.json().catch(() => ({}));
+              if (!r.ok) {
+                if (msgEl) msgEl.textContent = errBody.error || 'Save failed';
+                return;
+              }
+              if (msgEl) msgEl.textContent = 'Saved.';
+              await loadGlobalAdminView();
+            } catch (e) {
+              if (msgEl) msgEl.textContent = 'Request failed.';
+            }
+          });
+        }
+
         const settingsAnthropicOwnerKeySave = document.getElementById('settings-anthropic-owner-key-save');
         if (settingsAnthropicOwnerKeySave) {
           settingsAnthropicOwnerKeySave.addEventListener('click', async () => {
@@ -4145,8 +4256,8 @@ app.get('/', (req, res) => {
           thinkingAuthor.textContent = 'KitchenBot';
           thinkingDiv.appendChild(thinkingAuthor);
           const thinkingBody = document.createElement('div');
-          thinkingBody.className = 'message-body';
-          thinkingBody.textContent = 'Thinking...';
+          thinkingBody.className = 'message-body kb-thinking kb-thinking-anim';
+          thinkingBody.textContent = 'Thinking…';
           thinkingDiv.appendChild(thinkingBody);
           chat.appendChild(thinkingDiv);
           chat.scrollTop = chat.scrollHeight;
@@ -4162,6 +4273,7 @@ app.get('/', (req, res) => {
             if (!response.ok) {
               remoteStreamBodyEl = null;
               weAreStreamingThisChat = false;
+              thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
               if (response.status === 401) {
                 thinkingBody.textContent = 'Please log in.';
                 showLogin();
@@ -4191,20 +4303,26 @@ app.get('/', (req, res) => {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
-            thinkingBody.textContent = '';
-
             let fullReply = '';
+            let firstStreamChunk = true;
 
             while (true) {
               const { value, done } = await reader.read();
               if (done) break;
 
               const chunk = decoder.decode(value, { stream: true });
+              if (!chunk) continue;
               fullReply += chunk;
-              // For the sender, streaming text comes from WebSocket stream_delta;
-              // here we only accumulate the full reply for final markdown rendering.
+              if (firstStreamChunk) {
+                thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
+                thinkingBody.textContent = '';
+                firstStreamChunk = false;
+              }
+              thinkingBody.appendChild(document.createTextNode(chunk));
+              chat.scrollTop = chat.scrollHeight;
             }
 
+            thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
             thinkingBody.textContent = '';
             thinkingBody.appendChild(renderMarkdown(fullReply));
             chat.scrollTop = chat.scrollHeight;
@@ -4708,6 +4826,7 @@ app.get('/settings/anthropic', requireHousehold, requireAuth, async (req, res) =
         name: h.name,
         key: h.household_key,
         anthropicKeyMode: mode,
+        webSearchEnabled: Number(h.web_search_enabled) === 1,
       },
       usingSharedKey: mode === 'shared',
       hasHouseholdKey: hasKey,
@@ -4746,6 +4865,30 @@ app.post(
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: e.message || 'Failed to save mode' });
+  }
+});
+
+app.post(
+  '/settings/anthropic/web-search',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireGlobalAdmin,
+  async (req, res) => {
+  try {
+    const householdId = Number(req.body.householdId);
+    if (!Number.isFinite(householdId)) {
+      return res.status(400).json({ error: 'householdId is required' });
+    }
+    const targetId = await resolveAnthropicTargetHouseholdId(req, res, householdId);
+    if (targetId == null) return;
+    const raw = req.body.webSearchEnabled;
+    const enabled = raw === true || raw === 1 || raw === '1' || String(raw).toLowerCase() === 'true';
+    await setHouseholdWebSearchEnabled(targetId, enabled);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: e.message || 'Failed to save web search setting' });
   }
 });
 
@@ -5088,8 +5231,11 @@ app.post(
     }
 
     let anthropic;
+    let householdWebSearchEnabled = false;
     try {
-      anthropic = await getAnthropicClient(req.householdId);
+      const ac = await getAnthropicClient(req.householdId);
+      anthropic = ac.client;
+      householdWebSearchEnabled = ac.webSearchEnabled;
     } catch (keyErr) {
       const m = keyErr && String(keyErr.message);
       if (m && m.includes('Household not found')) {
@@ -5203,6 +5349,9 @@ app.post(
         conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
 
       const memories = await getMemories(req.householdId);
+      const priorCtx = await getChatThreadContext(chatId, req.householdId);
+      const priorMealPlanSummary = priorCtx.mealPlanSummary;
+      const priorThreadGrocerySummary = priorCtx.threadGrocerySummary;
 
       const memoryText = memories
         .map(memory => `${memory.key}: ${memory.value}`)
@@ -5268,14 +5417,103 @@ Where:
       }
 
       const normalizedItems = normalizeGroceryItemsForPost(items);
-      if (normalizedItems.length > 0) {
+      const groceryListWasUpdated = normalizedItems.length > 0;
+      if (groceryListWasUpdated) {
         await mergeGroceryItemsFromAi(req.householdId, normalizedItems);
       }
 
-      const reply =
+      const conversationSnippet = recentConversation
+        .map((m) =>
+          m.role === 'user' ? `${m.name}: ${m.content}` : String(m.content ?? '')
+        )
+        .join('\n\n');
+      const commandOutcomeBlock = groceryListWasUpdated
+        ? `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- A grocery list was generated for this thread via !grocerylist and the household grocery list was updated in the app with the items from this run.`
+        : `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- No grocery items were saved from this run (nothing to merge); the household grocery list was not updated by this request.`;
+
+      const itemsThisRunText =
         normalizedItems.length > 0
-          ? 'I updated the grocery list. Head over to the Grocery List tab to check it.'
-          : 'I was not able to build a grocery list from our conversation.';
+          ? normalizedItems
+              .map((i) => `${i.section} | ${i.name} | ${i.amount || ''}`)
+              .join('\n')
+          : '(none parsed this run)';
+
+      let mealPlanToStore = priorMealPlanSummary;
+      let threadGroceryToStore = priorThreadGrocerySummary;
+
+      try {
+        const summaryResponse = await anthropic.messages.create({
+          model: 'claude-sonnet-4-5',
+          max_tokens: 700,
+          system: `You maintain one concise, factual meal-plan summary for a single chat thread. Output plain text only (no markdown). At most a few short paragraphs total.
+
+Rules:
+- Produce a full replacement summary for the thread (not an open-ended append).
+- Cover: planned meals or themes; ingredient choices; substitutions or additions; ingredients the user explicitly rejected or wanted to avoid when clear; unresolved questions if any.
+- Ground statements in the prior summary, household memory, recent conversation, and the "Command outcome" block below; do not invent specifics beyond them.
+- Do not invent app or database actions. You may state outcomes that appear explicitly in the "Command outcome (this request only)" section.`,
+          messages: [
+            {
+              role: 'user',
+              content: `${commandOutcomeBlock}\n\nPrevious meal-plan summary for this thread (may be empty):\n${priorMealPlanSummary.trim() || '(none)'}\n\nHousehold memory:\n${memoryText || '(none)'}\n\nRecent conversation (this chat, before this !grocerylist turn is persisted):\n${conversationSnippet}\n\nWrite the updated replacement summary for this thread. Reflect the command outcome above accurately (e.g. if the grocery list was updated in the app, say so; do not say the user still needs to run a command to save it).`,
+            },
+          ],
+        });
+        const summaryBlocks = summaryResponse.content.filter((b) => b.type === 'text');
+        const newMealPlanSummary = summaryBlocks.map((b) => b.text).join('\n').trim();
+        if (newMealPlanSummary) {
+          mealPlanToStore = newMealPlanSummary;
+        }
+      } catch (e) {
+        console.error('Meal plan summary update failed:', e.message || e);
+      }
+
+      try {
+        const groceryCumulativeResponse = await anthropic.messages.create({
+          model: 'claude-sonnet-4-5',
+          max_tokens: 900,
+          system: `You maintain one cumulative plain-text summary of what this chat thread has decided to buy across all !grocerylist runs (purchase intent for this thread). Output plain text only (no markdown). Be concise.
+
+Use these section headings when you have content (omit empty sections):
+Proteins
+Produce
+Dairy / frozen
+Pantry / starches
+Other
+Notes / clarifications
+
+Rules:
+- Output a full replacement summary that merges the previous cumulative thread grocery summary with this run's items and the thread context below. Dedupe overlapping items; keep the list stable and scannable.
+- Ground items in the previous thread grocery summary, meal plan context, conversation, and the "Items from this run" lines only—do not pull from any household grocery database or shopping tab.
+- Do not invent items not supported by those inputs.`,
+          messages: [
+            {
+              role: 'user',
+              content: `${commandOutcomeBlock}\n\nPrevious cumulative thread grocery summary (may be empty):\n${priorThreadGrocerySummary.trim() || '(none)'}\n\nMeal plan context for this thread (may be empty):\n${mealPlanToStore.trim() || '(none)'}\n\nItems from this !grocerylist run (section | product | amount):\n${itemsThisRunText}\n\nHousehold memory (context only):\n${memoryText || '(none)'}\n\nRecent conversation (this chat, before this !grocerylist line is persisted):\n${conversationSnippet}\n\nWrite the full replacement cumulative thread grocery summary for what this thread intends to buy so far.`,
+            },
+          ],
+        });
+        const gBlocks = groceryCumulativeResponse.content.filter((b) => b.type === 'text');
+        const newThreadGrocery = gBlocks.map((b) => b.text).join('\n').trim();
+        if (newThreadGrocery) {
+          threadGroceryToStore = newThreadGrocery;
+        }
+      } catch (e) {
+        console.error('Thread grocery summary update failed:', e.message || e);
+      }
+
+      try {
+        await upsertChatThreadContext(chatId, req.householdId, {
+          mealPlanSummary: mealPlanToStore,
+          threadGrocerySummary: threadGroceryToStore,
+        });
+      } catch (e) {
+        console.error('chat thread context upsert failed:', e.message || e);
+      }
+
+      const reply = groceryListWasUpdated
+        ? 'I updated the grocery list. Head over to the Grocery List tab to check it.'
+        : 'I was not able to build a grocery list from our conversation.';
 
       await addMessage(chatId, req.householdId, 'user', name, prompt);
       await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
@@ -5322,6 +5560,8 @@ Where:
       .map(memory => `${memory.key}: ${memory.value}`)
       .join('\n');
 
+    const threadCtx = await getChatThreadContext(chatId, req.householdId);
+
     const claudeMessages = recentConversation.map(message => ({
       role: message.role,
       content:
@@ -5366,15 +5606,49 @@ Where:
       }
     }
 
-    const stream = await anthropic.messages.stream({
+    const useWebSearchTool =
+      householdWebSearchEnabled && shouldEnableWebSearchForPrompt(prompt);
+
+    const webSearchCapabilityBlock = useWebSearchTool
+      ? `Web (this request): Anthropic web_search IS attached. Only attribute content to a site or URL if the search tool actually returned that material this turn. Do not fabricate "exact" ingredients, steps, or quotes from a page you did not receive via the tool. If the tool did not return a page body, say you do not have the exact text from that source.`
+      : householdWebSearchEnabled
+        ? `Web (this request): Web search is NOT attached—no live fetch of links for this reply. Seeing a URL in the user's message does not mean you read it. Do not imply you extracted, checked, read, or matched that page.`
+        : `Web (this request): Web search is off for this household. You cannot load URLs. A link in the chat is not page content—do not imply you read it.`;
+
+    const streamParams = {
       model: 'claude-sonnet-4-5',
-      max_tokens: 800,
+      max_tokens: useWebSearchTool ? 4096 : 800,
       system: `You are a concise household assistant. Respond in plain text by default. Only use code blocks when the user explicitly asks for code.
 
-    Household memory:
+    Capability contract — this reply is plain text generation only. It does not run app actions.
+    - What actually changes persisted app state are user-typed commands and the Settings UI—not conversational phrasing. Command-backed examples: \`!remember <key> = <value>\` (memories), \`!grocerylist\` (grocery list from chat), \`!rename\` / \`!rename <title>\` (chat title), \`!love <name>\` (compliment boost). Listing memories: \`!memories\`. Full list: \`!help\`.
+    - You can suggest, draft, summarize, format, and explain. You cannot execute those commands yourself from this reply.
+    - Action honesty: Never claim the app changed (grocery list, memory, chat title, settings, etc.) unless you are quoting what the user must type or describing a hypothetical. Avoid "done", "saved", "updated", "I remembered", "I renamed" for real state. If they asked in plain English for persistence, say you have not changed anything in the app yet, then give a draft and the right \`!\` command or next step.
+
+    ${webSearchCapabilityBlock}
+    Source-specific content: You may only present ingredients, steps, prices, dates, or other details as coming from a named site, book, or URL if those exact details are already in this chat (including household memory below), or came from web_search tool results this turn. Otherwise you do not have that source—say so plainly. Never pass off pattern-matching or general knowledge as "from that page" or "from that recipe." If they share only a URL, you cannot give the real ingredient list from that page without tool results or pasted text; offer a clearly labeled generic version (e.g. "a typical baked mac and cheese, not the exact Chunky Chef recipe") or ask them to paste the ingredients.
+
+    Label what you are giving when it matters: (1) Source-backed — only when text/facts are in chat or in this turn's search results. (2) Generic / approximate — say so explicitly. (3) Suggested next step — e.g. paste text, or use \`!remember\` / \`!grocerylist\`. (4) App actions — only as instructions for the user, not as claims you performed.
+
+    Consistency: When you do have a real selected recipe or source (from chat, memory, or search results), keep later lists faithful to it; do not silently drift. When you do not have the source, do not fake fidelity—say the content is unavailable and separate generic help from source-specific claims.
+
+    Thread-specific meal plan context (this chat only; last updated when someone runs \`!grocerylist\`; read-only during normal chat; not the live Grocery tab):
+    ${threadCtx.mealPlanSummary.trim() || '(none yet)'}
+
+    Thread-specific cumulative grocery intent (this chat only; updated across \`!grocerylist\` runs in this thread; read-only here; not the live grocery list / grocery_items table):
+    ${threadCtx.threadGrocerySummary.trim() || '(none yet)'}
+
+    Household memory (read-only context for you; household-wide; saving still requires \`!remember\` or other commands):
     ${memoryText}`,
       messages: claudeMessages,
-    });
+    };
+    if (useWebSearchTool) {
+      streamParams.tools = [
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 5 },
+      ];
+    }
+
+    const stream = await anthropic.messages.stream(streamParams);
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');

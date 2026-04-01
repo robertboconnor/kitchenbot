@@ -68,6 +68,7 @@ db.serialize(() => {
       household_key TEXT NOT NULL UNIQUE,
       anthropic_key_mode TEXT NOT NULL DEFAULT 'shared',
       anthropic_api_key TEXT,
+      web_search_enabled INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -142,6 +143,16 @@ db.serialize(() => {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS chat_meal_plan_context (
+      chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+      household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+      meal_plan_summary TEXT NOT NULL DEFAULT '',
+      thread_grocery_summary TEXT NOT NULL DEFAULT '',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   db.run(
     `
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -196,6 +207,39 @@ const MIGRATIONS = [
       if (!(await migrationTableHasColumn('household_users', 'session_version'))) {
         await migrationRun(
           `ALTER TABLE household_users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0`
+        );
+      }
+    },
+  },
+  {
+    name: '003_add_web_search_enabled_to_households',
+    async up() {
+      if (!(await migrationTableHasColumn('households', 'web_search_enabled'))) {
+        await migrationRun(
+          `ALTER TABLE households ADD COLUMN web_search_enabled INTEGER NOT NULL DEFAULT 0`
+        );
+      }
+    },
+  },
+  {
+    name: '004_add_chat_meal_plan_context',
+    async up() {
+      await migrationRun(`
+        CREATE TABLE IF NOT EXISTS chat_meal_plan_context (
+          chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+          household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+          meal_plan_summary TEXT NOT NULL DEFAULT '',
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    },
+  },
+  {
+    name: '005_add_thread_grocery_summary_to_chat_meal_plan_context',
+    async up() {
+      if (!(await migrationTableHasColumn('chat_meal_plan_context', 'thread_grocery_summary'))) {
+        await migrationRun(
+          `ALTER TABLE chat_meal_plan_context ADD COLUMN thread_grocery_summary TEXT NOT NULL DEFAULT ''`
         );
       }
     },
@@ -268,7 +312,7 @@ export function getHouseholdById(householdId) {
   return new Promise((resolve, reject) => {
     db.get(
       `
-      SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, created_at
+      SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, created_at
       FROM households
       WHERE id = ?
       `,
@@ -289,7 +333,7 @@ export function getHouseholdByKey(householdKey) {
   return new Promise((resolve, reject) => {
     db.get(
       `
-      SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, created_at
+      SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, created_at
       FROM households
       WHERE household_key = ?
       `,
@@ -348,6 +392,20 @@ export function setHouseholdAnthropicApiKey(householdId, anthropicApiKey) {
       function (err) {
         if (err) reject(err);
         else if (this.changes === 0) reject(new Error('not_household_key_mode'));
+        else resolve();
+      }
+    );
+  });
+}
+
+/** Global admin only: enable/disable Anthropic web search tool for a household. */
+export function setHouseholdWebSearchEnabled(householdId, enabled) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE households SET web_search_enabled = ? WHERE id = ?`,
+      [enabled ? 1 : 0, householdId],
+      function (err) {
+        if (err) reject(err);
         else resolve();
       }
     );
@@ -462,7 +520,7 @@ export async function listAllHouseholdsSummary() {
   }
   const rows = await new Promise((resolve, reject) => {
     db.all(
-      `SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key FROM households ORDER BY id ASC`,
+      `SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled FROM households ORDER BY id ASC`,
       [],
       (err, r) => {
         if (err) reject(err);
@@ -490,6 +548,7 @@ export async function listAllHouseholdsSummary() {
       anthropicKeyMode: mode,
       hasHouseholdKey: hasKey,
       anthropicStatusLabel,
+      webSearchEnabled: Number(h.web_search_enabled) === 1,
       totalMessages: messageCountByHouseholdId.get(h.id) ?? 0,
       users: users.map((u) => ({ id: u.id, displayName: u.display_name, role: u.role })),
     });
@@ -726,6 +785,54 @@ export function updateChatTitle(chatId, householdId, title) {
     db.run(
       `UPDATE chats SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND household_id = ?`,
       [title, chatId, householdId],
+      function (err) {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+/** Thread-scoped context from !grocerylist only; normal chat reads, never writes. */
+export function getChatThreadContext(chatId, householdId) {
+  return new Promise((resolve, reject) => {
+    db.get(
+      `
+      SELECT meal_plan_summary, thread_grocery_summary
+      FROM chat_meal_plan_context
+      WHERE chat_id = ? AND household_id = ?
+      `,
+      [chatId, householdId],
+      (err, row) => {
+        if (err) reject(err);
+        else if (!row) {
+          resolve({ mealPlanSummary: '', threadGrocerySummary: '' });
+        } else {
+          resolve({
+            mealPlanSummary: String(row.meal_plan_summary ?? ''),
+            threadGrocerySummary: String(row.thread_grocery_summary ?? ''),
+          });
+        }
+      }
+    );
+  });
+}
+
+export function upsertChatThreadContext(chatId, householdId, { mealPlanSummary, threadGrocerySummary }) {
+  const mp = String(mealPlanSummary ?? '').slice(0, 12000);
+  const tg = String(threadGrocerySummary ?? '').slice(0, 12000);
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+      INSERT INTO chat_meal_plan_context (chat_id, household_id, meal_plan_summary, thread_grocery_summary, updated_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(chat_id) DO UPDATE SET
+        meal_plan_summary = excluded.meal_plan_summary,
+        thread_grocery_summary = excluded.thread_grocery_summary,
+        household_id = excluded.household_id,
+        updated_at = CURRENT_TIMESTAMP
+      `,
+      [chatId, householdId, mp, tg],
       function (err) {
         if (err) reject(err);
         else resolve();
