@@ -28,8 +28,7 @@ import {
   ensureUserComplimentStateRow,
   updateHouseholdUserComplimentsEnabled,
   updateHouseholdUserChatColor,
-  ensureHouseholdUserChatColorColumnAsync,
-  ensureHouseholdUserSessionVersionColumnAsync,
+  runMigrations,
   normalizeChatColor,
   needsBootstrap,
   bootstrapFirstHousehold,
@@ -716,6 +715,53 @@ app.post(
   }
 );
 
+const DEMO_VIEW_HOUSEHOLD_KEY = 'demo-env';
+const DEMO_VIEW_USER_DISPLAY_NAME = 'Rob';
+
+app.post(
+  '/demo/view',
+  requireHousehold,
+  requireAuth,
+  requireNotAlreadyImpersonating,
+  async (req, res) => {
+    try {
+      const demoHousehold = await getHouseholdByKey(DEMO_VIEW_HOUSEHOLD_KEY);
+      if (!demoHousehold) {
+        return res.status(404).json({ error: 'Demo household is not configured (expected key demo-env).' });
+      }
+      const demoUser = await getUserByHouseholdAndDisplayName(
+        demoHousehold.id,
+        DEMO_VIEW_USER_DISPLAY_NAME
+      );
+      if (!demoUser) {
+        return res
+          .status(404)
+          .json({ error: 'Demo user is not configured (expected display name Rob in demo household).' });
+      }
+      const realRow = await getHouseholdUserById(req.householdId, req.userId);
+      if (!realRow) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      const token = signToken({
+        householdId: demoHousehold.id,
+        userId: demoUser.id,
+        displayName: demoUser.display_name,
+        sessionVersion: demoUser.session_version != null ? Math.trunc(Number(demoUser.session_version)) : 0,
+        isImpersonating: true,
+        impersonationReadOnly: true,
+        adminUserId: req.userId,
+        adminHouseholdId: req.householdId,
+        adminDisplayName: realRow.display_name,
+      });
+      setAuthCookie(res, token);
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: 'Demo view failed' });
+    }
+  }
+);
+
 app.post('/admin/impersonate/exit', requireHousehold, requireAuth, async (req, res) => {
   try {
     const auth = getUserFromRequest(req);
@@ -1166,6 +1212,12 @@ app.get('/', (req, res) => {
           min-height: 1em;
         }
 
+        #login-auth-form {
+          margin: 0;
+          padding: 0;
+          border: none;
+        }
+
         #login-form h2,
         #bootstrap-form h2,
         #login-area h2 {
@@ -1610,6 +1662,12 @@ app.get('/', (req, res) => {
           line-height: 1.4;
         }
 
+        #prompt {
+          height: auto;
+          min-height: 44px;
+          max-height: none;
+        }
+
         textarea:focus {
           border-color: var(--accent);
           box-shadow: 0 0 0 2px rgba(255, 122, 162, 0.25);
@@ -1880,23 +1938,25 @@ app.get('/', (req, res) => {
           <div id="bootstrap-status"></div>
         </div>
         <div id="login-form">
-          <label for="login-household-key">Household key:</label>
-          <div class="login-key-row">
-            <input id="login-household-key" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. oconnor-home" />
-            <button type="button" id="login-find-household">Find household</button>
-          </div>
-          <p id="login-household-resolved" class="login-household-resolved" style="display: none;">
-            <span class="login-household-resolved-label">Household:</span>
-            <strong id="login-household-name"></strong>
-          </p>
-          <label for="login-name">User:</label>
-          <select id="login-name" disabled>
-            <option value="">— Select user —</option>
-          </select>
-          <label for="login-password">PIN:</label>
-          <input id="login-password" type="password" autocomplete="current-password" />
-          <button type="button" id="login-button" disabled>Login</button>
-          <div id="login-status"></div>
+          <form id="login-auth-form" action="#" method="post" autocomplete="on">
+            <label for="login-household-key">Household key:</label>
+            <div class="login-key-row">
+              <input id="login-household-key" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. account-key" />
+              <button type="button" id="login-find-household">Find household</button>
+            </div>
+            <p id="login-household-resolved" class="login-household-resolved" style="display: none;">
+              <span class="login-household-resolved-label">Household:</span>
+              <strong id="login-household-name"></strong>
+            </p>
+            <label for="login-name">User:</label>
+            <select id="login-name" disabled>
+              <option value="">— Select user —</option>
+            </select>
+            <label for="login-password">PIN:</label>
+            <input id="login-password" type="password" autocomplete="current-password" />
+            <button type="submit" id="login-button" disabled>Login</button>
+            <div id="login-status"></div>
+          </form>
         </div>
       </div>
 
@@ -1982,6 +2042,15 @@ app.get('/', (req, res) => {
             </p>
             <p style="margin: 0;"><strong>Name:</strong> <span id="my-settings-hh-name"></span></p>
             <p style="margin: 0;"><strong>Key:</strong> <code id="my-settings-hh-key"></code></p>
+            <div style="margin: 14px 0 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-subtle); max-width: 520px;">
+              <p style="margin: 0 0 8px; font-size: 13px; color: var(--text-soft); line-height: 1.45;">
+                Open a read-only walkthrough as the sample user in the shared demo household.
+              </p>
+              <button type="button" id="settings-demo-view-btn" style="padding: 6px 12px; border-radius: 8px; font-size: 14px;">
+                See how to use this
+              </button>
+              <span id="settings-demo-view-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
+            </div>
             <h3>Anthropic API</h3>
             <div id="settings-anthropic-block" style="margin-bottom: 12px;">
               <p id="settings-anthropic-status" style="margin: 0 0 8px; font-size: 14px;"></p>
@@ -2091,8 +2160,7 @@ app.get('/', (req, res) => {
       <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
       <script>
         const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-        const hasTouch = typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 0;
-        const useMobileEnterBehavior = isMobile || hasTouch;
+        const useMobileEnterBehavior = isMobile;
         const loginArea = document.getElementById('login-area');
         const appArea = document.getElementById('app');
         const loginHouseholdKeyInput = document.getElementById('login-household-key');
@@ -2100,6 +2168,7 @@ app.get('/', (req, res) => {
         const loginNameSelect = document.getElementById('login-name');
         const loginPasswordInput = document.getElementById('login-password');
         const loginButton = document.getElementById('login-button');
+        const loginAuthForm = document.getElementById('login-auth-form');
         const loginStatus = document.getElementById('login-status');
         const speakerName = document.getElementById('speaker-name');
         const menuButton = document.getElementById('menu-button');
@@ -2143,7 +2212,8 @@ app.get('/', (req, res) => {
         let isCurrentUserOwner = false;
         let godModeReadOnly = false;
         let editingMemoryKey = null;
-        let chatColorByName = {};
+        /** Normalized display name (trim + lower) -> chat color key */
+        let displayNameToColor = {};
         const CHAT_COLOR_OPTIONS = [
           { key: 'pink', label: 'Pink' },
           { key: 'blue', label: 'Blue' },
@@ -2151,8 +2221,28 @@ app.get('/', (req, res) => {
           { key: 'lavender', label: 'Lavender' },
           { key: 'peach', label: 'Peach' },
         ];
+        function normalizeDisplayNameKey(name) {
+          return String(name ?? '').trim().toLowerCase();
+        }
+        function rebuildDisplayNameToColorFromMeChatColors(chatColors) {
+          displayNameToColor = {};
+          if (chatColors && typeof chatColors === 'object' && !Array.isArray(chatColors)) {
+            for (const k of Object.keys(chatColors)) {
+              const nk = normalizeDisplayNameKey(k);
+              if (nk) displayNameToColor[nk] = chatColors[k];
+            }
+          }
+        }
+        function rebuildDisplayNameToColorFromSettingsUsers(users) {
+          displayNameToColor = {};
+          for (const u of users || []) {
+            const nk = normalizeDisplayNameKey(u.displayName);
+            if (nk) displayNameToColor[nk] = u.chatColor || 'blue';
+          }
+        }
         function userMessageBubbleClass(displayName) {
-          const raw = chatColorByName && chatColorByName[displayName];
+          const nk = normalizeDisplayNameKey(displayName);
+          const raw = nk ? displayNameToColor[nk] : undefined;
           const k =
             typeof raw === 'string' && raw.trim()
               ? raw.trim().toLowerCase()
@@ -2186,12 +2276,20 @@ app.get('/', (req, res) => {
               textEl.appendChild(document.createElement('br'));
               const sub = document.createElement('span');
               sub.style.opacity = '0.92';
-              sub.textContent = 'Read-only God Mode';
+              sub.textContent =
+                data.isGlobalAdmin === true ? 'Read-only God Mode' : 'Read-only Demo Mode';
               textEl.appendChild(sub);
               banner.style.display = 'flex';
+              const exitBtn = document.getElementById('god-mode-exit-btn');
+              if (exitBtn) {
+                exitBtn.textContent =
+                  data.isGlobalAdmin === true ? 'Exit God Mode' : 'Exit Demo Mode';
+              }
             } else {
               textEl.textContent = '';
               banner.style.display = 'none';
+              const exitBtn = document.getElementById('god-mode-exit-btn');
+              if (exitBtn) exitBtn.textContent = 'Exit God Mode';
             }
           }
           if (promptInput) {
@@ -2211,9 +2309,11 @@ app.get('/', (req, res) => {
           const memSave = document.getElementById('my-settings-memory-save');
           const adminModeSave = document.getElementById('admin-anthropic-mode-save');
           const adminNewHh = document.getElementById('admin-new-hh-submit');
+          const demoViewBtn = document.getElementById('settings-demo-view-btn');
           if (gas) gas.disabled = ro;
           if (sas) sas.disabled = ro;
           if (memSave) memSave.disabled = ro;
+          if (demoViewBtn) demoViewBtn.disabled = ro;
           if (adminModeSave) adminModeSave.disabled = ro;
           if (adminNewHh) adminNewHh.disabled = ro;
           if (groceryAddName) {
@@ -2506,6 +2606,12 @@ app.get('/', (req, res) => {
             const data = await r.json();
             nameEl.textContent = data.household.name;
             keyEl.textContent = data.household.key;
+            rebuildDisplayNameToColorFromSettingsUsers(data.users);
+            if (currentChatId) {
+              try {
+                await loadHistory();
+              } catch (e) {}
+            }
             listEl.innerHTML = '';
             for (const u of data.users) {
               const row = document.createElement('div');
@@ -2768,7 +2874,7 @@ app.get('/', (req, res) => {
                   });
                   const errBody = await rr.json().catch(() => ({}));
                   if (rr.ok) {
-                    chatColorByName[u.displayName] = attempted;
+                    displayNameToColor[normalizeDisplayNameKey(u.displayName)] = attempted;
                     prevChatColor = attempted;
                     colorSel.value = attempted;
                     colorFeedback.textContent = 'Chat color updated';
@@ -3130,6 +3236,22 @@ app.get('/', (req, res) => {
           );
         }
 
+        function resizePromptInput() {
+          if (!promptInput) return;
+          const cs = getComputedStyle(promptInput);
+          const lh = parseFloat(cs.lineHeight);
+          const lineHeight = Number.isFinite(lh) ? lh : 14 * 1.4;
+          const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+          const maxLines = 5;
+          const maxHeight = Math.ceil(lineHeight * maxLines + padY);
+          promptInput.style.height = 'auto';
+          const sh = promptInput.scrollHeight;
+          const h = Math.min(sh, maxHeight);
+          promptInput.style.height = h + 'px';
+          promptInput.style.maxHeight = maxHeight + 'px';
+          promptInput.style.overflowY = sh > maxHeight ? 'auto' : 'hidden';
+        }
+
         promptInput.addEventListener('keydown', (event) => {
           if (event.key !== 'Enter') return;
           if (useMobileEnterBehavior) return;
@@ -3139,6 +3261,7 @@ app.get('/', (req, res) => {
         });
 
         promptInput.addEventListener('input', () => {
+          resizePromptInput();
           if (godModeReadOnly) return;
           if (!currentChatId) return;
           sendTyping(true);
@@ -3148,6 +3271,7 @@ app.get('/', (req, res) => {
             sendTyping(false);
           }, 2000);
         });
+        resizePromptInput();
 
         function renderMarkdown(text) {
           if (typeof marked === 'undefined') return document.createTextNode(text);
@@ -3476,10 +3600,7 @@ app.get('/', (req, res) => {
             isCurrentUserOwner = !!data.isOwner;
             applyGodModeFromMe(data);
             syncMemoriesWrapVisibility();
-            chatColorByName =
-              data.chatColors && typeof data.chatColors === 'object' && !Array.isArray(data.chatColors)
-                ? data.chatColors
-                : {};
+            rebuildDisplayNameToColorFromMeChatColors(data.chatColors);
             showApp(data.name);
             await loadChatsAndEnsureOne();
             await loadHistory();
@@ -3656,13 +3777,32 @@ app.get('/', (req, res) => {
               document.getElementById('settings-new-display').value = '';
               document.getElementById('settings-new-pin').value = '';
               if (msgEl) msgEl.textContent = 'User added.';
-              chatColorByName[displayName] = data.chatColor || 'blue';
+              displayNameToColor[normalizeDisplayNameKey(displayName)] = data.chatColor || 'blue';
               await loadMyHouseholdView();
               await loadAnthropicSection();
               const subBtn = document.getElementById('settings-subtab-admin-btn');
               if (subBtn && subBtn.style.display !== 'none') {
                 await loadGlobalAdminView();
               }
+            } catch (e) {
+              if (msgEl) msgEl.textContent = 'Request failed.';
+            }
+          });
+        }
+
+        const settingsDemoViewBtn = document.getElementById('settings-demo-view-btn');
+        if (settingsDemoViewBtn) {
+          settingsDemoViewBtn.addEventListener('click', async () => {
+            const msgEl = document.getElementById('settings-demo-view-msg');
+            if (msgEl) msgEl.textContent = '';
+            try {
+              const r = await fetch('/demo/view', { method: 'POST' });
+              const errBody = await r.json().catch(() => ({}));
+              if (!r.ok) {
+                if (msgEl) msgEl.textContent = errBody.error || 'Could not open demo view.';
+                return;
+              }
+              location.reload();
             } catch (e) {
               if (msgEl) msgEl.textContent = 'Request failed.';
             }
@@ -3864,7 +4004,7 @@ app.get('/', (req, res) => {
         loginNameSelect.addEventListener('change', updateLoginEnabled);
         loginPasswordInput.addEventListener('input', updateLoginEnabled);
 
-        loginButton.addEventListener('click', async () => {
+        async function performLogin() {
           const householdKey = lastResolvedKey;
           const displayName = loginNameSelect.value;
           const pin = loginPasswordInput.value;
@@ -3910,25 +4050,30 @@ app.get('/', (req, res) => {
             isCurrentUserOwner = !!data.isOwner;
             syncMemoriesWrapVisibility();
             showApp(resolvedName);
+            try {
+              const meR = await fetch('/me');
+              if (meR.ok) {
+                const meData = await meR.json();
+                rebuildDisplayNameToColorFromMeChatColors(meData.chatColors);
+                applyGodModeFromMe(meData);
+              }
+            } catch (e) {}
             await loadChatsAndEnsureOne();
             await loadHistory();
             connectTypingWs();
             refreshOwnerSettingsTab();
-            try {
-              const meR = await fetch('/me');
-              if (meR.ok) applyGodModeFromMe(await meR.json());
-            } catch (e) {}
           } catch (error) {
             loginStatus.textContent = 'Login failed.';
           }
-        });
+        }
 
-        loginPasswordInput.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            if (!loginButton.disabled) loginButton.click();
-          }
-        });
+        if (loginAuthForm) {
+          loginAuthForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            if (loginButton.disabled) return;
+            void performLogin();
+          });
+        }
 
         document.getElementById('bootstrap-submit').addEventListener('click', async () => {
           const householdName = document.getElementById('bootstrap-household-name').value.trim();
@@ -3990,6 +4135,7 @@ app.get('/', (req, res) => {
           const speaker = speakerName.textContent || 'Rob';
           addMessage('user', speaker, prompt);
           promptInput.value = '';
+          resizePromptInput();
           weAreStreamingThisChat = true;
 
           const thinkingDiv = document.createElement('div');
@@ -4106,7 +4252,7 @@ app.get('/', (req, res) => {
           lastMePayload = null;
           applyGodModeFromMe({ isImpersonating: false, impersonationReadOnly: false });
           syncMemoriesWrapVisibility();
-          chatColorByName = {};
+          displayNameToColor = {};
           showLogin();
           chat.innerHTML = '';
         });
@@ -5443,8 +5589,7 @@ async function connectRedis() {
 }
 
 (async () => {
-  await ensureHouseholdUserChatColorColumnAsync();
-  await ensureHouseholdUserSessionVersionColumnAsync();
+  await runMigrations();
   await connectRedis();
   try {
     const n = await deleteLegacySeedMemories();

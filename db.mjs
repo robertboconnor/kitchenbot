@@ -4,6 +4,13 @@ import crypto from 'crypto';
 const dbPath = process.env.DB_PATH || './kitchenbot.db';
 const db = new sqlite3.Database(dbPath);
 
+let resolveSchemaReady;
+let rejectSchemaReady;
+const schemaReady = new Promise((resolve, reject) => {
+  resolveSchemaReady = resolve;
+  rejectSchemaReady = reject;
+});
+
 const SCRYPT_KEY_LEN = 64;
 
 function hashPin(pin) {
@@ -134,34 +141,86 @@ db.serialize(() => {
       boost_mode INTEGER DEFAULT 0
     )
   `);
+
+  db.run(
+    `
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      name TEXT PRIMARY KEY NOT NULL,
+      applied_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )
+    `,
+    (err) => {
+      if (err) rejectSchemaReady(err);
+      else resolveSchemaReady();
+    }
+  );
 });
 
-/** For DB files created before chat_color existed. Safe no-op if column is present. */
-export function ensureHouseholdUserChatColorColumnAsync() {
-  return new Promise((resolve) => {
-    db.all(`PRAGMA table_info(household_users)`, [], (err, cols) => {
-      if (err) return resolve();
-      if ((cols || []).some((c) => c.name === 'chat_color')) return resolve();
-      db.run(
-        `ALTER TABLE household_users ADD COLUMN chat_color TEXT NOT NULL DEFAULT 'blue'`,
-        () => resolve()
-      );
+function migrationRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) reject(err);
+      else resolve(this);
     });
   });
 }
 
-/** For DB files created before session_version existed; existing rows default to 0. */
-export function ensureHouseholdUserSessionVersionColumnAsync() {
-  return new Promise((resolve) => {
-    db.all(`PRAGMA table_info(household_users)`, [], (err, cols) => {
-      if (err) return resolve();
-      if ((cols || []).some((c) => c.name === 'session_version')) return resolve();
-      db.run(
-        `ALTER TABLE household_users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0`,
-        () => resolve()
-      );
+function migrationAll(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows || []);
     });
   });
+}
+
+async function migrationTableHasColumn(table, column) {
+  const rows = await migrationAll(`PRAGMA table_info(${table})`);
+  return rows.some((c) => c.name === column);
+}
+
+const MIGRATIONS = [
+  {
+    name: '001_add_chat_color_to_household_users',
+    async up() {
+      if (!(await migrationTableHasColumn('household_users', 'chat_color'))) {
+        await migrationRun(
+          `ALTER TABLE household_users ADD COLUMN chat_color TEXT NOT NULL DEFAULT 'blue'`
+        );
+      }
+    },
+  },
+  {
+    name: '002_add_session_version_to_household_users',
+    async up() {
+      if (!(await migrationTableHasColumn('household_users', 'session_version'))) {
+        await migrationRun(
+          `ALTER TABLE household_users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0`
+        );
+      }
+    },
+  },
+];
+
+/** Runs ordered migrations once each; fails startup if any migration fails. */
+export async function runMigrations() {
+  await schemaReady;
+  const appliedRows = await migrationAll(`SELECT name FROM schema_migrations`);
+  const applied = new Set(appliedRows.map((r) => r.name));
+
+  for (const m of MIGRATIONS) {
+    if (applied.has(m.name)) continue;
+    await migrationRun('BEGIN IMMEDIATE');
+    try {
+      await m.up();
+      await migrationRun(`INSERT INTO schema_migrations (name) VALUES (?)`, [m.name]);
+      await migrationRun('COMMIT');
+    } catch (e) {
+      await migrationRun('ROLLBACK').catch(() => {});
+      console.error(`Migration failed: ${m.name}`, e);
+      throw e;
+    }
+  }
 }
 
 export function needsBootstrap() {
