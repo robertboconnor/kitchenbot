@@ -15,9 +15,11 @@ import {
   addGroceryItems,
   getGroceryItems,
   updateGroceryItemAmount,
+  backfillGroceryItemSourceChatIfSafe,
   updateGroceryItem,
   deleteGroceryItem,
   clearGroceryItems,
+  pruneStaleGroceryItemsForChat,
   listAllHouseholdsSummary,
   getUserComplimentState,
   incrementUserMessageCount,
@@ -517,6 +519,144 @@ function getHelpReply() {
     '',
     '• !help — Show this message',
   ].join('\n');
+}
+
+function detectCommandIntentFromNaturalLanguage(prompt) {
+  const raw = String(prompt ?? '').trim();
+  if (!raw) return { pendingAction: null, clarificationReply: null };
+  if (raw.startsWith('!')) return { pendingAction: null, clarificationReply: null };
+  const lower = raw.toLowerCase();
+
+  const mentionsGroceryList = /\b(grocery\s*list|shopping\s*list)\b/.test(lower);
+  const asksOperationalGroceryAction =
+    /\b(get|make|build|update|generate|run|create|prep|prepare)\b/.test(lower) ||
+    /\brun\s+grocery\s*list\b/.test(lower) ||
+    /\brun\s+!grocerylist\b/.test(lower);
+  const hasMealIdeationLanguage =
+    /\bhelp me think of\b/.test(lower) ||
+    /\bwhat should i make\b/.test(lower) ||
+    /\bmeal ideas?\b/.test(lower) ||
+    /\bplan meals?\b/.test(lower) ||
+    /\beasy meals?\b/.test(lower) ||
+    /\bdinners?\s+for\s+this\s+week\b/.test(lower);
+
+  // If the user mixes ideation/planning with grocery wording, stay in normal chat first.
+  if (mentionsGroceryList && asksOperationalGroceryAction && !hasMealIdeationLanguage) {
+    return { pendingAction: { command: '!grocerylist' }, clarificationReply: null };
+  }
+
+  const s = lower.trim();
+  const wantsHelpMenu =
+    /^help\s*[!?.]*$/.test(s) ||
+    /^what can you do\s*[!?.]*$/.test(s) ||
+    /\bhelp menu\b/.test(s) ||
+    /\bshow help\b/.test(s) ||
+    /\bshow\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
+    /\blist\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
+    /\bwhat\s+commands?\b/.test(s);
+  if (wantsHelpMenu) {
+    return { pendingAction: { command: '!help' }, clarificationReply: null };
+  }
+
+  const renameManual = raw.match(/\brename(?:\s+this)?\s+chat\s+to\s+["“]?(.+?)["”]?\s*$/i);
+  if (renameManual) {
+    const title = String(renameManual[1] ?? '').trim().slice(0, 200);
+    if (title) {
+      return { pendingAction: { command: '!rename', mode: 'manual', args: { title } }, clarificationReply: null };
+    }
+  }
+  if (/\brename(?:\s+this)?\s+chat\b/i.test(raw)) {
+    return { pendingAction: { command: '!rename', mode: 'auto' }, clarificationReply: null };
+  }
+
+  const rememberMatch = raw.match(/\bremember\b\s+([a-zA-Z0-9 _-]{1,60})\s*(?:=|:|\bis\b)\s*(.+)$/i);
+  if (rememberMatch) {
+    const key = normalizeRememberKey(rememberMatch[1]);
+    const value = String(rememberMatch[2] ?? '').trim();
+    if (key && value) {
+      return { pendingAction: { command: '!remember', args: { key, value } }, clarificationReply: null };
+    }
+  }
+  if (/\b(remember|save (?:that|this|it) to memory|write (?:that|this|it) to memory)\b/i.test(raw)) {
+    return {
+      pendingAction: null,
+      clarificationReply:
+        'I can save that with `!remember`, but I need a clear key and value. Example: `!remember favorite_pasta = garlic butter shrimp`.',
+    };
+  }
+
+  return { pendingAction: null, clarificationReply: null };
+}
+
+function sanitizePendingAction(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const cmd = String(raw.command ?? '');
+  if (cmd === '!grocerylist') {
+    const mode = raw.mode == null ? null : String(raw.mode);
+    if (mode == null || mode === '') return { command: '!grocerylist' };
+    if (mode === 'append' || mode === 'replace' || mode === 'prune') {
+      return { command: '!grocerylist', mode };
+    }
+    return null;
+  }
+  if (cmd === '!help') return { command: cmd };
+  if (cmd === '!remember') {
+    const key = normalizeRememberKey(raw.args?.key);
+    const value = String(raw.args?.value ?? '').trim();
+    if (!key || !value) return null;
+    return { command: '!remember', args: { key, value } };
+  }
+  if (cmd === '!rename') {
+    const mode = raw.mode === 'manual' ? 'manual' : 'auto';
+    if (mode === 'manual') {
+      const title = String(raw.args?.title ?? '').trim().slice(0, 200);
+      if (!title) return null;
+      return { command: '!rename', mode, args: { title } };
+    }
+    return { command: '!rename', mode: 'auto' };
+  }
+  return null;
+}
+
+function buildPendingActionReply(action) {
+  if (!action) return '';
+  if (action.command === '!grocerylist') {
+    return "That's a command-backed action. I can run !grocerylist for you. Want me to do that?";
+  }
+  if (action.command === '!help') {
+    return 'I can show the help menu for you. Want me to do that?';
+  }
+  if (action.command === '!remember') {
+    return 'I can save that memory for you with !remember. Want me to do that?';
+  }
+  if (action.command === '!rename' && action.mode === 'manual') {
+    return `I can rename this chat to "${action.args.title}". Want me to do that?`;
+  }
+  if (action.command === '!rename') {
+    return 'I can rename this chat for you based on the thread context. Want me to do that?';
+  }
+  return '';
+}
+
+function parseThreadGrocerySummaryKeys(summaryText) {
+  const keys = new Set();
+  const lines = String(summaryText ?? '').split('\n');
+  for (let line of lines) {
+    line = String(line ?? '').trim();
+    if (!line) continue;
+    if (/^(proteins|produce|dairy\s*\/\s*frozen|pantry\s*\/\s*starches|other|notes\s*\/\s*clarifications)\s*:?\s*$/i.test(line)) {
+      continue;
+    }
+    line = line.replace(/^[-*•]\s*/, '');
+    const pipe = line.split('|').map((p) => p.trim()).filter(Boolean);
+    let candidate = pipe.length >= 2 ? pipe[1] : pipe[0];
+    if (!candidate) continue;
+    candidate = candidate.replace(/\(.*?\)/g, '').trim();
+    if (!candidate) continue;
+    const k = normalizeGroceryNameKey(candidate);
+    if (k) keys.add(k);
+  }
+  return keys;
 }
 
 const compliments = [
@@ -1148,12 +1288,18 @@ app.get('/', (req, res) => {
         }
 
         #login-area {
-          margin-top: 24px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+          min-height: calc(100vh - 28px);
+          margin: 0;
         }
 
         #login-brand {
           text-align: center;
-          margin-bottom: 20px;
+          margin-bottom: 8px;
         }
 
         #login-brand .login-logo {
@@ -1179,17 +1325,20 @@ app.get('/', (req, res) => {
           padding: 16px 18px;
           box-shadow: var(--shadow-soft);
           border: 1px solid rgba(148, 163, 184, 0.25);
+          width: 100%;
+          max-width: 420px;
+          box-sizing: border-box;
         }
 
         #login-form {
           display: none;
-          flex-wrap: wrap;
-          gap: 10px 12px;
-          align-items: center;
+          flex-direction: column;
+          gap: 10px;
+          align-items: stretch;
         }
 
         #login-form.login-form-visible {
-          display: inline-flex;
+          display: flex;
         }
 
         #bootstrap-form {
@@ -1473,16 +1622,23 @@ app.get('/', (req, res) => {
         }
 
         .settings-user-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-          align-items: center;
+          display: grid;
+          grid-template-columns: minmax(140px, 180px) minmax(180px, 1fr) minmax(180px, 1fr) minmax(220px, 1fr);
+          gap: 10px;
+          align-items: start;
           margin-bottom: 8px;
-          padding: 8px;
+          padding: 10px;
           border: 1px solid rgba(229, 231, 235, 0.95);
           border-radius: 8px;
           background: rgba(249, 250, 251, 0.9);
           transition: box-shadow 0.2s ease, background 0.2s ease;
+        }
+
+        .settings-user-name {
+          font-weight: 600;
+          font-size: 14px;
+          line-height: 1.3;
+          word-break: break-word;
         }
 
         .settings-user-row.settings-user-row-role-flash {
@@ -1495,6 +1651,34 @@ app.get('/', (req, res) => {
           flex-direction: column;
           gap: 4px;
           align-items: flex-start;
+        }
+
+        .settings-user-inline-controls {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 6px;
+          width: 100%;
+        }
+
+        .settings-user-inline-controls label,
+        .settings-user-inline-controls span {
+          font-size: 13px;
+          color: var(--text-soft);
+        }
+
+        .settings-user-pref-grid {
+          display: grid;
+          gap: 8px;
+          width: 100%;
+          grid-template-columns: 1fr;
+        }
+
+        .settings-user-pref-toggle {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 13px;
         }
 
         .settings-user-row-role-feedback {
@@ -1819,8 +2003,10 @@ app.get('/', (req, res) => {
           }
 
           #login-area {
-            margin-top: 16px;
             width: 100%;
+            min-height: calc(100vh - 18px);
+            justify-content: center;
+            gap: 10px;
           }
 
           #login-area h2 {
@@ -1911,6 +2097,34 @@ app.get('/', (req, res) => {
 
           #login-status {
             margin-top: -4px;
+          }
+
+          .settings-user-row {
+            grid-template-columns: 1fr;
+            gap: 10px;
+          }
+
+          .settings-user-name {
+            margin-bottom: 2px;
+          }
+
+          .settings-user-row-role-col {
+            width: 100%;
+          }
+
+          .settings-user-inline-controls {
+            flex-direction: column;
+            align-items: stretch;
+          }
+
+          .settings-user-inline-controls select,
+          .settings-user-inline-controls input,
+          .settings-user-inline-controls button {
+            width: 100%;
+          }
+
+          .settings-user-pref-toggle {
+            width: 100%;
           }
 
           #chat {
@@ -2313,6 +2527,191 @@ app.get('/', (req, res) => {
         let lastDeletedGrocery = null;
         let lastDeletedTimeout = null;
         let lastMePayload = null;
+        const pendingActionByChatId = new Map();
+
+        function isPendingActionAffirmative(text) {
+          const t = String(text ?? '').trim().toLowerCase();
+          const s = t.replace(/[!?.]/g, '').replace(/\s+/g, ' ').trim();
+          if (
+            [
+              'yes',
+              'yep',
+              'yeah',
+              'sure',
+              'do it',
+              'run it',
+              'go ahead',
+              'sure go ahead',
+              'yes please',
+              'okay',
+              'ok',
+              'okay do it',
+              'ok do it',
+              'please do',
+            ].includes(s)
+          ) {
+            return true;
+          }
+          return /^(sure|yes|okay|ok)(?:,\s*|\s+)?(?:go ahead|do it|please)?$/.test(s);
+        }
+
+        function isPendingActionDecline(text) {
+          const t = String(text ?? '').trim().toLowerCase();
+          return ['no', 'nope', 'cancel', 'nevermind', 'never mind'].includes(t);
+        }
+
+        /** Vague affirmations that must not pick append/prune/replace for grocery_mode_choice. */
+        function isGroceryVagueOrAffirmative(t) {
+          const s = String(t ?? '').trim().toLowerCase();
+          if (!s) return false;
+          if (
+            [
+              'yes',
+              'yep',
+              'yeah',
+              'do it',
+              'run it',
+              'go ahead',
+              'update it',
+              'fix it',
+              'sure',
+              'ok',
+              'okay',
+            ].includes(s)
+          ) {
+            return true;
+          }
+          return /^(yes|sure|ok|okay)\s*[!?.]*\s*$/i.test(s);
+        }
+
+        function groceryPendingClarifyText(pending) {
+          const opts = pending && Array.isArray(pending.options) ? pending.options : [];
+          if (opts.some((o) => o.mode === 'prune')) {
+            return 'I need to know which behavior you want: keep the old items too, or remove the items we swapped out?';
+          }
+          if (opts.some((o) => o.mode === 'replace')) {
+            return "I need to know which behavior you want: start a new grocery list, or add these items to what's already there?";
+          }
+          return "Please choose one option so I don't run the wrong action: say 'add', 'start new', 'keep', or 'remove swapped-out items'.";
+        }
+
+        function groceryModeConfirmLine(mode) {
+          if (mode === 'append') return "Okay, I'll keep the old items and add the new ones.";
+          if (mode === 'prune') return "Okay, I'll remove likely swapped-out items, then add the new ones.";
+          if (mode === 'replace') return "Okay, I'll start a new grocery list.";
+          return '';
+        }
+
+        /** Replace (start fresh) intent for grocery_mode_choice — not used for vague affirmations (caller checks first). */
+        function groceryUserWantsReplace(t) {
+          const s = String(t ?? '').trim().toLowerCase();
+          if (!s) return false;
+          if (isGroceryVagueOrAffirmative(s)) return false;
+          if (s === 'new' || /^new\s*[!?.]*\s*$/i.test(s)) return true;
+          if (s === 'fresh' || /^fresh\s*[!?.]*\s*$/i.test(s)) return true;
+          if (s === 'replace' || /^replace\s*[!?.]*\s*$/i.test(s)) return true;
+          if (s === 'overwrite' || /^overwrite\s*[!?.]*\s*$/i.test(s)) return true;
+          const phrases = [
+            'start new',
+            'start a new',
+            'start a new one',
+            'start a new list',
+            'start a new grocery list',
+            'new list',
+            'start fresh',
+            'start over',
+            'wipe it and start over',
+            'replace it',
+            "replace what's there",
+            'replace what’s there',
+          ];
+          for (const p of phrases) {
+            if (s.includes(p)) return true;
+          }
+          if (s.includes('replace what') && s.includes('there')) return true;
+          return false;
+        }
+
+        function resolvePendingActionFromUserReply(text, pending) {
+          const t = String(text ?? '').trim().toLowerCase();
+          if (!pending) return { kind: 'none', action: null };
+          if (isPendingActionDecline(t)) return { kind: 'decline', action: null };
+          if (Array.isArray(pending.options) && pending.options.length > 0) {
+            const options = pending.options;
+            const hasPrune = options.some((o) => String(o.mode || '') === 'prune');
+            const hasReplace = options.some((o) => String(o.mode || '') === 'replace');
+
+            const strictAppendToList =
+              /^\s*(add|append|keep)(\s*[!?.])?\s*$/i.test(t) ||
+              /\bkeep\s+(?:them|old\s+items|everything|the\s+old(?:\s+items)?)\b/i.test(t) ||
+              /\bkeep\s+old\b/i.test(t) ||
+              /\badd\s+(?:to|these|it)\b/i.test(t) ||
+              /\badd\s+to\s+what(?:'|'|\u2019)s\s+(?:already\s+)?there\b/i.test(t);
+
+            const mealPrune =
+              /\bprune\b/i.test(t) ||
+              /^\s*remove\s*[!?.]*\s*$/i.test(t) ||
+              /\bremove\s+the\s+ones\s+we\s+swapped\s+out\b/i.test(t) ||
+              /\bremove\s+old\b/i.test(t) ||
+              /\bremove\s+(?:old\s+items|swapped\s*-?\s*out\s+items|the\s+items\s+we\s+swapped\s+out)\b/i.test(t) ||
+              /\bremove\s+swapped/i.test(t) ||
+              /\b(swapped|swap)\s+them\s+out\b/i.test(t) ||
+              /\bclean\s+up\s+old\s+items\b/i.test(t) ||
+              /\breplace\s+old\s+items\b/i.test(t) ||
+              /\bswapped[- ]?out\b/i.test(t) ||
+              /\bdrop\s+old\b/i.test(t);
+
+            if (hasPrune) {
+              if (isGroceryVagueOrAffirmative(t)) return { kind: 'ambiguous', action: null };
+              if (mealPrune) {
+                return {
+                  kind: 'execute',
+                  action: options.find((o) => o.command === '!grocerylist' && o.mode === 'prune') || null,
+                };
+              }
+              if (strictAppendToList) {
+                return {
+                  kind: 'execute',
+                  action: options.find((o) => o.command === '!grocerylist' && o.mode === 'append') || null,
+                };
+              }
+              return { kind: 'none', action: null };
+            }
+
+            if (hasReplace) {
+              if (isGroceryVagueOrAffirmative(t)) {
+                return { kind: 'ambiguous', action: null };
+              }
+              const wantsReplace = groceryUserWantsReplace(t);
+              const replaceAction =
+                options.find(
+                  (o) =>
+                    String(o.command ?? '') === '!grocerylist' && String(o.mode ?? '') === 'replace'
+                ) || null;
+              if (wantsReplace) {
+                return {
+                  kind: 'execute',
+                  action: replaceAction,
+                };
+              }
+              if (strictAppendToList) {
+                return {
+                  kind: 'execute',
+                  action:
+                    options.find(
+                      (o) =>
+                        String(o.command ?? '') === '!grocerylist' && String(o.mode ?? '') === 'append'
+                    ) || null,
+                };
+              }
+              return { kind: 'none', action: null };
+            }
+
+            return { kind: 'none', action: null };
+          }
+          if (isPendingActionAffirmative(t)) return { kind: 'execute', action: pending };
+          return { kind: 'none', action: null };
+        }
 
         /** @returns {'God mode' | 'Demo mode' | 'Read-only mode'} */
         function impersonationReadOnlyModeLabel() {
@@ -2715,19 +3114,14 @@ app.get('/', (req, res) => {
               const row = document.createElement('div');
               row.className = 'settings-user-row';
               const label = document.createElement('span');
-              label.style.flex = '1';
+              label.className = 'settings-user-name';
               label.textContent = u.displayName;
               const roleCol = document.createElement('div');
               roleCol.className = 'settings-user-row-role-col';
               const roleWrap = document.createElement('div');
-              roleWrap.style.display = 'flex';
-              roleWrap.style.alignItems = 'center';
-              roleWrap.style.flexWrap = 'wrap';
-              roleWrap.style.gap = '6px';
+              roleWrap.className = 'settings-user-inline-controls';
               const roleLbl = document.createElement('span');
               roleLbl.textContent = 'Role';
-              roleLbl.style.fontSize = '13px';
-              roleLbl.style.color = 'var(--text-soft)';
               const roleSel = document.createElement('select');
               roleSel.setAttribute('aria-label', 'Role for ' + u.displayName);
               [['owner', 'Owner'], ['member', 'Member']].forEach(([val, lab]) => {
@@ -2808,10 +3202,9 @@ app.get('/', (req, res) => {
               const pinCol = document.createElement('div');
               pinCol.className = 'settings-user-row-role-col';
               const pinRow = document.createElement('div');
-              pinRow.style.display = 'flex';
-              pinRow.style.flexWrap = 'wrap';
-              pinRow.style.gap = '6px';
-              pinRow.style.alignItems = 'center';
+              pinRow.className = 'settings-user-inline-controls';
+              const pinLbl = document.createElement('span');
+              pinLbl.textContent = 'PIN';
               const pinIn = document.createElement('input');
               pinIn.type = 'password';
               pinIn.placeholder = 'new PIN';
@@ -2873,6 +3266,7 @@ app.get('/', (req, res) => {
                   syncPinButton();
                 }
               });
+              pinRow.appendChild(pinLbl);
               pinRow.appendChild(pinIn);
               pinRow.appendChild(btn);
               pinCol.appendChild(pinRow);
@@ -2882,12 +3276,10 @@ app.get('/', (req, res) => {
               row.appendChild(pinCol);
               const complCol = document.createElement('div');
               complCol.className = 'settings-user-row-role-col';
-              complCol.style.marginLeft = '8px';
+              const prefGrid = document.createElement('div');
+              prefGrid.className = 'settings-user-pref-grid';
               const complWrap = document.createElement('label');
-              complWrap.style.display = 'flex';
-              complWrap.style.alignItems = 'center';
-              complWrap.style.gap = '6px';
-              complWrap.style.fontSize = '13px';
+              complWrap.className = 'settings-user-pref-toggle';
               const complChk = document.createElement('input');
               complChk.type = 'checkbox';
               complChk.checked = u.complimentsEnabled !== false;
@@ -2932,20 +3324,12 @@ app.get('/', (req, res) => {
               complLbl.textContent = 'Compliments';
               complWrap.appendChild(complChk);
               complWrap.appendChild(complLbl);
-              complCol.appendChild(complWrap);
-              complCol.appendChild(complFeedback);
-              row.appendChild(complCol);
               const colorCol = document.createElement('div');
               colorCol.className = 'settings-user-row-role-col';
               const colorWrap = document.createElement('div');
-              colorWrap.style.display = 'flex';
-              colorWrap.style.alignItems = 'center';
-              colorWrap.style.flexWrap = 'wrap';
-              colorWrap.style.gap = '6px';
+              colorWrap.className = 'settings-user-inline-controls';
               const colorLbl = document.createElement('span');
               colorLbl.textContent = 'Chat color';
-              colorLbl.style.fontSize = '13px';
-              colorLbl.style.color = 'var(--text-soft)';
               const colorSel = document.createElement('select');
               colorSel.setAttribute('aria-label', 'Chat color for ' + u.displayName);
               CHAT_COLOR_OPTIONS.forEach((opt) => {
@@ -3002,7 +3386,11 @@ app.get('/', (req, res) => {
               colorWrap.appendChild(colorSel);
               colorCol.appendChild(colorWrap);
               colorCol.appendChild(colorFeedback);
-              row.appendChild(colorCol);
+              prefGrid.appendChild(complWrap);
+              prefGrid.appendChild(complFeedback);
+              prefGrid.appendChild(colorCol);
+              complCol.appendChild(prefGrid);
+              row.appendChild(complCol);
               listEl.appendChild(row);
             }
             if (msgEl) msgEl.textContent = '';
@@ -4279,7 +4667,50 @@ app.get('/', (req, res) => {
           }
 
           const speaker = speakerName.textContent || 'Rob';
+          const pendingForChat =
+            currentChatId != null ? pendingActionByChatId.get(Number(currentChatId)) : null;
+          const pendingHasOptions =
+            pendingForChat &&
+            Array.isArray(pendingForChat.options) &&
+            pendingForChat.options.length > 0;
+          const pendingResolution = resolvePendingActionFromUserReply(prompt, pendingForChat);
+          const actionToExecute =
+            pendingResolution.kind === 'execute' && pendingResolution.action
+              ? pendingResolution.action
+              : null;
+          const groceryClarifyMsg = pendingHasOptions
+            ? groceryPendingClarifyText(pendingForChat)
+            : "Please choose one option so I don't run the wrong action: say 'add', 'start new', 'keep', or 'remove swapped-out items'.";
+          if (pendingForChat && pendingResolution.kind === 'decline') {
+            pendingActionByChatId.delete(Number(currentChatId));
+          } else if (pendingForChat && pendingResolution.kind === 'none' && pendingHasOptions) {
+            addMessage('user', speaker, prompt);
+            addMessage('assistant', 'KitchenBot', groceryClarifyMsg);
+            promptInput.value = '';
+            resizePromptInput();
+            chat.scrollTop = chat.scrollHeight;
+            return;
+          } else if (pendingForChat && pendingResolution.kind === 'none') {
+            pendingActionByChatId.delete(Number(currentChatId));
+          } else if (pendingForChat && pendingResolution.kind === 'ambiguous') {
+            addMessage('user', speaker, prompt);
+            addMessage('assistant', 'KitchenBot', groceryClarifyMsg);
+            promptInput.value = '';
+            resizePromptInput();
+            chat.scrollTop = chat.scrollHeight;
+            return;
+          } else if (pendingForChat && actionToExecute) {
+            pendingActionByChatId.delete(Number(currentChatId));
+          }
           addMessage('user', speaker, prompt);
+          if (
+            actionToExecute &&
+            actionToExecute.command === '!grocerylist' &&
+            actionToExecute.mode
+          ) {
+            const confirmLine = groceryModeConfirmLine(actionToExecute.mode);
+            if (confirmLine) addMessage('assistant', 'KitchenBot', confirmLine);
+          }
           promptInput.value = '';
           resizePromptInput();
           weAreStreamingThisChat = true;
@@ -4302,7 +4733,12 @@ app.get('/', (req, res) => {
             const response = await fetch('/chat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ prompt, name: speaker, chatId: currentChatId })
+              body: JSON.stringify({
+                prompt,
+                name: speaker,
+                chatId: currentChatId,
+                ...(actionToExecute ? { executePendingAction: actionToExecute } : {}),
+              })
             });
 
             if (!response.ok) {
@@ -4333,6 +4769,18 @@ app.get('/', (req, res) => {
               }
               thinkingBody.textContent = replyText;
               return;
+            }
+
+            const pendingActionHeader = response.headers.get('X-KitchenBot-Pending-Action');
+            if (pendingActionHeader && currentChatId != null) {
+              try {
+                pendingActionByChatId.set(
+                  Number(currentChatId),
+                  JSON.parse(decodeURIComponent(pendingActionHeader))
+                );
+              } catch (e) {
+                pendingActionByChatId.delete(Number(currentChatId));
+              }
             }
 
             const reader = response.body.getReader();
@@ -5105,7 +5553,7 @@ function normalizeGroceryNameKey(name) {
 }
 
 /** Merge AI-parsed rows into existing list: match unchecked items by section + normalized name; update amount or insert. */
-async function mergeGroceryItemsFromAi(householdId, parsedItems) {
+async function mergeGroceryItemsFromAi(householdId, parsedItems, sourceChatId) {
   if (!parsedItems.length) return;
   const existing = await getGroceryItems(householdId);
   const byKey = new Map();
@@ -5125,6 +5573,13 @@ async function mergeGroceryItemsFromAi(householdId, parsedItems) {
     const k = `${section}::${normalizeGroceryNameKey(nameDisp)}`;
     if (byKey.has(k)) {
       const match = byKey.get(k);
+      if (Number.isFinite(Number(sourceChatId))) {
+        try {
+          await backfillGroceryItemSourceChatIfSafe(householdId, match.id, sourceChatId);
+        } catch (_) {
+          // Non-fatal provenance backfill.
+        }
+      }
       const oldAmt = String(match.amount ?? '').trim();
       if (newAmt !== '' && newAmt !== oldAmt) {
         try {
@@ -5145,7 +5600,11 @@ async function mergeGroceryItemsFromAi(householdId, parsedItems) {
       pendingByKey.set(k, row);
     }
   }
-  if (toInsert.length) await addGroceryItems(householdId, toInsert);
+  if (toInsert.length) {
+    await addGroceryItems(householdId, toInsert, {
+      sourceChatId: Number.isFinite(Number(sourceChatId)) ? Number(sourceChatId) : null,
+    });
+  }
 }
 
 app.get('/groceries', requireHousehold, requireAuth, async (req, res) => {
@@ -5231,10 +5690,51 @@ app.post(
     if (!Number.isFinite(chatId)) {
       return res.status(400).json({ reply: 'chatId is required.' });
     }
+    const executePendingAction = sanitizePendingAction(req.body.executePendingAction);
+    const routePrompt = (() => {
+      if (executePendingAction?.command === '!grocerylist') return '!grocerylist';
+      if (executePendingAction?.command === '!help') return '!help';
+      if (executePendingAction?.command === '!rename') {
+        return executePendingAction.mode === 'manual'
+          ? `!rename ${executePendingAction.args.title}`
+          : '!rename';
+      }
+      if (executePendingAction?.command === '!remember') {
+        return `!remember ${executePendingAction.args.key} = ${executePendingAction.args.value}`;
+      }
+      return prompt;
+    })();
+    const commandUserTextForPersistence = executePendingAction ? prompt : routePrompt;
+
+    if (!executePendingAction && routePrompt && !String(routePrompt).trim().startsWith('!')) {
+      const intent = detectCommandIntentFromNaturalLanguage(routePrompt);
+      if (intent.clarificationReply) {
+        await addMessage(chatId, req.householdId, 'user', name, routePrompt);
+        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', intent.clarificationReply);
+        await incrementUserMessageCountForSender(req);
+        if (typeof broadcastToChat === 'function') {
+          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+        }
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.end(intent.clarificationReply);
+      }
+      if (intent.pendingAction) {
+        const reply = buildPendingActionReply(intent.pendingAction);
+        await addMessage(chatId, req.householdId, 'user', name, routePrompt);
+        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+        await incrementUserMessageCountForSender(req);
+        if (typeof broadcastToChat === 'function') {
+          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+        }
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(intent.pendingAction)));
+        return res.end(reply);
+      }
+    }
 
     // Private commands (!love, !help, !memories): isPrivateChatCommand — HTTP reply to sender only; no addMessage / broadcastToChat.
-    if (isPrivateChatCommand(prompt) && /^!love(?:\s|$)/.test(prompt)) {
-      const loveRest = prompt.match(/^!love\s*(.*)$/);
+    if (isPrivateChatCommand(routePrompt) && /^!love(?:\s|$)/.test(routePrompt)) {
+      const loveRest = routePrompt.match(/^!love\s*(.*)$/);
       const targetName = loveRest && loveRest[1] != null ? String(loveRest[1]).trim() : '';
       if (!targetName) {
         const reply =
@@ -5258,7 +5758,7 @@ app.post(
       return res.end(reply);
     }
 
-    if (prompt === '!help' && isPrivateChatCommand(prompt)) {
+    if (routePrompt === '!help' && isPrivateChatCommand(routePrompt)) {
       const reply = '📋 KitchenBot commands\n\n' + getHelpReply();
       await incrementUserMessageCountForSender(req);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -5279,7 +5779,7 @@ app.post(
       return res.status(503).json({ reply: ANTHROPIC_KEY_USER_MESSAGE });
     }
 
-    const renameMatch = prompt?.match(/^!rename\s*(.*)$/);
+    const renameMatch = routePrompt?.match(/^!rename\s*(.*)$/);
     if (renameMatch) {
       const arg = typeof renameMatch[1] === 'string' ? renameMatch[1].trim() : '';
       await incrementUserMessageCountForSender(req);
@@ -5319,12 +5819,15 @@ app.post(
       return res.end(reply);
     }
 
-    const memoriesCommand = isMemoriesCommand(prompt);
+    const memoriesCommand = isMemoriesCommand(routePrompt);
 
-    const memoryParsed = parseMemoryCommand(prompt);
-    const groceryListCommand = isGroceryListCommand(prompt);
+    const memoryParsed =
+      executePendingAction?.command === '!remember'
+        ? { key: executePendingAction.args.key, value: executePendingAction.args.value }
+        : parseMemoryCommand(routePrompt);
+    const groceryListCommand = isGroceryListCommand(routePrompt);
 
-    if (memoriesCommand && isPrivateChatCommand(prompt)) {
+    if (memoriesCommand && isPrivateChatCommand(routePrompt)) {
       const memories = (await getMemories(req.householdId)).filter((m) => m.key !== 'assistant_name');
 
       const reply = memories.length
@@ -5336,8 +5839,8 @@ app.post(
     }
 
     // Shared command !remember: isSharedChatCommand (memoryParsed); persist + broadcast.
-    if (memoryParsed && isSharedChatCommand(prompt, memoryParsed)) {
-      await addMessage(chatId, req.householdId, 'user', name, prompt);
+    if (memoryParsed && isSharedChatCommand(routePrompt, memoryParsed)) {
+      await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
       let reply;
       if (memoryParsed.error) {
         reply = memoryParsed.error;
@@ -5373,8 +5876,12 @@ app.post(
       return res.end(reply);
     }
 
-    if (groceryListCommand && isSharedChatCommand(prompt, memoryParsed)) {
+    if (groceryListCommand && isSharedChatCommand(routePrompt, memoryParsed)) {
       await incrementUserMessageCountForSender(req);
+      const requestedGroceryMode =
+        executePendingAction && executePendingAction.command === '!grocerylist'
+          ? executePendingAction.mode || null
+          : null;
 
       const conversation = await getMessages(chatId, req.householdId);
       const conversationForContext = conversation.filter(
@@ -5387,10 +5894,36 @@ app.post(
       const priorCtx = await getChatThreadContext(chatId, req.householdId);
       const priorMealPlanSummary = priorCtx.mealPlanSummary;
       const priorThreadGrocerySummary = priorCtx.threadGrocerySummary;
+      const threadHasGroceryContext = priorThreadGrocerySummary.trim().length > 0;
+      const existingGroceryItems = await getGroceryItems(req.householdId);
 
       const memoryText = memories
         .map(memory => `${memory.key}: ${memory.value}`)
         .join('\n');
+
+      if (requestedGroceryMode == null && !threadHasGroceryContext && existingGroceryItems.length > 0) {
+        const reply =
+          "Looks like you already have items in your Grocery tab. Do you want me to start a new list or add these to what's already there?";
+        await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
+        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+        if (typeof broadcastToChat === 'function') {
+          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+        }
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader(
+          'X-KitchenBot-Pending-Action',
+          encodeURIComponent(
+            JSON.stringify({
+              type: 'grocery_mode_choice',
+              options: [
+                { command: '!grocerylist', mode: 'replace' },
+                { command: '!grocerylist', mode: 'append' },
+              ],
+            })
+          )
+        );
+        return res.end(reply);
+      }
 
       const claudeMessages = recentConversation.map(message => ({
         role: message.role,
@@ -5452,9 +5985,51 @@ Where:
       }
 
       const normalizedItems = normalizeGroceryItemsForPost(items);
+      const priorKeys = parseThreadGrocerySummaryKeys(priorThreadGrocerySummary);
+      const runKeys = new Set(normalizedItems.map((i) => normalizeGroceryNameKey(i.name)).filter(Boolean));
+      const likelyRemovedKeys = new Set([...priorKeys].filter((k) => !runKeys.has(k)));
+      const likelyAddedKeys = new Set([...runKeys].filter((k) => !priorKeys.has(k)));
+      const planChangedLikely =
+        priorKeys.size > 0 && runKeys.size > 0 && (likelyRemovedKeys.size > 0 || likelyAddedKeys.size > 0);
+
+      if (requestedGroceryMode == null && threadHasGroceryContext && planChangedLikely) {
+        const reply =
+          'We made some changes to this plan. Do you want me to keep the old items or remove the items we swapped out?';
+        await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
+        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+        if (typeof broadcastToChat === 'function') {
+          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+        }
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader(
+          'X-KitchenBot-Pending-Action',
+          encodeURIComponent(
+            JSON.stringify({
+              type: 'grocery_mode_choice',
+              options: [
+                { command: '!grocerylist', mode: 'append' },
+                { command: '!grocerylist', mode: 'prune' },
+              ],
+            })
+          )
+        );
+        return res.end(reply);
+      }
+
+      const effectiveGroceryMode = requestedGroceryMode || 'append';
+      let prunedCount = 0;
+      if (effectiveGroceryMode === 'replace') {
+        await clearGroceryItems(req.householdId);
+      } else if (effectiveGroceryMode === 'prune') {
+        try {
+          prunedCount = await pruneStaleGroceryItemsForChat(req.householdId, runKeys, chatId);
+        } catch (e) {
+          console.error('Grocery prune failed:', e.message || e);
+        }
+      }
       const groceryListWasUpdated = normalizedItems.length > 0;
       if (groceryListWasUpdated) {
-        await mergeGroceryItemsFromAi(req.householdId, normalizedItems);
+        await mergeGroceryItemsFromAi(req.householdId, normalizedItems, chatId);
       }
 
       const conversationSnippet = recentConversation
@@ -5465,6 +6040,11 @@ Where:
       const commandOutcomeBlock = groceryListWasUpdated
         ? `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- A grocery list was generated for this thread via !grocerylist and the household grocery list was updated in the app with the items from this run.`
         : `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- No grocery items were saved from this run (nothing to merge); the household grocery list was not updated by this request.`;
+      const pruneOutcomeLine =
+        effectiveGroceryMode === 'prune'
+          ? `\n- Prune mode removed ${prunedCount} stale item(s) attributed to this chat from the household grocery list.`
+          : '';
+      const commandOutcomeWithPrune = commandOutcomeBlock + pruneOutcomeLine;
 
       const itemsThisRunText =
         normalizedItems.length > 0
@@ -5490,7 +6070,7 @@ Rules:
           messages: [
             {
               role: 'user',
-              content: `${commandOutcomeBlock}\n\nPrevious meal-plan summary for this thread (may be empty):\n${priorMealPlanSummary.trim() || '(none)'}\n\nHousehold memory:\n${memoryText || '(none)'}\n\nRecent conversation (this chat, before this !grocerylist turn is persisted):\n${conversationSnippet}\n\nWrite the updated replacement summary for this thread. Reflect the command outcome above accurately (e.g. if the grocery list was updated in the app, say so; do not say the user still needs to run a command to save it).`,
+              content: `${commandOutcomeWithPrune}\n\nPrevious meal-plan summary for this thread (may be empty):\n${priorMealPlanSummary.trim() || '(none)'}\n\nHousehold memory:\n${memoryText || '(none)'}\n\nRecent conversation (this chat, before this !grocerylist turn is persisted):\n${conversationSnippet}\n\nWrite the updated replacement summary for this thread. Reflect the command outcome above accurately (e.g. if the grocery list was updated in the app, say so; do not say the user still needs to run a command to save it).`,
             },
           ],
         });
@@ -5524,7 +6104,7 @@ Rules:
           messages: [
             {
               role: 'user',
-              content: `${commandOutcomeBlock}\n\nPrevious cumulative thread grocery summary (may be empty):\n${priorThreadGrocerySummary.trim() || '(none)'}\n\nMeal plan context for this thread (may be empty):\n${mealPlanToStore.trim() || '(none)'}\n\nItems from this !grocerylist run (section | product | amount):\n${itemsThisRunText}\n\nHousehold memory (context only):\n${memoryText || '(none)'}\n\nRecent conversation (this chat, before this !grocerylist line is persisted):\n${conversationSnippet}\n\nWrite the full replacement cumulative thread grocery summary for what this thread intends to buy so far.`,
+              content: `${commandOutcomeWithPrune}\n\nPrevious cumulative thread grocery summary (may be empty):\n${priorThreadGrocerySummary.trim() || '(none)'}\n\nMeal plan context for this thread (may be empty):\n${mealPlanToStore.trim() || '(none)'}\n\nItems from this !grocerylist run (section | product | amount):\n${itemsThisRunText}\n\nHousehold memory (context only):\n${memoryText || '(none)'}\n\nRecent conversation (this chat, before this !grocerylist line is persisted):\n${conversationSnippet}\n\nWrite the full replacement cumulative thread grocery summary for what this thread intends to buy so far.`,
             },
           ],
         });
@@ -5550,7 +6130,7 @@ Rules:
         ? 'I updated the grocery list. Head over to the Grocery List tab to check it.'
         : 'I was not able to build a grocery list from our conversation.';
 
-      await addMessage(chatId, req.householdId, 'user', name, prompt);
+      await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
       await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
       if (typeof broadcastToChat === 'function') {
         broadcastToChat(chatId, {
@@ -5565,18 +6145,18 @@ Rules:
       return res.end(reply);
     }
 
-    if (prompt.trim().startsWith('!')) {
+    if (String(routePrompt ?? '').trim().startsWith('!')) {
       const reply = 'Unknown command.\n\n' + getHelpReply();
       await incrementUserMessageCountForSender(req);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
     }
 
-    if (!prompt) {
+    if (!routePrompt) {
       return res.status(400).json({ reply: 'Prompt is required.' });
     }
 
-    await addMessage(chatId, req.householdId, 'user', name, prompt);
+    await addMessage(chatId, req.householdId, 'user', name, routePrompt);
     await incrementUserMessageCountForSender(req);
     if (typeof broadcastToChat === 'function') {
       broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
@@ -5642,7 +6222,7 @@ Rules:
     }
 
     const useWebSearchTool =
-      householdWebSearchEnabled && shouldEnableWebSearchForPrompt(prompt);
+      householdWebSearchEnabled && shouldEnableWebSearchForPrompt(routePrompt);
 
     const webSearchCapabilityBlock = useWebSearchTool
       ? `Web (this request): Anthropic web_search IS attached. Only attribute content to a site or URL if the search tool actually returned that material this turn. Do not fabricate "exact" ingredients, steps, or quotes from a page you did not receive via the tool. If the tool did not return a page body, say you do not have the exact text from that source.`
@@ -5657,8 +6237,14 @@ Rules:
 
     Capability contract — this reply is plain text generation only. It does not run app actions.
     - What actually changes persisted app state are user-typed commands and the Settings UI—not conversational phrasing. Command-backed examples: \`!remember <key> = <value>\` (memories), \`!grocerylist\` (grocery list from chat), \`!rename\` / \`!rename <title>\` (chat title), \`!love <name>\` (compliment boost). Listing memories: \`!memories\`. Full list: \`!help\`.
+    - Current-reply limitation: This normal chat answer cannot execute \`!\` commands or newly mutate persisted app state; only user-typed commands (and Settings) do that in their own turns—not conversational wording in this reply.
+    - Past-action honesty: If this chat’s history or the injected thread context clearly shows a command-backed action already ran in a prior turn (e.g. a \`!\` command with a matching assistant outcome), you may truthfully acknowledge that it happened. Do not deny past real app effects only because this reply is plain text generation. Do not invent prior actions that the chat does not support.
     - You can suggest, draft, summarize, format, and explain. You cannot execute those commands yourself from this reply.
-    - Action honesty: Never claim the app changed (grocery list, memory, chat title, settings, etc.) unless you are quoting what the user must type or describing a hypothetical. Avoid "done", "saved", "updated", "I remembered", "I renamed" for real state. If they asked in plain English for persistence, say you have not changed anything in the app yet, then give a draft and the right \`!\` command or next step.
+    - Action honesty: Never claim you just changed the app in this reply (grocery list, memory, chat title, settings, etc.) unless you are quoting what the user must type or describing a hypothetical. Avoid "done", "saved", "updated", "I remembered", "I renamed" for state you did not actually cause in this turn. If they asked in plain English for persistence, say you have not changed anything in the app from this message, then give a draft and the right \`!\` command or next step. This does not require denying a prior turn that clearly succeeded—see past-action honesty above.
+
+    Interaction model honesty: You produce exactly one reply to the current user message. You cannot send a later follow-up on your own unless the user sends another message. If web search or other tools are attached for this request, use them within this same reply and deliver the useful result here—do not narrate work as if it will complete after you finish typing. Never imply background work, waiting, or a second outbound message (avoid phrasing like "let me search now", "stand by", "once I get the results", "I'll come back with", or any equivalent). Do not output raw search queries unless the user explicitly asks to see them.
+
+    Optional next-step offer (grocery only): If this reply is actually doing meal-planning/grocery-draft help for this chat (not an unrelated topic), you may end with an optional permission ask like "If you want, I can update the Grocery List tab for you." Do not claim it is already updated. Do not ask them to type \`!grocerylist\`. If and only if you include that optional offer, prepend exactly this hidden marker at the very start of the reply: [[KB_OFFER_GROCERY_UPDATE]] . Do not explain or expose the marker.
 
     ${webSearchCapabilityBlock}
     Source-specific content: You may only present ingredients, steps, prices, dates, or other details as coming from a named site, book, or URL if those exact details are already in this chat (including household memory below), or came from web_search tool results this turn. Otherwise you do not have that source—say so plainly. Never pass off pattern-matching or general knowledge as "from that page" or "from that recipe." If they share only a URL, you cannot give the real ingredient list from that page without tool results or pasted text; offer a clearly labeled generic version (e.g. "a typical baked mac and cheese, not the exact Chunky Chef recipe") or ask them to paste the ingredients.
@@ -5690,22 +6276,71 @@ Rules:
     res.setHeader('X-Accel-Buffering', 'no');
 
     let finalReply = '';
+    const pendingOfferMarker = '[[KB_OFFER_GROCERY_UPDATE]]';
+    let pendingOfferDecisionMade = false;
+    let pendingOfferAction = null;
+    let pendingOfferBuffer = '';
+
+    function writeChatDelta(delta) {
+      if (!delta) return;
+      finalReply += delta;
+      res.write(delta);
+      if (typeof broadcastToChat === 'function') {
+        broadcastToChat(chatId, {
+          type: 'stream_delta',
+          householdId: req.householdId,
+          chatId,
+          delta,
+          user: name,
+        });
+      }
+    }
 
     for await (const event of stream) {
       if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
         const delta = event.delta.text;
-        finalReply += delta;
-        res.write(delta);
-        if (typeof broadcastToChat === 'function') {
-          broadcastToChat(chatId, {
-            type: 'stream_delta',
-            householdId: req.householdId,
-            chatId,
-            delta,
-            user: name,
-          });
+        pendingOfferBuffer += delta;
+        if (!pendingOfferDecisionMade) {
+          if (
+            pendingOfferBuffer.length >= pendingOfferMarker.length ||
+            pendingOfferBuffer.includes('\n') ||
+            pendingOfferBuffer.includes('\r')
+          ) {
+            if (pendingOfferBuffer.startsWith(pendingOfferMarker)) {
+              pendingOfferAction = { command: '!grocerylist' };
+              res.setHeader(
+                'X-KitchenBot-Pending-Action',
+                encodeURIComponent(JSON.stringify(pendingOfferAction))
+              );
+              pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
+              pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
+            }
+            pendingOfferDecisionMade = true;
+            if (pendingOfferBuffer) {
+              writeChatDelta(pendingOfferBuffer);
+              pendingOfferBuffer = '';
+            }
         }
+          continue;
+        }
+        writeChatDelta(delta);
       }
+    }
+    if (!pendingOfferDecisionMade) {
+      if (pendingOfferBuffer.startsWith(pendingOfferMarker)) {
+        pendingOfferAction = { command: '!grocerylist' };
+        res.setHeader(
+          'X-KitchenBot-Pending-Action',
+          encodeURIComponent(JSON.stringify(pendingOfferAction))
+        );
+        pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
+        pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
+      }
+      if (pendingOfferBuffer) {
+        writeChatDelta(pendingOfferBuffer);
+        pendingOfferBuffer = '';
+      }
+      pendingOfferDecisionMade = true;
     }
 
     /* ---- COMPLIMENT LOGIC (per sending user) ---- */

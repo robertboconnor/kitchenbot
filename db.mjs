@@ -244,6 +244,14 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    name: '006_add_source_chat_id_to_grocery_items',
+    async up() {
+      if (!(await migrationTableHasColumn('grocery_items', 'source_chat_id'))) {
+        await migrationRun(`ALTER TABLE grocery_items ADD COLUMN source_chat_id INTEGER NULL`);
+      }
+    },
+  },
 ];
 
 /** Runs ordered migrations once each; fails startup if any migration fails. */
@@ -933,17 +941,22 @@ export function upsertMemory(householdId, key, value) {
   });
 }
 
-export function addGroceryItems(householdId, items) {
+/** @param {{ sourceChatId?: number | null }} [opts] When set (e.g. !grocerylist), attributes rows to that chat for targeted prune. */
+export function addGroceryItems(householdId, items, opts = {}) {
   return new Promise((resolve, reject) => {
     if (!items || items.length === 0) return resolve();
 
+    const rawSrc = opts.sourceChatId;
+    const sourceChatId =
+      rawSrc != null && Number.isFinite(Number(rawSrc)) ? Number(rawSrc) : null;
+
     const stmt = db.prepare(
-      `INSERT INTO grocery_items (household_id, name, section, amount, checked) VALUES (?, ?, ?, ?, 0)`
+      `INSERT INTO grocery_items (household_id, name, section, amount, checked, source_chat_id) VALUES (?, ?, ?, ?, 0, ?)`
     );
 
     db.serialize(() => {
       for (const item of items) {
-        stmt.run([householdId, item.name, item.section, item.amount || '']);
+        stmt.run([householdId, item.name, item.section, item.amount || '', sourceChatId]);
       }
       stmt.finalize((err) => {
         if (err) reject(err);
@@ -957,7 +970,7 @@ export function getGroceryItems(householdId) {
   return new Promise((resolve, reject) => {
     db.all(
       `
-      SELECT id, name, section, amount, checked
+      SELECT id, name, section, amount, checked, source_chat_id
       FROM grocery_items
       WHERE household_id = ?
       ORDER BY
@@ -1034,6 +1047,34 @@ export function updateGroceryItemAmount(householdId, id, amount) {
   });
 }
 
+/**
+ * For matched unchecked rows during !grocerylist merge:
+ * - Set source_chat_id when currently NULL
+ * - Keep as-is when already this chat
+ * - Never overwrite another chat's non-null provenance
+ */
+export function backfillGroceryItemSourceChatIfSafe(householdId, id, sourceChatId) {
+  const cid = Number(sourceChatId);
+  if (!Number.isFinite(cid)) return Promise.resolve(0);
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+      UPDATE grocery_items
+      SET source_chat_id = ?
+      WHERE id = ?
+        AND household_id = ?
+        AND checked = 0
+        AND (source_chat_id IS NULL OR source_chat_id = ?)
+      `,
+      [cid, id, householdId, cid],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.changes || 0);
+      }
+    );
+  });
+}
+
 export function deleteGroceryItem(householdId, id) {
   return new Promise((resolve, reject) => {
     db.run(`DELETE FROM grocery_items WHERE id = ? AND household_id = ?`, [id, householdId], function (err) {
@@ -1050,6 +1091,38 @@ export function clearGroceryItems(householdId) {
       else resolve();
     });
   });
+}
+
+function normalizeGroceryNameKeyForPrune(name) {
+  return String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Remove unchecked stale rows keyed by normalized product name, only when the row is attributed
+ * to sourceChatId (from !grocerylist). Rows with NULL source_chat_id (legacy/manual) are left alone.
+ */
+export async function pruneStaleGroceryItemsForChat(householdId, currentRunNameKeys, sourceChatId) {
+  const cid = Number(sourceChatId);
+  if (!Number.isFinite(cid)) return 0;
+  const runKeys = currentRunNameKeys instanceof Set ? currentRunNameKeys : new Set();
+  const existing = await getGroceryItems(householdId);
+  let removed = 0;
+  for (const e of existing) {
+    if (e.checked) continue;
+    if (e.source_chat_id == null || Number(e.source_chat_id) !== cid) continue;
+    const k = normalizeGroceryNameKeyForPrune(e.name);
+    if (runKeys.has(k)) continue;
+    try {
+      await deleteGroceryItem(householdId, e.id);
+      removed += 1;
+    } catch (_) {
+      // Row removed concurrently.
+    }
+  }
+  return removed;
 }
 
 export function getUserComplimentState(householdUserId) {
