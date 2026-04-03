@@ -489,8 +489,14 @@ async function upsertHouseholdMemory(householdId, rawKey, rawValue) {
 /** Strip hidden KitchenBot control markers from model text before streaming or persisting. */
 function stripKitchenBotHiddenMarkers(text) {
   let s = String(text ?? '').replace(/\[\[KB_[A-Z0-9_]+\]\]/g, '');
+  s = s.replace(/\[\[KB_PENDING:[^\]]+\]\]/g, '');
   s = s.replace(/\[\[KB_[A-Z0-9_]*$/g, '');
   return s;
+}
+
+/** Strip markers from stored DB message content for display, /history, and model context (not for pending recovery). */
+function stripStoredMessageContentForDisplay(content) {
+  return stripKitchenBotHiddenMarkers(String(content ?? ''));
 }
 
 /** Remove model-authored lines that duplicate the backend mixed-memory offer (narrow; only obvious offer/save dupes). */
@@ -519,17 +525,41 @@ function stripModelAuthoredMemoryOfferLines(text) {
 
 /**
  * When no [[KB_OFFER_GROCERY_UPDATE]] was emitted, drop model lines that imply a real app grocery action or confirmable pending.
+ * Also strips invitation-style grocery/shopping-list questions so users are not prompted to say "yes" with nothing to confirm.
  */
 function stripFakeGroceryOperationalLines(text) {
   const lines = String(text ?? '').split('\n');
   const out = [];
   for (const line of lines) {
     const t = line.trim();
+    // Tail uses \s+ so NBSP/other Unicode spaces between "Grocery", "List", and "tab" still match (model output).
+    const stripGroceryTabCtaLine =
+      /^If you(?:(?:'|\u2019)d like| want), I can(?:\s+also|\s+just)?\s+(?:add this to|add .+ to|update) (?:the )?Grocery\s+List\s+tab/i;
     if (/^That's a command-backed action/i.test(t)) continue;
     if (/^Want me to do that now\?/i.test(t)) continue;
     if (/\bSay\s+yes\s+and\s+i(?:'|')ll\s+add\s+it\b/i.test(t)) continue;
     if (/^I can run !grocerylist for you/i.test(t)) continue;
-    if (/^If you want, I can (?:add this to|update) (?:the )?Grocery List tab/i.test(t)) continue;
+    // Fake tab CTA: same opening as system prompt ("If you want,") plus small model drift ("If you'd like", "I can also add …").
+    if (stripGroceryTabCtaLine.test(t)) continue;
+    // Narrow CTA / confirmation invites (must mention grocery or shopping list); short lines only
+    if (t.length <= 320 && /\b(?:grocery|shopping)\s+list\b/i.test(t)) {
+      const asks = /\?\s*$/.test(t);
+      if (asks) {
+        if (
+          /\b(?:do you want|would you like)\s+(?:a\s+|the\s+|me\s+to\s+)?(?:a\s+)?(?:grocery|shopping)\s+list\b/i.test(t) ||
+          /\b(?:do you want|would you like)\s+me\s+to\b.*\b(?:grocery|shopping)\s+list\b/i.test(t) ||
+          /^want me to\b.*\b(?:grocery|shopping)\s+list\b/i.test(t) ||
+          /^(?:should i|can i|could i|shall i)\b.*\b(?:grocery|shopping)\s+list\b/i.test(t)
+        ) {
+          continue;
+        }
+      } else if (
+        /^want me to\s+(?:make|build|create|put together|add)\s+(?:a\s+|the\s+)?(?:grocery|shopping)\s+list\b/i.test(t) ||
+        /^let me know if\b.*\b(?:grocery|shopping)\s+list\b/i.test(t)
+      ) {
+        continue;
+      }
+    }
     out.push(line);
   }
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
@@ -919,7 +949,7 @@ function threadHasConcreteGroceryDraftForFollowUp(threadGrocerySummary, recentAs
 function tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft) {
   if (!hasGroceryDraft) return null;
   const lower = String(raw ?? '').trim().toLowerCase();
-  // Only treat "add this to the tab/list" as a grocery action when a concrete grocery draft already exists in this thread.
+  // Only treat deictic tab/list phrasing as a grocery action when a concrete draft exists (thread summary, offer line, or list-like assistant output).
   const deictic =
     /\b(?:add|put)\s+(?:this|these|those|it|them)\s+(?:to|on|into)\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower) ||
     /\b(?:add|put)\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
@@ -927,7 +957,9 @@ function tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft) {
     /\bcan\s+you\s+add\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)(?:\s+for\s+me)?\b/.test(lower) ||
     /\bcan\s+you\s+add\s+(?:this|these|those|it|them)\s+to\s+the\s+tab\b/.test(lower) ||
     /\bupdate\s+(?:the\s+)?grocery\s+list\s+tab\s+with\s+(?:this|that|these|those)\b/.test(lower) ||
-    /\bput\s+(?:this|these|those|it|them)\s+on\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower);
+    /\bput\s+(?:this|these|those|it|them)\s+on\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower) ||
+    /\bmake\s+a\s+grocery\s+list\s+from\s+this\b/.test(lower) ||
+    /\bturn\s+this\s+into\s+(?:a\s+)?grocery\s+list\b/.test(lower);
   if (!deictic) return null;
   return sanitizePendingAction({ command: '!grocerylist' });
 }
@@ -1079,6 +1111,35 @@ function routePromptFromSanitizedPendingAction(action, fallbackPrompt) {
     return `!remember ${action.args.key} = ${action.args.value}`;
   }
   return fallbackPrompt;
+}
+
+/**
+ * Append a machine-readable pending payload to persisted assistant content (stripped for display).
+ * @param {string} content
+ * @param {object} pendingAction raw or sanitized pending object
+ */
+function appendPendingMarkerToAssistantContent(content, pendingAction) {
+  const sanitized = sanitizePendingAction(pendingAction);
+  if (!sanitized) return String(content ?? '');
+  const encoded = encodeURIComponent(JSON.stringify(sanitized));
+  return String(content ?? '').trimEnd() + '\n[[KB_PENDING:' + encoded + ']]';
+}
+
+/**
+ * Recover pending from hidden marker in stored assistant text (before regex fallbacks).
+ * @returns {ReturnType<typeof sanitizePendingAction> | null}
+ */
+function parsePendingMarkerFromAssistantContent(rawContent) {
+  const t = String(rawContent ?? '');
+  const m = t.match(/\[\[KB_PENDING:([^\]]+)\]\]/);
+  if (!m) return null;
+  try {
+    const json = decodeURIComponent(m[1]);
+    const obj = JSON.parse(json);
+    return sanitizePendingAction(obj);
+  } catch (e) {
+    return null;
+  }
 }
 
 function escapeInlineCodeSegment(s) {
@@ -1375,6 +1436,67 @@ function isShortAffirmativeConfirm(text) {
 }
 
 /**
+ * Natural-language confirmations for a recovered !grocerylist offer (not used without a matching last assistant offer).
+ */
+function isNaturalLanguageGroceryPendingConfirmation(text) {
+  const t = String(text ?? '').trim();
+  if (t.length > 200) return false;
+  const lower = t.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (/^\s*(why|what|when|where|who|how)\b/i.test(lower)) return false;
+  if (/\b(don'?t|do not|never mind|nevermind|cancel|no thanks|no thank you)\b/i.test(lower)) return false;
+  if (
+    /^(okay|ok|yes|sure|yeah|yep)\s*,?\s*(let'?s|let us)\s+update\s+(the\s+)?grocery\s+list\b/i.test(lower) ||
+    /^(let'?s|let us)\s+update\s+(the\s+)?grocery\s+list\b/i.test(lower)
+  ) {
+    return true;
+  }
+  if (
+    /^(okay|ok|yes|sure|yeah|yep)\s*,?\s*(please\s+)?(go ahead\s+(and\s+)?)?update\s+(the\s+)?grocery\s+list\b/i.test(lower)
+  ) {
+    return true;
+  }
+  if (
+    /^\s*(please\s+)?(go ahead\s+(and\s+)?)?update\s+(the\s+)?grocery\s+list\s*[!?.]*\s*$/i.test(lower)
+  ) {
+    return true;
+  }
+  if (
+    /\b(go ahead|please)\s*,?\s*(and\s+)?(update\s+(the\s+)?grocery\s+list|add\s+(this|that|it|these|those)\s+to\s+(the\s+)?grocery\s+list)\b/i.test(lower)
+  ) {
+    return true;
+  }
+  if (
+    /^(okay|ok|yes|sure|yeah|yep)\b/i.test(lower) &&
+    /\b(add|put)\s+(this|that|it|these|those)\s+to\s+(the\s+)?(grocery|shopping)\s+list\b/i.test(lower)
+  ) {
+    return true;
+  }
+  // Same phrases as tryGroceryTabDeicticFollowUpPending: explicit follow-up after an in-chat draft + recoverable tab offer—confirm !grocerylist instead of re-offering / streaming another draft.
+  if (
+    /\bmake\s+a\s+grocery\s+list\s+from\s+this\b/.test(lower) ||
+    /\bturn\s+this\s+into\s+(?:a\s+)?grocery\s+list\b/.test(lower)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True if the user is confirming a recovered sanitized pending action (extends short phrases with NL grocery confirms).
+ * @param {string} text
+ * @param {ReturnType<typeof sanitizePendingAction>} pending
+ */
+function isPendingActionConfirmation(text, pending) {
+  if (!pending || !text) return false;
+  if (isShortAffirmativeConfirm(text)) return true;
+  const cmd = String(pending.command ?? '');
+  if (cmd === '!grocerylist') {
+    return isNaturalLanguageGroceryPendingConfirmation(text);
+  }
+  return false;
+}
+
+/**
  * Parse mixed-intent memory offer closing lines (same templates as buildMixedMemoryOfferLine).
  * @returns {ReturnType<typeof sanitizePendingAction> | null}
  */
@@ -1537,7 +1659,7 @@ function recoverRenamePendingFromAssistantContent(rawContent) {
 /**
  * If the client lost X-KitchenBot-Pending-Action, recover a pending action from the latest assistant message in this chat.
  * Replaces the old memory-only recoverRememberPendingFromLastAssistantMessage.
- * Parsers are ordered: remember → grocery → rename → help (memory before grocery when both appear, e.g. mixed intent + marker).
+ * Parsers are ordered: [[KB_PENDING:…]] marker → remember → grocery → rename → help (memory before grocery when both appear, e.g. mixed intent + marker).
  * Add new command recoverers here; map them in routePromptFromSanitizedPendingAction.
  */
 async function recoverPendingActionFromLastAssistantMessage(chatId, householdId) {
@@ -1546,6 +1668,7 @@ async function recoverPendingActionFromLastAssistantMessage(chatId, householdId)
   if (!lastAssistant) return null;
   const raw = lastAssistant.content;
   return (
+    parsePendingMarkerFromAssistantContent(raw) ||
     parseRememberPendingFromAssistantContent(raw) ||
     recoverGroceryPendingFromAssistantContent(raw) ||
     recoverRenamePendingFromAssistantContent(raw) ||
@@ -5786,6 +5909,9 @@ app.get('/', (req, res) => {
             weAreStreamingThisChat = false;
 
             try {
+              await loadHistory();
+            } catch (e) {}
+            try {
               const r = await fetch('/chats');
               if (r.ok) {
                 const data = await r.json();
@@ -6493,7 +6619,11 @@ app.get('/history', requireHousehold, requireAuth, async (req, res) => {
       return res.status(400).json({ conversation: [] });
     }
     const conversation = await getMessages(chatId, req.householdId);
-    res.json({ conversation });
+    const conversationForClient = conversation.map((m) => ({
+      ...m,
+      content: stripStoredMessageContentForDisplay(m.content),
+    }));
+    res.json({ conversation: conversationForClient });
   } catch (error) {
     console.error(error);
     res.status(500).json({ conversation: [] });
@@ -6679,11 +6809,13 @@ app.post(
     let executePendingAction = sanitizePendingAction(req.body.executePendingAction);
     let routePrompt = routePromptFromSanitizedPendingAction(executePendingAction, prompt);
 
-    if (!executePendingAction && prompt && isShortAffirmativeConfirm(prompt)) {
-      const recovered = await recoverPendingActionFromLastAssistantMessage(chatId, req.householdId);
-      if (recovered) {
-        executePendingAction = recovered;
-        routePrompt = routePromptFromSanitizedPendingAction(recovered, prompt);
+    /** Last assistant recoverable pending (if any); used before NL intent and to avoid duplicate offers. */
+    let recoveredPending = null;
+    if (!executePendingAction && prompt) {
+      recoveredPending = await recoverPendingActionFromLastAssistantMessage(chatId, req.householdId);
+      if (recoveredPending && isPendingActionConfirmation(prompt, recoveredPending)) {
+        executePendingAction = recoveredPending;
+        routePrompt = routePromptFromSanitizedPendingAction(recoveredPending, prompt);
         // Recovered confirmations must flow through the real command path, never plain chat.
       }
     }
@@ -6714,7 +6846,7 @@ app.post(
         const assistantContents = convForDraft
           .filter((m) => m.role === 'assistant')
           .slice(-3)
-          .map((m) => m.content);
+          .map((m) => stripStoredMessageContentForDisplay(m.content));
         const hasGroceryDraft = threadHasConcreteGroceryDraftForFollowUp(
           threadCtxForIntent.threadGrocerySummary,
           assistantContents
@@ -6723,16 +6855,29 @@ app.post(
           hasGroceryDraft,
         });
         if (intent.pendingAction) {
-          const reply = buildPendingActionReply(intent.pendingAction, memoriesByKey);
-          await addMessage(chatId, req.householdId, 'user', name, routePrompt);
-          await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-          await incrementUserMessageCountForSender(req);
-          if (typeof broadcastToChat === 'function') {
-            broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+          const dupGroceryOffer =
+            recoveredPending &&
+            recoveredPending.command === '!grocerylist' &&
+            intent.pendingAction.command === '!grocerylist';
+          if (!dupGroceryOffer) {
+            const reply = buildPendingActionReply(intent.pendingAction, memoriesByKey);
+            await addMessage(chatId, req.householdId, 'user', name, routePrompt);
+            await addMessage(
+              chatId,
+              req.householdId,
+              'assistant',
+              'KitchenBot',
+              appendPendingMarkerToAssistantContent(reply, intent.pendingAction)
+            );
+            await incrementUserMessageCountForSender(req);
+            if (typeof broadcastToChat === 'function') {
+              broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+            }
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(intent.pendingAction)));
+            return res.end(reply);
           }
-          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-          res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(intent.pendingAction)));
-          return res.end(reply);
+          // duplicate !grocerylist offer vs last assistant: fall through to normal chat for this turn
         }
       }
     }
@@ -6797,7 +6942,8 @@ app.post(
         const recent = forContext.length > 20 ? forContext.slice(-20) : forContext;
         const titleMessages = recent.map(m => ({
           role: m.role,
-          content: m.role === 'user' ? `${m.name}: ${m.content}` : m.content,
+          content:
+            m.role === 'user' ? `${m.name}: ${m.content}` : stripStoredMessageContentForDisplay(m.content),
         }));
         try {
           const titleRes = await anthropic.messages.create({
@@ -6935,7 +7081,7 @@ app.post(
         content:
           message.role === 'user'
             ? `${message.name}: ${message.content}`
-            : message.content
+            : stripStoredMessageContentForDisplay(message.content),
       }));
 
       const groceryResponse = await anthropic.messages.create({
@@ -7052,7 +7198,9 @@ Where:
 
       const conversationSnippet = recentConversation
         .map((m) =>
-          m.role === 'user' ? `${m.name}: ${m.content}` : String(m.content ?? '')
+          m.role === 'user'
+            ? `${m.name}: ${m.content}`
+            : stripStoredMessageContentForDisplay(String(m.content ?? ''))
         )
         .join('\n\n');
       const commandOutcomeBlock = groceryListWasUpdated
@@ -7200,7 +7348,7 @@ Rules:
       content:
         message.role === 'user'
           ? `${message.name}: ${message.content}`
-          : message.content
+          : stripStoredMessageContentForDisplay(message.content),
     }));
 
     const userMessagesForTitle = conversation.filter(
@@ -7247,7 +7395,13 @@ Rules:
         const mixed = isMixedIntentMemoryMessage(routePrompt);
         if (!mixed) {
           const reply = buildPendingActionReply(proposed, memoriesByKey);
-          await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+          await addMessage(
+            chatId,
+            req.householdId,
+            'assistant',
+            'KitchenBot',
+            appendPendingMarkerToAssistantContent(reply, proposed)
+          );
           if (typeof broadcastToChat === 'function') {
             broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
           }
@@ -7290,7 +7444,7 @@ Rules:
 
     One reply per user message; finish here (no "stand by" or promised follow-ups). If web_search is attached, use it in this reply. Do not print raw search queries unless asked.
 
-    Grocery (draft-first): first output the shopping/ingredient list in this reply. Only after a concrete list in this message may you offer once: "If you want, I can add this to the Grocery List tab." (optionally add one short clause about plan swaps if relevant). Do not claim the tab is already updated. Do not say \`That's a command-backed action\`, \`run !grocerylist\`, or \`say yes and I'll add it\` unless you start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it)—that marker is what attaches a real pending action. If you do not use the marker, do not imply the user can confirm to save to the tab. Do not ask them to type \`!grocerylist\`.
+    Grocery (draft-first): first output the shopping/ingredient list in this reply. If you do not start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it), include one brief sentence that this list is a draft in chat only and the Grocery List tab in the app is unchanged by this reply alone—so users are not left wondering whether the real tab updated. Only after a concrete list in this message may you offer once: "If you want, I can add this to the Grocery List tab." (optionally add one short clause about plan swaps if relevant). Do not claim the tab is already updated. Do not say \`That's a command-backed action\`, \`run !grocerylist\`, or \`say yes and I'll add it\` unless you start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it)—that marker is what attaches a real pending action. If you do not use the marker, do not imply the user can confirm to save to the tab. Do not ask them to type \`!grocerylist\`.
 
     ${webSearchCapabilityBlock}
     Sources: Attribute ingredients/steps/prices to a URL or site only if those details are in this chat, memory below, or web_search results this turn; otherwise say you don't have that page. Generic help is OK if labeled approximate.
@@ -7339,8 +7493,9 @@ Rules:
      */
     function flushDisplayEmit() {
       const cleaned = stripKitchenBotHiddenMarkers(streamRawAccum);
+      // Mixed-intent: only [[KB_PENDING]] encodes memory; grocery header/marker are suppressed — strip model grocery CTAs so "yes" is not ambiguous.
       const persistPlain =
-        pendingOfferAction || mixedMemoryProposal ? cleaned : stripFakeGroceryOperationalLines(cleaned);
+        pendingOfferAction && !mixedMemoryProposal ? cleaned : stripFakeGroceryOperationalLines(cleaned);
       finalReply = persistPlain;
 
       if (mixedMemoryProposal) return;
@@ -7501,7 +7656,11 @@ Rules:
       finalReply = scrubUnsavedMemoryClaimsInNormalChatReply(beforeScrub) + afterScrub;
     }
 
-    await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReply);
+    const streamPendingForMarker = mixedMemoryProposal || pendingOfferAction || null;
+    const finalReplyToPersist = streamPendingForMarker
+      ? appendPendingMarkerToAssistantContent(finalReply, streamPendingForMarker)
+      : finalReply;
+    await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReplyToPersist);
     if (typeof broadcastToChat === 'function') {
       broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
     }
