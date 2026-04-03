@@ -454,6 +454,320 @@ function normalizeRememberKey(raw) {
   return s;
 }
 
+/** Strip outer backticks and one layer of matching surrounding quotes (wrapper-only; preserves inner content). */
+function stripOuterFormattingWrappers(text) {
+  let s = String(text ?? '').trim();
+  while (s.length >= 2 && s.startsWith('`') && s.endsWith('`')) {
+    s = s.slice(1, -1).trim();
+  }
+  if (s.length >= 2) {
+    const a = s[0];
+    const b = s[s.length - 1];
+    if ((a === '"' || a === "'") && a === b) {
+      s = s.slice(1, -1).trim();
+    }
+  }
+  return s;
+}
+
+/** Normalize remember key before DB persist (explicit !remember, pending, Settings). */
+function normalizeRememberKeyForStorage(raw) {
+  return normalizeRememberKey(stripOuterFormattingWrappers(String(raw ?? '')));
+}
+
+/** Normalize remember value before DB persist. */
+function normalizeRememberValueForStorage(raw) {
+  return stripOuterFormattingWrappers(String(raw ?? ''));
+}
+
+async function upsertHouseholdMemory(householdId, rawKey, rawValue) {
+  const key = normalizeRememberKeyForStorage(rawKey);
+  const value = normalizeRememberValueForStorage(rawValue);
+  await upsertMemory(householdId, key, value);
+}
+
+/** Strip hidden KitchenBot control markers from model text before streaming or persisting. */
+function stripKitchenBotHiddenMarkers(text) {
+  let s = String(text ?? '').replace(/\[\[KB_[A-Z0-9_]+\]\]/g, '');
+  s = s.replace(/\[\[KB_[A-Z0-9_]*$/g, '');
+  return s;
+}
+
+/** Remove model-authored lines that duplicate the backend mixed-memory offer (narrow; only obvious offer/save dupes). */
+function stripModelAuthoredMemoryOfferLines(text) {
+  const lines = String(text ?? '').split('\n');
+  const out = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) {
+      out.push(line);
+      continue;
+    }
+    if (/^If you want, I can save .+ so I remember it next time too\.?$/i.test(t)) continue;
+    if (/^Want me to save that as a household preference/i.test(t)) continue;
+    if (/^Want me to save the favorite /i.test(t)) continue;
+    if (/^If you want, I can save your tone preference /i.test(t)) continue;
+    if (/^If you want, I can save this \(/i.test(t)) continue;
+    if (/^If you want, I can save that \(/i.test(t)) continue;
+    if (/^Would you like me to save\b/i.test(t)) continue;
+    if (/^just confirm and I['']ll save it\.?$/i.test(t)) continue;
+    if (/^I can note that\b/i.test(t) && /\b(save it|save that|household memory|for future)\b/i.test(t)) continue;
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
+/**
+ * When no [[KB_OFFER_GROCERY_UPDATE]] was emitted, drop model lines that imply a real app grocery action or confirmable pending.
+ */
+function stripFakeGroceryOperationalLines(text) {
+  const lines = String(text ?? '').split('\n');
+  const out = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (/^That's a command-backed action/i.test(t)) continue;
+    if (/^Want me to do that now\?/i.test(t)) continue;
+    if (/\bSay\s+yes\s+and\s+i(?:'|')ll\s+add\s+it\b/i.test(t)) continue;
+    if (/^I can run !grocerylist for you/i.test(t)) continue;
+    if (/^If you want, I can (?:add this to|update) (?:the )?Grocery List tab/i.test(t)) continue;
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
+/** Minimal safety net for normal chat streaming: never persist fake saved-memory claims. */
+function scrubUnsavedMemoryClaimsInNormalChatReply(text) {
+  let s = String(text ?? '');
+  const ap = "['\u2019]";
+  s = s.replace(new RegExp(`\\bI${ap}ve noted that\\b`, 'gi'), 'You mentioned that');
+  s = s.replace(new RegExp(`\\bI${ap}ve noted\\b`, 'gi'), 'For this reply');
+  s = s.replace(new RegExp(`\\bI${ap}ll keep that in mind for future meals\\b`, 'gi'), 'For this reply only');
+  s = s.replace(new RegExp(`\\bI${ap}ll keep that in mind\\b`, 'gi'), 'For this reply only');
+  s = s.replace(new RegExp(`\\bI${ap}ll remember that next time\\b`, 'gi'), 'If you confirm saving it, I can remember that next time');
+  s = s.replace(new RegExp(`\\bI${ap}ll remember that for future\\b`, 'gi'), 'If you confirm saving it, I can remember that for future chats');
+  s = s.replace(new RegExp(`\\bI${ap}ve updated\\b[^.\\n]{0,120}preferences\\b`, 'gi'), 'I can update preferences if you confirm a save');
+  s = s.replace(new RegExp(`\\bI${ap}ve updated\\b`, 'gi'), 'I can offer to update');
+  s = s.replace(/\bI saved memory\b/gi, 'I can save to memory if you confirm');
+  s = s.replace(/\bI updated memory\b/gi, 'I can update memory if you confirm');
+  return s;
+}
+
+/** Merge a new memory fragment into an existing value; prefer semicolons between distinct facts (no comma-spliced dumps). */
+function mergeMemoryValuesForUpsert(existingRaw, incomingRaw) {
+  const existing = String(existingRaw ?? '').trim();
+  const incoming = String(incomingRaw ?? '').trim();
+  if (!incoming) return existing;
+  if (!existing) return incoming;
+  if (existing.toLowerCase() === incoming.toLowerCase()) return existing;
+  return `${existing}; ${incoming}`;
+}
+
+/**
+ * When AI or NL proposes a value for a key that already exists, merge or reject duplicates.
+ * @returns {string | null} null = skip offer / no change
+ */
+function mergeMemoryProposalWithExisting(existingRaw, proposedRaw) {
+  const existing = String(existingRaw ?? '').trim();
+  const proposed = String(proposedRaw ?? '').trim();
+  if (!proposed) return null;
+  if (!existing) return proposed;
+  if (proposed.toLowerCase() === existing.toLowerCase()) return null;
+  if (proposed.toLowerCase().includes(existing.toLowerCase())) return proposed;
+  if (existing.toLowerCase().includes(proposed.toLowerCase()) && proposed.length >= 4) return null;
+  return mergeMemoryValuesForUpsert(existing, proposed);
+}
+
+/** Heuristic: leading clause before "remember that" looks like a non-memory primary ask. */
+function looksLikePrimaryNonMemoryTaskClause(beforeText) {
+  const t = String(beforeText ?? '').trim().toLowerCase();
+  if (t.length < 10) return false;
+  return (
+    /\b(generate|create|make|build|draft|write|plan|help\s+me|suggest|give\s+me|what\s+should\s+i|can\s+you\s+|how\s+do\s+i|explain|compare)\b/.test(t) ||
+    /\b(meal\s*plan|recipe|menu|grocery|shopping\s*list|week(?:'s)?\s+meals|dinners?|breakfast|lunch)\b/.test(t) ||
+    /\b(planning|plan)\s+(?:meals?|for)\b/.test(t) ||
+    /\bfor\s+this\s+week\b/.test(t)
+  );
+}
+
+/**
+ * Merge a new preference fragment into an existing key when present in the memories map.
+ * @param {Map<string, string>} memoriesByKey
+ */
+function mergeIntoExistingPreferenceKey(prefKey, fragment, memoriesByKey) {
+  const k = normalizeRememberKey(prefKey);
+  const frag = String(fragment ?? '').trim();
+  if (!k || !frag) return null;
+  if (memoriesByKey.has(k)) {
+    const merged = mergeMemoryProposalWithExisting(String(memoriesByKey.get(k) ?? ''), frag);
+    if (merged === null) return { key: k, value: String(memoriesByKey.get(k) ?? '') };
+    return { key: k, value: merged };
+  }
+  return { key: k, value: frag };
+}
+
+function mergeIntoHouseholdStaples(listFragment, memoriesByKey) {
+  const k = normalizeRememberKey('household_staples');
+  const frag = String(listFragment ?? '').trim().replace(/^[:,]\s*/, '');
+  if (!frag) return null;
+  if (memoriesByKey.has(k)) {
+    return { key: k, value: mergeMemoryValuesForUpsert(String(memoriesByKey.get(k) ?? ''), frag) };
+  }
+  return { key: k, value: frag };
+}
+
+/** AI or bad parsers sometimes emit sentence-shaped keys; never store those as-is. */
+function isSentenceLikeRememberKey(k) {
+  const s = String(k ?? '').trim();
+  if (!s) return true;
+  if (s.length > 48) return true;
+  const parts = s.split('_');
+  if (parts.length > 5) return true;
+  if (/^(that|our|my|the|remember|we|if|when|your)_/.test(s)) return true;
+  return false;
+}
+
+/**
+ * Deterministic key/value from NL memory payload; prefers existing household keys when relevant.
+ * `saved_note` is only used when the fact does not fit a stable category and existing-key hints.
+ * @param {Map<string, string>} memoriesByKey
+ * @returns {null | { key: string, value: string }}
+ */
+function inferRememberKeyAndValueFromPayload(payload, memoriesByKey = new Map()) {
+  let p = String(payload ?? '').trim();
+  if (!p) return null;
+  p = p.slice(0, 500);
+
+  let m = p.match(/\b(?:your\s+)?(?:writing\s+)?tone\s+should\s+be\s+(.+)$/i);
+  if (m) return { key: normalizeRememberKey('tone'), value: m[1].trim() };
+  m = p.match(/\b(?:your\s+)?(?:writing\s+)?tone\s+is\s+(.+)$/i);
+  if (m) return { key: normalizeRememberKey('tone'), value: m[1].trim() };
+  m = p.match(/\b(?:writing\s+)?style\s+should\s+be\s+(.+)$/i);
+  if (m) return { key: normalizeRememberKey('tone'), value: m[1].trim() };
+
+  m = p.match(/\bfavorite\s+(food|pasta|meal)\s+(?:is|should\s+be)\s+(.+)$/i);
+  if (m) return { key: normalizeRememberKey(`favorite_${m[1]}`), value: m[2].trim() };
+  m = p.match(/\bfavorite\s+(food|pasta|meal)\s+(.+)$/i);
+  if (m) return { key: normalizeRememberKey(`favorite_${m[1]}`), value: m[2].trim() };
+
+  m = p.match(/^([A-Za-z][a-z]{1,24})\s+does\s+not\s+like\s+(.+)$/i);
+  if (!m) m = p.match(/^([A-Za-z][a-z]{1,24})\s+doesn't\s+like\s+(.+)$/i);
+  if (m) {
+    const name = m[1].toLowerCase();
+    const thing = m[2].trim();
+    if (name && thing) {
+      return mergeIntoExistingPreferenceKey(`${name}_preferences`, `doesn't like ${thing}`, memoriesByKey);
+    }
+  }
+
+  m = p.match(/^that\s+([a-z][a-z0-9]{1,23})\s+loves\s+(.+)$/i);
+  if (!m) m = p.match(/^([a-z][a-z0-9]{1,23})\s+loves\s+(.+)$/i);
+  if (m) {
+    const name = m[1].toLowerCase();
+    const thing = m[2].trim();
+    if (name && thing) {
+      return mergeIntoExistingPreferenceKey(`${name}_preferences`, `loves ${thing}`, memoriesByKey);
+    }
+  }
+
+  m = p.match(/^that\s+([a-z][a-z0-9]{1,23})\s+hates\s+(.+)$/i);
+  if (!m) m = p.match(/^([a-z][a-z0-9]{1,23})\s+hates\s+(.+)$/i);
+  if (m) {
+    const name = m[1].toLowerCase();
+    const thing = m[2].trim();
+    if (name && thing) {
+      return mergeIntoExistingPreferenceKey(`${name}_preferences`, `hates ${thing}`, memoriesByKey);
+    }
+  }
+
+  m = p.match(/^our\s+child(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
+  if (!m) m = p.match(/^our\s+kid(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
+  if (!m) m = p.match(/^that\s+our\s+child(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
+  if (!m) m = p.match(/^that\s+our\s+kid(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
+  if (m) {
+    const v = m[1].trim();
+    if (v) {
+      const k = normalizeRememberKey('child_name');
+      return { key: k, value: v };
+    }
+  }
+
+  m = p.match(
+    /^that\s+our\s+household\s+always\s+has\s+(?:these\s+)?(?:items?|ingredients?)\s*:?\s*(.+)$/i
+  );
+  if (!m) m = p.match(/^our\s+household\s+always\s+has\s+(?:these\s+)?(?:items?|ingredients?)\s*:?\s*(.+)$/i);
+  if (!m) {
+    m = p.match(
+      /^that\s+our\s+kitchen\s+always\s+has\s+(?:these\s+)?(?:items?|ingredients?)\s*:?\s*(.+)$/i
+    );
+  }
+  if (!m) m = p.match(/^our\s+kitchen\s+always\s+has\s+(?:these\s+)?(?:items?|ingredients?)\s*:?\s*(.+)$/i);
+  if (!m) m = p.match(/^we\s+always\s+have\s+(.+)$/i);
+  if (m) {
+    const list = m[1].trim().replace(/^[:,]\s*/, '');
+    if (list) return mergeIntoHouseholdStaples(list, memoriesByKey);
+  }
+
+  if (memoriesByKey.has('household_staples') && looksLikeStaplesListFragment(p)) {
+    return mergeIntoHouseholdStaples(p, memoriesByKey);
+  }
+
+  if (memoriesByKey.has('child_name') && looksLikeChildNameUpdatePayload(p)) {
+    const v = extractChildNameFromPayload(p);
+    if (v) return { key: normalizeRememberKey('child_name'), value: v };
+  }
+
+  return { key: normalizeRememberKey('saved_note'), value: p };
+}
+
+/** Comma- or "and"-separated pantry-style list without a stronger pattern match. */
+function looksLikeStaplesListFragment(p) {
+  const t = String(p ?? '').trim().toLowerCase();
+  if (t.length < 8) return false;
+  if (/\b(olive\s+oil|vegetable\s+oil|salt|pepper|vinegar|ketchup|flour|sugar|butter)\b/.test(t)) {
+    return true;
+  }
+  return /,/.test(t) && t.split(',').length >= 2;
+}
+
+function looksLikeChildNameUpdatePayload(p) {
+  return /\bchild(?:'s|\u2019s)?\s+name\s+is\b/i.test(p) || /\bkid(?:'s|\u2019s)?\s+name\s+is\b/i.test(p);
+}
+
+function extractChildNameFromPayload(p) {
+  const m = String(p).match(/\b(?:child|kid)(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
+  return m ? m[1].trim().replace(/[.!?]+$/, '') : null;
+}
+
+/**
+ * Extract memory payload from obvious NL phrases, or signal mixed intent (skip memory pending).
+ * @returns {{ payload: string } | { mixed: true } | null}
+ */
+function tryExtractNaturalLanguageRememberPayload(raw) {
+  const s = String(raw ?? '').trim();
+
+  const subordinate = s.match(/^(.{20,}?)\bremember(?:ing)?\s+that\s+(.+)$/is);
+  if (subordinate) {
+    const before = subordinate[1].trim();
+    const payload = subordinate[2].trim();
+    if (looksLikePrimaryNonMemoryTaskClause(before)) {
+      return { mixed: true };
+    }
+    if (payload) return { payload };
+  }
+
+  const anchoredPatterns = [
+    /^(?:please\s+)?remember\s+that\s+(.+)$/i,
+    /^(?:please\s+)?save\s+(?:this|it)\s+to\s+memory\s*:?\s*(.+)$/i,
+    /^(?:please\s+)?write\s+(?:this|it)\s+to\s+memory\s*:?\s*(.+)$/i,
+    /^(?:please\s+)?don['']t\s+forget\s+that\s+(.+)$/i,
+  ];
+  for (const re of anchoredPatterns) {
+    const m = s.match(re);
+    if (m?.[1]?.trim()) return { payload: m[1].trim() };
+  }
+  return null;
+}
+
 /** @returns {null | { key: string, value: string } | { error: string }} */
 function parseMemoryCommand(prompt) {
   const trimmed = String(prompt ?? '').trim();
@@ -465,8 +779,8 @@ function parseMemoryCommand(prompt) {
   }
   const rawKey = rest.slice(0, eq);
   const rawVal = rest.slice(eq + 1);
-  const key = normalizeRememberKey(rawKey);
-  const value = String(rawVal).trim();
+  const key = normalizeRememberKeyForStorage(rawKey);
+  const value = normalizeRememberValueForStorage(rawVal);
   if (!key) {
     return { error: 'Memory key cannot be empty.' };
   }
@@ -521,17 +835,121 @@ function getHelpReply() {
   ].join('\n');
 }
 
-function detectCommandIntentFromNaturalLanguage(prompt) {
+/**
+ * Follow-up preference lines only when `<name>_preferences` already exists (e.g. "also elle loves capers").
+ * @param {Map<string, string>} memoriesByKey
+ */
+function tryFollowUpPreferencePendingFromMemories(raw, memoriesByKey) {
+  if (!memoriesByKey || memoriesByKey.size === 0) return null;
+  const s = String(raw ?? '').trim();
+  if (s.length > 240) return null;
+  if (/\bremember(?:ing)?\s+that\b/i.test(s)) return null;
+
+  let m = s.match(/^\s*(?:also\s+)?([A-Za-z][a-z]{1,24})\s+(loves|likes)\s+(.+)$/i);
+  if (m) {
+    const nameRaw = m[1];
+    const verb = String(m[2] ?? '').toLowerCase();
+    const thing = String(m[3] ?? '').trim();
+    if (!thing) return null;
+    const key = normalizeRememberKey(`${nameRaw}_preferences`);
+    if (!memoriesByKey.has(key)) return null;
+    const existing = String(memoriesByKey.get(key) ?? '');
+    const fragment = verb === 'loves' ? `loves ${thing}` : `likes ${thing}`;
+    const merged = mergeMemoryProposalWithExisting(existing, fragment);
+    if (merged === null) return null;
+    return sanitizePendingAction({ command: '!remember', args: { key, value: merged } });
+  }
+
+  m = s.match(/^\s*(?:also\s+)?([A-Za-z][a-z]{1,24})\s+doesn['\u2019]t\s+like\s+(.+)$/i);
+  if (!m) m = s.match(/^\s*(?:also\s+)?([A-Za-z][a-z]{1,24})\s+does\s+not\s+like\s+(.+)$/i);
+  if (m) {
+    const nameRaw = m[1];
+    const thing = String(m[2] ?? '').trim();
+    if (!thing) return null;
+    const key = normalizeRememberKey(`${nameRaw}_preferences`);
+    if (!memoriesByKey.has(key)) return null;
+    const existing = String(memoriesByKey.get(key) ?? '');
+    const fragment = `doesn't like ${thing}`;
+    const merged = mergeMemoryProposalWithExisting(existing, fragment);
+    if (merged === null) return null;
+    return sanitizePendingAction({ command: '!remember', args: { key, value: merged } });
+  }
+
+  m = s.match(/^\s*(?:also\s+)?([A-Za-z][a-z]{1,24})\s+dislikes\s+(.+)$/i);
+  if (m) {
+    const nameRaw = m[1];
+    const thing = String(m[2] ?? '').trim();
+    if (!thing) return null;
+    const key = normalizeRememberKey(`${nameRaw}_preferences`);
+    if (!memoriesByKey.has(key)) return null;
+    const existing = String(memoriesByKey.get(key) ?? '');
+    const fragment = `dislikes ${thing}`;
+    const merged = mergeMemoryProposalWithExisting(existing, fragment);
+    if (merged === null) return null;
+    return sanitizePendingAction({ command: '!remember', args: { key, value: merged } });
+  }
+
+  return null;
+}
+
+/**
+ * True when this thread already has a concrete grocery draft: persisted thread summary from a prior
+ * !grocerylist run, a visible grocery-offer line in recent assistant text, or list-like assistant output.
+ */
+function threadHasConcreteGroceryDraftForFollowUp(threadGrocerySummary, recentAssistantContents) {
+  if (String(threadGrocerySummary ?? '').trim().length > 0) return true;
+  const blob = recentAssistantContents.map((c) => stripKitchenBotHiddenMarkers(String(c ?? ''))).join('\n\n');
+  if (/If you want, I can (?:add this to|update) (?:the )?Grocery List tab/i.test(blob)) {
+    return true;
+  }
+  const lines = blob.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  let score = 0;
+  for (const line of lines) {
+    if (/^\d+[\.\)]\s+\S/.test(line)) score++;
+    if (/^[-*•]\s+\S/.test(line)) score++;
+    if (/\|[^|]+\|[^|]+/.test(line)) score += 2;
+  }
+  return score >= 3;
+}
+
+/**
+ * Deictic "add this to the tab/list" follow-ups — only after a draft exists (see threadHasConcreteGroceryDraftForFollowUp).
+ * @returns {ReturnType<typeof sanitizePendingAction> | null}
+ */
+function tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft) {
+  if (!hasGroceryDraft) return null;
+  const lower = String(raw ?? '').trim().toLowerCase();
+  // Only treat "add this to the tab/list" as a grocery action when a concrete grocery draft already exists in this thread.
+  const deictic =
+    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+(?:to|on|into)\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower) ||
+    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
+    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?tab\b/.test(lower) ||
+    /\bcan\s+you\s+add\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)(?:\s+for\s+me)?\b/.test(lower) ||
+    /\bcan\s+you\s+add\s+(?:this|these|those|it|them)\s+to\s+the\s+tab\b/.test(lower) ||
+    /\bupdate\s+(?:the\s+)?grocery\s+list\s+tab\s+with\s+(?:this|that|these|those)\b/.test(lower) ||
+    /\bput\s+(?:this|these|those|it|them)\s+on\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower);
+  if (!deictic) return null;
+  return sanitizePendingAction({ command: '!grocerylist' });
+}
+
+function detectCommandIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(), intentOpts = {}) {
   const raw = String(prompt ?? '').trim();
-  if (!raw) return { pendingAction: null, clarificationReply: null };
-  if (raw.startsWith('!')) return { pendingAction: null, clarificationReply: null };
+  if (!raw) return { pendingAction: null };
+  if (raw.startsWith('!')) return { pendingAction: null };
+
+  const followUpFirst = tryFollowUpPreferencePendingFromMemories(raw, memoriesByKey);
+  if (followUpFirst) {
+    return { pendingAction: followUpFirst };
+  }
+
+  const hasGroceryDraft = !!intentOpts.hasGroceryDraft;
+  const groceryFollow = tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft);
+  if (groceryFollow) {
+    return { pendingAction: groceryFollow };
+  }
+
   const lower = raw.toLowerCase();
 
-  const mentionsGroceryList = /\b(grocery\s*list|shopping\s*list)\b/.test(lower);
-  const asksOperationalGroceryAction =
-    /\b(get|make|build|update|generate|run|create|prep|prepare)\b/.test(lower) ||
-    /\brun\s+grocery\s*list\b/.test(lower) ||
-    /\brun\s+!grocerylist\b/.test(lower);
   const hasMealIdeationLanguage =
     /\bhelp me think of\b/.test(lower) ||
     /\bwhat should i make\b/.test(lower) ||
@@ -540,9 +958,29 @@ function detectCommandIntentFromNaturalLanguage(prompt) {
     /\beasy meals?\b/.test(lower) ||
     /\bdinners?\s+for\s+this\s+week\b/.test(lower);
 
-  // If the user mixes ideation/planning with grocery wording, stay in normal chat first.
-  if (mentionsGroceryList && asksOperationalGroceryAction && !hasMealIdeationLanguage) {
-    return { pendingAction: { command: '!grocerylist' }, clarificationReply: null };
+  // Grocery: draft-first — do not escalate NL to pending !grocerylist for list-for-recipe / format / show-me drafting.
+  const groceryDraftSuppression =
+    /\bshopping\s+list\s+for\b/.test(lower) ||
+    /\bgrocery\s+list\s+for\b/.test(lower) ||
+    /\bingredients\s+for\b/.test(lower) ||
+    /\bin\s+grocery\s+list\s+format\b/.test(lower) ||
+    /\bmake\s+something\s+up\b/.test(lower) ||
+    /\b(don't|do\s+not)\s+run\s+a\s+web\s+search\b/.test(lower) ||
+    /\bshow\s+me\b/.test(lower) ||
+    /\bwhat\s+would\s+i\s+need\b/.test(lower) ||
+    /\bwhat\s+ingredients\s+would\s+i\s+need\b/.test(lower);
+
+  const strongGroceryAppAction =
+    /\brun\s+!grocerylist\b/.test(lower) ||
+    /\b(?:add|put|push)\s+(?:this|these|those|it|them)\s+(?:to|on|into)\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower) ||
+    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
+    /\bupdate\s+(?:the\s+)?(?:grocery\s+list|grocery\s+list\s+tab)\b/.test(lower) ||
+    /\bcan\s+you\s+(?:add|update)\s+(?:this|these|those|it|them)?\s*(?:to|on)?\s*(?:the\s+)?(?:grocery\s+list(?:\s+for\s+me)?|grocery\s+list\s+tab)\b/.test(lower) ||
+    /\bcan\s+you\s+update\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
+    /\bput\s+(?:this|these|those|it|them)\s+on\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower);
+
+  if (!groceryDraftSuppression && !hasMealIdeationLanguage && strongGroceryAppAction) {
+    return { pendingAction: { command: '!grocerylist' } };
   }
 
   const s = lower.trim();
@@ -555,18 +993,18 @@ function detectCommandIntentFromNaturalLanguage(prompt) {
     /\blist\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
     /\bwhat\s+commands?\b/.test(s);
   if (wantsHelpMenu) {
-    return { pendingAction: { command: '!help' }, clarificationReply: null };
+    return { pendingAction: { command: '!help' } };
   }
 
   const renameManual = raw.match(/\brename(?:\s+this)?\s+chat\s+to\s+["“]?(.+?)["”]?\s*$/i);
   if (renameManual) {
     const title = String(renameManual[1] ?? '').trim().slice(0, 200);
     if (title) {
-      return { pendingAction: { command: '!rename', mode: 'manual', args: { title } }, clarificationReply: null };
+      return { pendingAction: { command: '!rename', mode: 'manual', args: { title } } };
     }
   }
   if (/\brename(?:\s+this)?\s+chat\b/i.test(raw)) {
-    return { pendingAction: { command: '!rename', mode: 'auto' }, clarificationReply: null };
+    return { pendingAction: { command: '!rename', mode: 'auto' } };
   }
 
   const rememberMatch = raw.match(/\bremember\b\s+([a-zA-Z0-9 _-]{1,60})\s*(?:=|:|\bis\b)\s*(.+)$/i);
@@ -574,18 +1012,24 @@ function detectCommandIntentFromNaturalLanguage(prompt) {
     const key = normalizeRememberKey(rememberMatch[1]);
     const value = String(rememberMatch[2] ?? '').trim();
     if (key && value) {
-      return { pendingAction: { command: '!remember', args: { key, value } }, clarificationReply: null };
+      return { pendingAction: { command: '!remember', args: { key, value } } };
     }
   }
-  if (/\b(remember|save (?:that|this|it) to memory|write (?:that|this|it) to memory)\b/i.test(raw)) {
-    return {
-      pendingAction: null,
-      clarificationReply:
-        'I can save that with `!remember`, but I need a clear key and value. Example: `!remember favorite_pasta = garlic butter shrimp`.',
-    };
+
+  const nlRemember = tryExtractNaturalLanguageRememberPayload(raw);
+  if (nlRemember && 'mixed' in nlRemember && nlRemember.mixed) {
+    return { pendingAction: null };
+  }
+  if (nlRemember && 'payload' in nlRemember) {
+    const inferred = inferRememberKeyAndValueFromPayload(nlRemember.payload, memoriesByKey);
+    if (inferred?.key && inferred?.value) {
+      return {
+        pendingAction: { command: '!remember', args: { key: inferred.key, value: inferred.value } },
+      };
+    }
   }
 
-  return { pendingAction: null, clarificationReply: null };
+  return { pendingAction: null };
 }
 
 function sanitizePendingAction(raw) {
@@ -601,8 +1045,8 @@ function sanitizePendingAction(raw) {
   }
   if (cmd === '!help') return { command: cmd };
   if (cmd === '!remember') {
-    const key = normalizeRememberKey(raw.args?.key);
-    const value = String(raw.args?.value ?? '').trim();
+    const key = normalizeRememberKeyForStorage(raw.args?.key);
+    const value = normalizeRememberValueForStorage(raw.args?.value);
     if (!key || !value) return null;
     return { command: '!remember', args: { key, value } };
   }
@@ -618,16 +1062,60 @@ function sanitizePendingAction(raw) {
   return null;
 }
 
-function buildPendingActionReply(action) {
+/**
+ * Map a sanitized pending action to the route prompt used by /chat (must match client executePendingAction routing).
+ */
+function routePromptFromSanitizedPendingAction(action, fallbackPrompt) {
+  if (!action || typeof action !== 'object') return fallbackPrompt;
+  const cmd = String(action.command ?? '');
+  if (cmd === '!grocerylist') return '!grocerylist';
+  if (cmd === '!help') return '!help';
+  if (cmd === '!rename') {
+    return action.mode === 'manual' && action.args?.title
+      ? `!rename ${String(action.args.title).trim()}`
+      : '!rename';
+  }
+  if (cmd === '!remember' && action.args?.key != null && action.args?.value != null) {
+    return `!remember ${action.args.key} = ${action.args.value}`;
+  }
+  return fallbackPrompt;
+}
+
+function escapeInlineCodeSegment(s) {
+  return String(s ?? '').replace(/`/g, "'");
+}
+
+/**
+ * @param {Map<string, string> | null} memoriesByKey When set, remember offers can acknowledge an existing key and show merged value.
+ */
+function buildPendingActionReply(action, memoriesByKey = null) {
   if (!action) return '';
   if (action.command === '!grocerylist') {
-    return "That's a command-backed action. I can run !grocerylist for you. Want me to do that?";
+    return "If you want, I can add this to the Grocery List tab. Want me to do that?";
   }
   if (action.command === '!help') {
     return 'I can show the help menu for you. Want me to do that?';
   }
+  if (action.command === '!remember' && action.args?.key && action.args?.value) {
+    const k = String(action.args.key);
+    const v = String(action.args.value);
+    const mergedCode = escapeInlineCodeSegment(`${k} = ${v}`);
+    const memMap = memoriesByKey instanceof Map ? memoriesByKey : null;
+    if (memMap && memMap.has(k)) {
+      const existingRaw = String(memMap.get(k) ?? '').trim();
+      if (existingRaw && existingRaw !== v.trim()) {
+        const existingEsc = escapeInlineCodeSegment(existingRaw);
+        const keyEsc = escapeInlineCodeSegment(k);
+        return (
+          `There is already a memory called \`${keyEsc}\` that says \`${existingEsc}\`. ` +
+          `I can add this to it as \`${mergedCode}\`. Want me to do that?`
+        );
+      }
+    }
+    return `I can save that to memory as \`${mergedCode}\`. Want me to do that?`;
+  }
   if (action.command === '!remember') {
-    return 'I can save that memory for you with !remember. Want me to do that?';
+    return 'I can save that to memory. Want me to do that?';
   }
   if (action.command === '!rename' && action.mode === 'manual') {
     return `I can rename this chat to "${action.args.title}". Want me to do that?`;
@@ -636,6 +1124,433 @@ function buildPendingActionReply(action) {
     return 'I can rename this chat for you based on the thread context. Want me to do that?';
   }
   return '';
+}
+
+/**
+ * Closing line for mixed-intent memory (primary task + memory clause). Deterministic, specific;
+ * pairs with X-KitchenBot-Pending-Action for the same sanitized !remember proposal.
+ */
+function buildMixedMemoryOfferLine(pendingRemember, userMessage) {
+  const key = pendingRemember?.args?.key ?? '';
+  const val = String(pendingRemember?.args?.value ?? '').trim();
+  const raw = String(userMessage ?? '');
+
+  function nameHintFromMessage() {
+    const m1 = raw.match(/\b([A-Z][a-z]+)\s+does\s+not\s+like\b/);
+    if (m1) return m1[1];
+    const m2 = raw.match(/\b([a-z]+)\s+does\s+not\s+like\b/i);
+    if (m2) return m2[1].charAt(0).toUpperCase() + m2[1].slice(1).toLowerCase();
+    const m3 = raw.match(/\bremember(?:ing)?\s+that\s+([A-Z][a-z]+)\b/i);
+    if (m3) return m3[1];
+    const m4 = raw.match(/\bremember(?:ing)?\s+that\s+([a-z]{2,})\b/i);
+    if (m4) {
+      const w = m4[1].toLowerCase();
+      if (['your', 'the', 'our', 'my', 'this', 'that', 'their', 'they', 'there', 'she', 'he'].includes(w)) {
+        return null;
+      }
+      return m4[1].charAt(0).toUpperCase() + m4[1].slice(1).toLowerCase();
+    }
+    return null;
+  }
+
+  if (!key || !val) {
+    return 'Want me to save that as a household preference too?';
+  }
+
+    const prefMatch = key.match(/^([a-z][a-z0-9]*)_preferences$/);
+  if (prefMatch) {
+    const fromKey = prefMatch[1].charAt(0).toUpperCase() + prefMatch[1].slice(1);
+    const hint = nameHintFromMessage();
+    const label = hint && hint.toLowerCase() === prefMatch[1].toLowerCase() ? hint : fromKey;
+    const detail = String(val ?? '').trim();
+    if (detail) {
+      return `If you want, I can save ${label}'s preference (${detail}) so I remember it next time too.`;
+    }
+    return `Want me to save that as a household preference for ${label} too?`;
+  }
+
+  if (key === 'tone') {
+    const short = val.length > 70 ? val.slice(0, 67) + '…' : val;
+    return `If you want, I can save your tone preference (${short}) so I remember it next time too.`;
+  }
+
+  const fav = key.match(/^favorite_(food|pasta|meal)$/);
+  if (fav) {
+    const short = val.length > 60 ? val.slice(0, 57) + '…' : val;
+    return `Want me to save the favorite ${fav[1]} (${short}) as a household note too?`;
+  }
+
+  if (key === normalizeRememberKey('child_name')) {
+    const short = val.length > 60 ? val.slice(0, 57) + '…' : val;
+    return `If you want, I can save your child's name (${short}) for next time too.`;
+  }
+
+  if (key === normalizeRememberKey('household_staples')) {
+    const short = val.length > 90 ? val.slice(0, 87) + '…' : val;
+    return `If you want, I can save household staples (${short}) for next time too.`;
+  }
+
+  if (key === 'saved_note') {
+    const short = val.length > 90 ? val.slice(0, 87) + '…' : val;
+    return `If you want, I can save this (${short}) under household memory for next time too.`;
+  }
+
+  const short = val.length > 80 ? val.slice(0, 77) + '…' : val;
+  return `If you want, I can save that (${short}) so I remember it next time too.`;
+}
+
+/** Narrow gate: only run AI memory proposal when the user clearly invoked memory language. */
+function hasStrongMemoryIntentKeywords(text) {
+  const lower = String(text ?? '').toLowerCase();
+  if (/\bremember(?:ing)?\b/.test(lower)) return true;
+  if (/\bmemory\b/.test(lower)) return true;
+  if (/\bsave\s+this\b/.test(lower)) return true;
+  if (/\bdon['']t\s+forget\b/.test(lower)) return true;
+  return false;
+}
+
+/**
+ * True when memory is likely secondary to another primary ask (meal plan, etc.).
+ * Server-side heuristic; never overridden by the model.
+ */
+function isMixedIntentMemoryMessage(raw) {
+  const nl = tryExtractNaturalLanguageRememberPayload(raw);
+  if (nl && 'mixed' in nl && nl.mixed) return true;
+  if (looksLikePrimaryNonMemoryTaskClause(raw) && /\b(remember|memory|remembering|don['']t\s+forget)\b/i.test(raw)) {
+    return true;
+  }
+  return false;
+}
+
+function parseJsonObjectFromModelText(raw) {
+  let s = String(raw ?? '').trim();
+  const fence = s.match(/^```(?:json)?\s*([\s\S]*?)```$/im);
+  if (fence) s = fence[1].trim();
+  try {
+    return JSON.parse(s);
+  } catch {
+    const m = s.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    try {
+      return JSON.parse(m[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * Structured memory proposal only; never persists. Returns a sanitized pending action or null.
+ */
+async function tryAiMemoryProposal(anthropic, userMessage, memoriesList) {
+  if (!hasStrongMemoryIntentKeywords(userMessage)) return null;
+  const existing = (memoriesList || [])
+    .filter((m) => m && m.key !== 'assistant_name')
+    .map((m) => `${m.key}: ${m.value}`)
+    .join('\n');
+  try {
+    const res = await anthropic.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 400,
+      system: `You help propose household memory key/value pairs. Output ONLY one JSON object (no markdown fences, no commentary) with this shape:
+{"should_offer_memory":boolean,"key":string,"value":string,"confidence":number}
+
+Rules:
+- should_offer_memory: true only if the user clearly wants to save something for later recall (preferences, tone, dietary facts, names).
+- Prefer reusing an EXISTING key from the list when the new fact belongs to the same topic (e.g. consolidate Elle-related preferences under elle_preferences, not a new key like elle or elle_eggs).
+- Use stable snake_case keys (lowercase, underscores): e.g. elle_preferences, rob_preferences, household_staples, child_name, tone, favorite_food — never a long sentence as a key or keys like that_our_household_always_has_these_items. Values are short, natural preference text (e.g. "doesn't like eggs"), not commands or prefixes like "avoid …".
+- If the key already exists in the list, the value field must be the full merged text you want stored: combine prior facts with the new fact in clear prose; separate distinct facts with semicolons. Do not comma-splice unrelated clauses (e.g. avoid "doesn't like eggs, loves capers"); prefer "doesn't like eggs; loves capers" or two short sentences.
+- confidence: 0.0–1.0 (your confidence that this should be offered as a save).
+- If there is nothing to save, set should_offer_memory to false, key and value to "", confidence to 0.`,
+      messages: [
+        {
+          role: 'user',
+          content: `Existing household memories (keys are unique; reuse when appropriate):\n${existing || '(none)'}\n\nUser message:\n${String(userMessage).slice(0, 4000)}`,
+        },
+      ],
+    });
+    const blocks = res.content.filter((b) => b.type === 'text');
+    const raw = blocks.map((b) => b.text).join('\n').trim();
+    const parsed = parseJsonObjectFromModelText(raw);
+    if (!parsed || typeof parsed.should_offer_memory !== 'boolean') return null;
+    const conf = Number(parsed.confidence);
+    if (!parsed.should_offer_memory || !Number.isFinite(conf) || conf < 0.55) return null;
+    let key = normalizeRememberKeyForStorage(parsed.key);
+    let value = normalizeRememberValueForStorage(
+      String(parsed.value ?? '')
+        .trim()
+        .slice(0, 2000)
+    );
+    if (!key || !value) return null;
+    const memMap = new Map(
+      (memoriesList || []).filter((m) => m && m.key).map((m) => [m.key, m.value])
+    );
+    if (isSentenceLikeRememberKey(key)) {
+      const fromVal = inferRememberKeyAndValueFromPayload(value, memMap);
+      const fromUser = inferRememberKeyAndValueFromPayload(String(userMessage ?? '').trim(), memMap);
+      const picked =
+        fromVal && fromVal.key !== normalizeRememberKey('saved_note')
+          ? fromVal
+          : fromUser && fromUser.key !== normalizeRememberKey('saved_note')
+            ? fromUser
+            : null;
+      if (picked) {
+        key = picked.key;
+        value = picked.value;
+      } else {
+        key = normalizeRememberKey('saved_note');
+      }
+    }
+    const prior = (memoriesList || []).find((m) => m && m.key === key);
+    if (prior) {
+      const merged = mergeMemoryProposalWithExisting(String(prior.value ?? ''), value);
+      if (merged === null) return null;
+      if (merged.trim() === String(prior.value ?? '').trim()) return null;
+      value = merged;
+    }
+    return sanitizePendingAction({ command: '!remember', args: { key, value } });
+  } catch (e) {
+    if (isAnthropicSdkAuthOrKeyError(e)) throw e;
+    console.error('Memory proposal AI failed:', e.message || e);
+    return null;
+  }
+}
+
+/** Matches client-side pending confirmation phrases (short replies only). */
+function isShortAffirmativeConfirm(text) {
+  const t = String(text ?? '').trim();
+  if (t.length > 120) return false;
+  const lower = t.toLowerCase();
+  const s = lower.replace(/[!?.]/g, '').replace(/\s+/g, ' ').trim();
+  if (
+    [
+      'yes',
+      'yep',
+      'yeah',
+      'sure',
+      'do it',
+      'run it',
+      'go ahead',
+      'sure go ahead',
+      'sure, go ahead',
+      'yes please',
+      'okay',
+      'ok',
+      'okay do it',
+      'ok do it',
+      'please do',
+      'yeah save it',
+      'yes save it',
+      'sure save it',
+      'yep save it',
+      'ok save it',
+      'okay save it',
+      'yes save the preference please',
+      'yeah save the preference please',
+      'sure save the preference please',
+      'yep save the preference please',
+      'ok save the preference please',
+      'okay save the preference please',
+    ].includes(s)
+  ) {
+    return true;
+  }
+  if (/^(yes|yeah|yep|sure|ok|okay)\s+save\s+it$/.test(s)) {
+    return true;
+  }
+  if (/^(yes|yeah|yep|sure|ok|okay)\s+save(\s+the)?\s+preference(\s+please)?$/.test(s)) {
+    return true;
+  }
+  if (
+    /^(yes|yeah|yep|sure|ok|okay)\s+update(\s+the)?\s+preferences(\s+please)?$/.test(s) ||
+    /^(yes|yeah|yep|sure|ok|okay)\s+update\s+it(\s+please)?$/.test(s) ||
+    /^(yes|yeah|yep|sure|ok|okay)\s+save(\s+the)?\s+preferences(\s+please)?$/.test(s)
+  ) {
+    return true;
+  }
+  if (['add it', 'add them', 'update it', 'push it', 'push it over'].includes(s)) {
+    return true;
+  }
+  return /^(sure|yes|okay|ok)(?:,\s*|\s+)?(?:go ahead|do it|please)?$/.test(s);
+}
+
+/**
+ * Parse mixed-intent memory offer closing lines (same templates as buildMixedMemoryOfferLine).
+ * @returns {ReturnType<typeof sanitizePendingAction> | null}
+ */
+function recoverRememberFromMixedOfferAssistantContent(content) {
+  const t = stripKitchenBotHiddenMarkers(String(content ?? ''));
+  let m = t.match(
+    /If you want, I can save (.+?)['\u2019]s preference \(([^)]+)\) so I remember it next time too\.?/
+  );
+  if (m) {
+    const name = m[1].trim();
+    const detail = m[2].trim();
+    const key = normalizeRememberKey(`${name}_preferences`);
+    const value = detail;
+    return sanitizePendingAction({ command: '!remember', args: { key, value } });
+  }
+  m = t.match(
+    /If you want, I can save your tone preference \(([^)]+)\) so I remember it next time too\.?/
+  );
+  if (m) {
+    return sanitizePendingAction({ command: '!remember', args: { key: 'tone', value: m[1].trim() } });
+  }
+  m = t.match(/Want me to save the favorite (food|pasta|meal) \(([^)]+)\) as a household note too\?/);
+  if (m) {
+    return sanitizePendingAction({
+      command: '!remember',
+      args: { key: normalizeRememberKey(`favorite_${m[1]}`), value: m[2].trim() },
+    });
+  }
+  m = t.match(
+    /If you want, I can save this \(([^)]+)\) under household memory for next time too\.?/
+  );
+  if (m) {
+    const inferred = inferRememberKeyAndValueFromPayload(m[1].trim(), new Map());
+    if (inferred?.key && inferred?.value) {
+      return sanitizePendingAction({ command: '!remember', args: { key: inferred.key, value: inferred.value } });
+    }
+    return sanitizePendingAction({
+      command: '!remember',
+      args: { key: 'saved_note', value: m[1].trim() },
+    });
+  }
+  m = t.match(/If you want, I can save that \(([^)]+)\) so I remember it next time too\.?/);
+  if (m) {
+    const inferred = inferRememberKeyAndValueFromPayload(m[1].trim(), new Map());
+    if (inferred?.key && inferred?.value) {
+      return sanitizePendingAction({ command: '!remember', args: { key: inferred.key, value: inferred.value } });
+    }
+    return sanitizePendingAction({
+      command: '!remember',
+      args: { key: 'saved_note', value: m[1].trim() },
+    });
+  }
+  return null;
+}
+
+/**
+ * Recover !remember from merge-aware offer (see buildPendingActionReply with existing key).
+ */
+function parseRememberMergeOfferFromAssistantContent(content) {
+  const t = String(content ?? '');
+  const re =
+    /There is already a memory called `([^`]+)` that says `([^`]*)`\.\s+I can add this to it as `([^`]+)`\. Want me to do that\?/i;
+  const m = t.match(re);
+  if (!m) return null;
+  const combined = String(m[3] ?? '').trim();
+  const eq = combined.indexOf(' = ');
+  if (eq === -1) return null;
+  const keyRaw = combined.slice(0, eq).trim();
+  const valueRaw = combined.slice(eq + 3).trim();
+  const key = normalizeRememberKey(keyRaw);
+  const value = String(valueRaw).trim();
+  if (!key || !value) return null;
+  return sanitizePendingAction({ command: '!remember', args: { key, value } });
+}
+
+/**
+ * Recover a !remember pending action from assistant message text (same chat).
+ * Matches standard offer lines with plain and/or backticked key/value (case-insensitive anchor).
+ * @returns {ReturnType<typeof sanitizePendingAction> | null}
+ */
+function parseRememberPendingFromAssistantContent(rawContent) {
+  const content = stripKitchenBotHiddenMarkers(String(rawContent ?? ''));
+  const mergePending = parseRememberMergeOfferFromAssistantContent(content);
+  if (mergePending) return mergePending;
+  const anchorRe = /I can save that to memory as /i;
+  const am = anchorRe.exec(content);
+  if (!am) return recoverRememberFromMixedOfferAssistantContent(content);
+  const suffix = '. Want me to do that?';
+  const afterAnchor = am.index + am[0].length;
+  const end = content.indexOf(suffix, afterAnchor);
+  if (end === -1) return recoverRememberFromMixedOfferAssistantContent(content);
+  let mid = content.slice(afterAnchor, end).trim();
+  function stripOuterBackticks(seg) {
+    const t = String(seg).trim();
+    if (t.length >= 2 && t.startsWith('`') && t.endsWith('`')) return t.slice(1, -1);
+    return t;
+  }
+  const inner = stripOuterBackticks(mid);
+  const eq = inner.indexOf(' = ');
+  if (eq === -1) return recoverRememberFromMixedOfferAssistantContent(content);
+  const keyRaw = inner.slice(0, eq).trim();
+  const valueRaw = inner.slice(eq + 3).trim();
+  const key = normalizeRememberKey(keyRaw);
+  const value = String(valueRaw).trim();
+  if (!key || !value) return recoverRememberFromMixedOfferAssistantContent(content);
+  return sanitizePendingAction({ command: '!remember', args: { key, value } });
+}
+
+/**
+ * Recover !grocerylist from assistant text (marker is stripped before persist; match visible offer lines).
+ * @returns {ReturnType<typeof sanitizePendingAction> | null}
+ */
+function recoverGroceryPendingFromAssistantContent(rawContent) {
+  const t = stripKitchenBotHiddenMarkers(String(rawContent ?? ''));
+  if (
+    /If you want, I can add this to (?:the )?Grocery List tab(?:\s+for you)?\.?/i.test(t) ||
+    /If you want, I can update (?:the )?Grocery List tab(?:\s+for you)?\.?/i.test(t) ||
+    /That's a command-backed action\.\s*I can run !grocerylist for you\.\s*Want me to do that\?/i.test(t) ||
+    /\bI can run !grocerylist for you\b/i.test(t)
+  ) {
+    return sanitizePendingAction({ command: '!grocerylist' });
+  }
+  return null;
+}
+
+/**
+ * Recover !help / !rename offers from buildPendingActionReply text.
+ * @returns {ReturnType<typeof sanitizePendingAction> | null}
+ */
+function recoverHelpPendingFromAssistantContent(rawContent) {
+  const t = stripKitchenBotHiddenMarkers(String(rawContent ?? ''));
+  if (/I can show the help menu for you\.\s*Want me to do that\?/i.test(t)) {
+    return sanitizePendingAction({ command: '!help' });
+  }
+  return null;
+}
+
+/**
+ * @returns {ReturnType<typeof sanitizePendingAction> | null}
+ */
+function recoverRenamePendingFromAssistantContent(rawContent) {
+  const t = stripKitchenBotHiddenMarkers(String(rawContent ?? ''));
+  const manual = t.match(
+    /I can rename this chat to ["\u201c](.+?)["\u201d]\.\s*Want me to do that\?/i
+  );
+  if (manual) {
+    const title = String(manual[1] ?? '')
+      .trim()
+      .slice(0, 200);
+    if (title) return sanitizePendingAction({ command: '!rename', mode: 'manual', args: { title } });
+  }
+  if (
+    /I can rename this chat for you based on the thread context\.\s*Want me to do that\?/i.test(t)
+  ) {
+    return sanitizePendingAction({ command: '!rename', mode: 'auto' });
+  }
+  return null;
+}
+
+/**
+ * If the client lost X-KitchenBot-Pending-Action, recover a pending action from the latest assistant message in this chat.
+ * Replaces the old memory-only recoverRememberPendingFromLastAssistantMessage.
+ * Parsers are ordered: remember → grocery → rename → help (memory before grocery when both appear, e.g. mixed intent + marker).
+ * Add new command recoverers here; map them in routePromptFromSanitizedPendingAction.
+ */
+async function recoverPendingActionFromLastAssistantMessage(chatId, householdId) {
+  const conv = await getMessages(chatId, householdId);
+  const lastAssistant = [...conv].reverse().find((m) => m.role === 'assistant');
+  if (!lastAssistant) return null;
+  const raw = lastAssistant.content;
+  return (
+    parseRememberPendingFromAssistantContent(raw) ||
+    recoverGroceryPendingFromAssistantContent(raw) ||
+    recoverRenamePendingFromAssistantContent(raw) ||
+    recoverHelpPendingFromAssistantContent(raw)
+  );
 }
 
 function parseThreadGrocerySummaryKeys(summaryText) {
@@ -2343,6 +3258,7 @@ app.get('/', (req, res) => {
                 These entries are included in chat context for everyone in this household.
               </p>
               <div id="my-settings-memories-list" style="margin-bottom: 12px; font-size: 13px;"></div>
+              <div id="my-settings-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
               <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 8px;">
                 <div>
                   <label for="my-settings-memory-key" style="font-size: 12px; color: var(--text-soft); display: block;">Key</label>
@@ -2355,7 +3271,6 @@ app.get('/', (req, res) => {
                 <button type="button" id="my-settings-memory-save">Save</button>
                 <button type="button" id="my-settings-memory-cancel-edit" style="display: none;">Cancel</button>
               </div>
-              <div id="my-settings-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
             </div>
             <div id="my-settings-msg"></div>
           </div>
@@ -2532,6 +3447,7 @@ app.get('/', (req, res) => {
         function isPendingActionAffirmative(text) {
           const t = String(text ?? '').trim().toLowerCase();
           const s = t.replace(/[!?.]/g, '').replace(/\s+/g, ' ').trim();
+          if (t.length > 120) return false;
           if (
             [
               'yes',
@@ -2542,12 +3458,42 @@ app.get('/', (req, res) => {
               'run it',
               'go ahead',
               'sure go ahead',
+              'sure, go ahead',
               'yes please',
               'okay',
               'ok',
               'okay do it',
               'ok do it',
               'please do',
+              'yeah save it',
+              'yes save it',
+              'sure save it',
+              'yep save it',
+              'ok save it',
+              'okay save it',
+              'yes save the preference please',
+              'yeah save the preference please',
+              'sure save the preference please',
+              'yep save the preference please',
+              'ok save the preference please',
+              'okay save the preference please',
+            ].includes(s)
+          ) {
+            return true;
+          }
+          if (/^(yes|yeah|yep|sure|ok|okay)\s+save\s+it$/.test(s)) {
+            return true;
+          }
+          if (/^(yes|yeah|yep|sure|ok|okay)\s+save(\s+the)?\s+preference(\s+please)?$/.test(s)) {
+            return true;
+          }
+          if (
+            [
+              'add it',
+              'add them',
+              'update it',
+              'push it',
+              'push it over',
             ].includes(s)
           ) {
             return true;
@@ -2595,13 +3541,6 @@ app.get('/', (req, res) => {
           return "Please choose one option so I don't run the wrong action: say 'add', 'start new', 'keep', or 'remove swapped-out items'.";
         }
 
-        function groceryModeConfirmLine(mode) {
-          if (mode === 'append') return "Okay, I'll keep the old items and add the new ones.";
-          if (mode === 'prune') return "Okay, I'll remove likely swapped-out items, then add the new ones.";
-          if (mode === 'replace') return "Okay, I'll start a new grocery list.";
-          return '';
-        }
-
         /** Replace (start fresh) intent for grocery_mode_choice — not used for vague affirmations (caller checks first). */
         function groceryUserWantsReplace(t) {
           const s = String(t ?? '').trim().toLowerCase();
@@ -2643,6 +3582,11 @@ app.get('/', (req, res) => {
 
             const strictAppendToList =
               /^\s*(add|append|keep)(\s*[!?.])?\s*$/i.test(t) ||
+              /^\s*keep\s*$/i.test(t) ||
+              /^\s*keep\s+both\s*$/i.test(t) ||
+              /\bkeep\s+both\b/i.test(t) ||
+              /\b(add|keep)\s+both\b/i.test(t) ||
+              /\bkeep\s+old\s+and\s+new\b/i.test(t) ||
               /\bkeep\s+(?:them|old\s+items|everything|the\s+old(?:\s+items)?)\b/i.test(t) ||
               /\bkeep\s+old\b/i.test(t) ||
               /\badd\s+(?:to|these|it)\b/i.test(t) ||
@@ -2886,12 +3830,8 @@ app.get('/', (req, res) => {
                   if (msgHid != null && currentHouseholdId != null && msgHid !== Number(currentHouseholdId)) {
                     return;
                   }
-                  if (
-                    weAreStreamingThisChat &&
-                    msg.user &&
-                    currentUserName &&
-                    msg.user === currentUserName
-                  ) {
+                  // Prevent the sending client from applying the same assistant stream chunk twice.
+                  if (weAreStreamingThisChat) {
                     return;
                   }
                   if (!remoteStreamBodyEl) {
@@ -2984,6 +3924,7 @@ app.get('/', (req, res) => {
         }
 
         function setActiveTab(tab) {
+          clearMemoryUiMessage();
           tabChat.classList.toggle('tab-active', tab === 'chat');
           tabGroceries.classList.toggle('tab-active', tab === 'groceries');
           if (tabSettings) tabSettings.classList.toggle('tab-active', tab === 'settings');
@@ -2994,9 +3935,20 @@ app.get('/', (req, res) => {
           if (tab === 'settings') loadSettingsPanel();
         }
 
+        function closeSidebarAndGoToChatTab() {
+          setActiveTab('chat');
+          sidebar.classList.remove('open');
+          sidebarBackdrop.classList.remove('open');
+        }
+
         function syncMemoriesWrapVisibility() {
           const w = document.getElementById('my-settings-memories-wrap');
           if (w) w.style.display = isCurrentUserOwner ? '' : 'none';
+        }
+
+        function clearMemoryUiMessage() {
+          const el = document.getElementById('my-settings-memories-msg');
+          if (el) el.textContent = '';
         }
 
         function resetMemoryEditForm() {
@@ -3010,6 +3962,21 @@ app.get('/', (req, res) => {
           }
           if (valIn) valIn.value = '';
           if (cancelBtn) cancelBtn.style.display = 'none';
+        }
+
+        function stripMemoryDisplayWrappers(s) {
+          let t = String(s ?? '').trim();
+          while (t.length >= 2 && t.startsWith('\`') && t.endsWith('\`')) {
+            t = t.slice(1, -1).trim();
+          }
+          if (t.length >= 2) {
+            const a = t[0];
+            const b = t[t.length - 1];
+            if ((a === '"' || a === "'") && a === b) {
+              t = t.slice(1, -1).trim();
+            }
+          }
+          return t;
         }
 
         async function loadHouseholdMemoriesEditor() {
@@ -3035,12 +4002,12 @@ app.get('/', (req, res) => {
               kv.style.minWidth = '0';
               const strong = document.createElement('strong');
               strong.style.fontSize = '13px';
-              strong.textContent = m.key;
+              strong.textContent = stripMemoryDisplayWrappers(m.key);
               kv.appendChild(strong);
               kv.appendChild(document.createTextNode(': '));
               const span = document.createElement('span');
               span.style.wordBreak = 'break-word';
-              span.textContent = m.value;
+              span.textContent = stripMemoryDisplayWrappers(m.value);
               kv.appendChild(span);
               row.appendChild(kv);
               const editBtn = document.createElement('button');
@@ -3052,12 +4019,12 @@ app.get('/', (req, res) => {
                 const valIn = document.getElementById('my-settings-memory-value');
                 const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
                 if (keyIn) {
-                  keyIn.value = m.key;
+                  keyIn.value = stripMemoryDisplayWrappers(m.key);
                   keyIn.readOnly = true;
                 }
-                if (valIn) valIn.value = m.value;
+                if (valIn) valIn.value = stripMemoryDisplayWrappers(m.value);
                 if (cancelBtn) cancelBtn.style.display = '';
-                if (memMsg) memMsg.textContent = '';
+                clearMemoryUiMessage();
               });
               const delBtn = document.createElement('button');
               delBtn.type = 'button';
@@ -3148,12 +4115,14 @@ app.get('/', (req, res) => {
                 roleBtn.disabled = true;
               } else {
                 roleSel.addEventListener('change', () => {
+                  clearMemoryUiMessage();
                   roleFeedback.textContent = '';
                   syncRoleButtonState();
                 });
                 syncRoleButtonState();
               }
               roleBtn.addEventListener('click', async () => {
+                clearMemoryUiMessage();
                 const newRole = roleSel.value;
                 if (newRole === prevRole) {
                   roleFeedback.textContent = 'No changes';
@@ -3222,10 +4191,12 @@ app.get('/', (req, res) => {
               }
               syncPinButton();
               pinIn.addEventListener('input', () => {
+                clearMemoryUiMessage();
                 pinFeedback.textContent = '';
                 syncPinButton();
               });
               btn.addEventListener('click', async () => {
+                clearMemoryUiMessage();
                 if (pinSaving) return;
                 const pin = pinIn.value.trim();
                 if (!pin) {
@@ -3288,6 +4259,7 @@ app.get('/', (req, res) => {
               complFeedback.setAttribute('aria-live', 'polite');
               let complimentsSaving = false;
               complChk.addEventListener('change', async () => {
+                clearMemoryUiMessage();
                 if (complimentsSaving) return;
                 const desired = complChk.checked;
                 complimentsSaving = true;
@@ -3345,6 +4317,7 @@ app.get('/', (req, res) => {
               colorFeedback.setAttribute('aria-live', 'polite');
               let chatColorSaving = false;
               colorSel.addEventListener('change', async () => {
+                clearMemoryUiMessage();
                 if (chatColorSaving) return;
                 const attempted = colorSel.value;
                 chatColorSaving = true;
@@ -3420,6 +4393,7 @@ app.get('/', (req, res) => {
         }
 
         function showSettingsSubView(view) {
+          clearMemoryUiMessage();
           const myV = document.getElementById('settings-view-my');
           const adminV = document.getElementById('settings-view-admin');
           const myBtn = document.getElementById('settings-subtab-my-btn');
@@ -4029,9 +5003,8 @@ app.get('/', (req, res) => {
 
             li.addEventListener('click', async () => {
               currentChatId = chatInfo.id;
+              closeSidebarAndGoToChatTab();
               renderChats();
-              sidebar.classList.remove('open');
-              sidebarBackdrop.classList.remove('open');
               await loadHistory();
             });
             chatListEl.appendChild(li);
@@ -4206,6 +5179,7 @@ app.get('/', (req, res) => {
         const settingsAnthropicOwnerKeySave = document.getElementById('settings-anthropic-owner-key-save');
         if (settingsAnthropicOwnerKeySave) {
           settingsAnthropicOwnerKeySave.addEventListener('click', async () => {
+            clearMemoryUiMessage();
             const keyInput = document.getElementById('settings-anthropic-owner-key');
             const msgEl = document.getElementById('settings-anthropic-owner-key-msg');
             const key = keyInput && keyInput.value.trim();
@@ -4289,6 +5263,7 @@ app.get('/', (req, res) => {
 
         if (settingsAddSubmit) {
           settingsAddSubmit.addEventListener('click', async () => {
+            clearMemoryUiMessage();
             const displayName = document.getElementById('settings-new-display').value.trim();
             const role = document.getElementById('settings-new-role').value;
             const pin = document.getElementById('settings-new-pin').value.trim();
@@ -4347,6 +5322,7 @@ app.get('/', (req, res) => {
         const memCancelBtn = document.getElementById('my-settings-memory-cancel-edit');
         if (memSaveBtn) {
           memSaveBtn.addEventListener('click', async () => {
+            clearMemoryUiMessage();
             const keyIn = document.getElementById('my-settings-memory-key');
             const valIn = document.getElementById('my-settings-memory-value');
             const memMsg = document.getElementById('my-settings-memories-msg');
@@ -4382,11 +5358,16 @@ app.get('/', (req, res) => {
         }
         if (memCancelBtn) {
           memCancelBtn.addEventListener('click', () => {
-            const memMsg = document.getElementById('my-settings-memories-msg');
+            clearMemoryUiMessage();
             resetMemoryEditForm();
-            if (memMsg) memMsg.textContent = '';
           });
         }
+
+        const memKeyInputEl = document.getElementById('my-settings-memory-key');
+        const memValInputEl = document.getElementById('my-settings-memory-value');
+        const onMemoryFieldInput = () => clearMemoryUiMessage();
+        if (memKeyInputEl) memKeyInputEl.addEventListener('input', onMemoryFieldInput);
+        if (memValInputEl) memValInputEl.addEventListener('input', onMemoryFieldInput);
 
         menuButton.addEventListener('click', async () => {
           try {
@@ -4425,8 +5406,7 @@ app.get('/', (req, res) => {
             });
             renderChats();
             chat.innerHTML = '';
-            sidebar.classList.remove('open');
-            sidebarBackdrop.classList.remove('open');
+            closeSidebarAndGoToChatTab();
           } catch (e) {
             // ignore
           }
@@ -4702,15 +5682,8 @@ app.get('/', (req, res) => {
           } else if (pendingForChat && actionToExecute) {
             pendingActionByChatId.delete(Number(currentChatId));
           }
+          // Grocery mode-choice replies must continue into the real !grocerylist command path, not return success early.
           addMessage('user', speaker, prompt);
-          if (
-            actionToExecute &&
-            actionToExecute.command === '!grocerylist' &&
-            actionToExecute.mode
-          ) {
-            const confirmLine = groceryModeConfirmLine(actionToExecute.mode);
-            if (confirmLine) addMessage('assistant', 'KitchenBot', confirmLine);
-          }
           promptInput.value = '';
           resizePromptInput();
           weAreStreamingThisChat = true;
@@ -5053,7 +6026,7 @@ app.post(
     if (key === 'assistant_name') {
       return res.status(403).json({ error: 'assistant_name is a system memory and cannot be modified' });
     }
-    await upsertMemory(req.householdId, key, value);
+    await upsertHouseholdMemory(req.householdId, key, value);
     return res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -5552,9 +6525,17 @@ function normalizeGroceryNameKey(name) {
     .replace(/\s+/g, ' ');
 }
 
-/** Merge AI-parsed rows into existing list: match unchecked items by section + normalized name; update amount or insert. */
+/**
+ * Merge AI-parsed rows into existing list: match unchecked items by section + normalized name; update amount or insert.
+ * @returns {{ insertedCount: number, updatedCount: number, backfilledCount: number, changedCount: number }}
+ * `changedCount` is inserts + amount updates only (not provenance backfill).
+ */
 async function mergeGroceryItemsFromAi(householdId, parsedItems, sourceChatId) {
-  if (!parsedItems.length) return;
+  const empty = { insertedCount: 0, updatedCount: 0, backfilledCount: 0, changedCount: 0 };
+  if (!parsedItems.length) return empty;
+  let insertedCount = 0;
+  let updatedCount = 0;
+  let backfilledCount = 0;
   const existing = await getGroceryItems(householdId);
   const byKey = new Map();
   for (const e of existing) {
@@ -5575,7 +6556,8 @@ async function mergeGroceryItemsFromAi(householdId, parsedItems, sourceChatId) {
       const match = byKey.get(k);
       if (Number.isFinite(Number(sourceChatId))) {
         try {
-          await backfillGroceryItemSourceChatIfSafe(householdId, match.id, sourceChatId);
+          const n = await backfillGroceryItemSourceChatIfSafe(householdId, match.id, sourceChatId);
+          backfilledCount += Number(n) || 0;
         } catch (_) {
           // Non-fatal provenance backfill.
         }
@@ -5584,6 +6566,7 @@ async function mergeGroceryItemsFromAi(householdId, parsedItems, sourceChatId) {
       if (newAmt !== '' && newAmt !== oldAmt) {
         try {
           await updateGroceryItemAmount(householdId, match.id, newAmt);
+          updatedCount += 1;
           match.amount = newAmt;
         } catch (e) {
           // Row checked or removed since load
@@ -5604,7 +6587,10 @@ async function mergeGroceryItemsFromAi(householdId, parsedItems, sourceChatId) {
     await addGroceryItems(householdId, toInsert, {
       sourceChatId: Number.isFinite(Number(sourceChatId)) ? Number(sourceChatId) : null,
     });
+    insertedCount = toInsert.length;
   }
+  const changedCount = insertedCount + updatedCount;
+  return { insertedCount, updatedCount, backfilledCount, changedCount };
 }
 
 app.get('/groceries', requireHousehold, requireAuth, async (req, res) => {
@@ -5690,45 +6676,64 @@ app.post(
     if (!Number.isFinite(chatId)) {
       return res.status(400).json({ reply: 'chatId is required.' });
     }
-    const executePendingAction = sanitizePendingAction(req.body.executePendingAction);
-    const routePrompt = (() => {
-      if (executePendingAction?.command === '!grocerylist') return '!grocerylist';
-      if (executePendingAction?.command === '!help') return '!help';
-      if (executePendingAction?.command === '!rename') {
-        return executePendingAction.mode === 'manual'
-          ? `!rename ${executePendingAction.args.title}`
-          : '!rename';
+    let executePendingAction = sanitizePendingAction(req.body.executePendingAction);
+    let routePrompt = routePromptFromSanitizedPendingAction(executePendingAction, prompt);
+
+    if (!executePendingAction && prompt && isShortAffirmativeConfirm(prompt)) {
+      const recovered = await recoverPendingActionFromLastAssistantMessage(chatId, req.householdId);
+      if (recovered) {
+        executePendingAction = recovered;
+        routePrompt = routePromptFromSanitizedPendingAction(recovered, prompt);
+        // Recovered confirmations must flow through the real command path, never plain chat.
       }
-      if (executePendingAction?.command === '!remember') {
-        return `!remember ${executePendingAction.args.key} = ${executePendingAction.args.value}`;
-      }
-      return prompt;
-    })();
+    }
+
     const commandUserTextForPersistence = executePendingAction ? prompt : routePrompt;
 
-    if (!executePendingAction && routePrompt && !String(routePrompt).trim().startsWith('!')) {
-      const intent = detectCommandIntentFromNaturalLanguage(routePrompt);
-      if (intent.clarificationReply) {
-        await addMessage(chatId, req.householdId, 'user', name, routePrompt);
-        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', intent.clarificationReply);
-        await incrementUserMessageCountForSender(req);
-        if (typeof broadcastToChat === 'function') {
-          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-        }
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        return res.end(intent.clarificationReply);
+    const memories = await getMemories(req.householdId);
+    const memoriesByKey = new Map(memories.map((m) => [m.key, m.value]));
+
+    // Only reach this fallback if no executePendingAction exists AND recovery failed.
+    if (!executePendingAction && prompt && isShortAffirmativeConfirm(prompt) && !String(routePrompt ?? '').trim().startsWith('!')) {
+      const reply =
+        'Looks like I thought there was an action ready to run here, but there wasn\'t. You can keep chatting normally, or if you meant to run a command, type it explicitly.';
+      await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
+      await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+      await incrementUserMessageCountForSender(req);
+      if (typeof broadcastToChat === 'function') {
+        broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
       }
-      if (intent.pendingAction) {
-        const reply = buildPendingActionReply(intent.pendingAction);
-        await addMessage(chatId, req.householdId, 'user', name, routePrompt);
-        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-        await incrementUserMessageCountForSender(req);
-        if (typeof broadcastToChat === 'function') {
-          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      return res.end(reply);
+    }
+
+    if (!executePendingAction && routePrompt && !String(routePrompt).trim().startsWith('!')) {
+      if (!isShortAffirmativeConfirm(prompt)) {
+        const threadCtxForIntent = await getChatThreadContext(chatId, req.householdId);
+        const convForDraft = await getMessages(chatId, req.householdId);
+        const assistantContents = convForDraft
+          .filter((m) => m.role === 'assistant')
+          .slice(-3)
+          .map((m) => m.content);
+        const hasGroceryDraft = threadHasConcreteGroceryDraftForFollowUp(
+          threadCtxForIntent.threadGrocerySummary,
+          assistantContents
+        );
+        const intent = detectCommandIntentFromNaturalLanguage(routePrompt, memoriesByKey, {
+          hasGroceryDraft,
+        });
+        if (intent.pendingAction) {
+          const reply = buildPendingActionReply(intent.pendingAction, memoriesByKey);
+          await addMessage(chatId, req.householdId, 'user', name, routePrompt);
+          await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+          await incrementUserMessageCountForSender(req);
+          if (typeof broadcastToChat === 'function') {
+            broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+          }
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(intent.pendingAction)));
+          return res.end(reply);
         }
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(intent.pendingAction)));
-        return res.end(reply);
       }
     }
 
@@ -5828,10 +6833,10 @@ app.post(
     const groceryListCommand = isGroceryListCommand(routePrompt);
 
     if (memoriesCommand && isPrivateChatCommand(routePrompt)) {
-      const memories = (await getMemories(req.householdId)).filter((m) => m.key !== 'assistant_name');
+      const memoriesFiltered = memories.filter((m) => m.key !== 'assistant_name');
 
-      const reply = memories.length
-        ? 'Current memories:\n' + memories.map(memory => `- ${memory.key}: ${memory.value}`).join('\n')
+      const reply = memoriesFiltered.length
+        ? 'Current memories:\n' + memoriesFiltered.map(memory => `- ${memory.key}: ${memory.value}`).join('\n')
         : 'No memories stored.';
 
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -5846,20 +6851,21 @@ app.post(
         reply = memoryParsed.error;
         await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
       } else {
-        const newValue = memoryParsed.value;
-        const rows = await getMemories(req.householdId);
-        const existing = rows.find((r) => r.key === memoryParsed.key);
+        const normKey = normalizeRememberKeyForStorage(memoryParsed.key);
+        const newValue = normalizeRememberValueForStorage(memoryParsed.value);
+        const existing = memories.find((r) => r.key === normKey);
         if (!existing) {
-          await upsertMemory(req.householdId, memoryParsed.key, newValue);
-          reply = `Got it. I saved memory \`${memoryParsed.key}\` = "${newValue}".`;
+          await upsertHouseholdMemory(req.householdId, memoryParsed.key, memoryParsed.value);
+          reply = `Got it. I saved memory ${normKey} = ${newValue}.`;
         } else {
           const existingValue = String(existing.value ?? '');
-          if (existingValue.includes(newValue)) {
-            reply = `No change — \`${memoryParsed.key}\` already includes that.`;
+          const merged = mergeMemoryProposalWithExisting(existingValue, newValue);
+          if (merged === null || merged.trim() === existingValue.trim()) {
+            reply = `No change — ${normKey} already includes that.`;
           } else {
-            const storedValue = existingValue ? `${existingValue}; ${newValue}` : newValue;
-            await upsertMemory(req.householdId, memoryParsed.key, storedValue);
-            reply = `Got it. I saved memory \`${memoryParsed.key}\` = "${storedValue}".`;
+            const mergedStored = normalizeRememberValueForStorage(merged);
+            await upsertHouseholdMemory(req.householdId, normKey, mergedStored);
+            reply = `Got it. I saved memory ${normKey} = ${mergedStored}.`;
           }
         }
         await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
@@ -5890,7 +6896,6 @@ app.post(
       const recentConversation =
         conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
 
-      const memories = await getMemories(req.householdId);
       const priorCtx = await getChatThreadContext(chatId, req.householdId);
       const priorMealPlanSummary = priorCtx.mealPlanSummary;
       const priorThreadGrocerySummary = priorCtx.threadGrocerySummary;
@@ -6017,20 +7022,33 @@ Where:
       }
 
       const effectiveGroceryMode = requestedGroceryMode || 'append';
+      const beforeGroceryCount = existingGroceryItems.length;
+      let replaceClearedCount = 0;
       let prunedCount = 0;
       if (effectiveGroceryMode === 'replace') {
-        await clearGroceryItems(req.householdId);
+        replaceClearedCount = await clearGroceryItems(req.householdId);
       } else if (effectiveGroceryMode === 'prune') {
         try {
-          prunedCount = await pruneStaleGroceryItemsForChat(req.householdId, runKeys, chatId);
+          prunedCount = await pruneStaleGroceryItemsForChat(
+            req.householdId,
+            runKeys,
+            chatId,
+            likelyRemovedKeys
+          );
         } catch (e) {
           console.error('Grocery prune failed:', e.message || e);
         }
       }
-      const groceryListWasUpdated = normalizedItems.length > 0;
-      if (groceryListWasUpdated) {
-        await mergeGroceryItemsFromAi(req.householdId, normalizedItems, chatId);
+      let mergeStats = { insertedCount: 0, updatedCount: 0, backfilledCount: 0, changedCount: 0 };
+      if (normalizedItems.length > 0) {
+        mergeStats = await mergeGroceryItemsFromAi(req.householdId, normalizedItems, chatId);
       }
+      const afterGroceryItems = await getGroceryItems(req.householdId);
+      const afterGroceryCount = afterGroceryItems.length;
+
+      const totalDbContentChanges =
+        replaceClearedCount + prunedCount + mergeStats.changedCount;
+      const groceryListWasUpdated = totalDbContentChanges > 0;
 
       const conversationSnippet = recentConversation
         .map((m) =>
@@ -6038,13 +7056,9 @@ Where:
         )
         .join('\n\n');
       const commandOutcomeBlock = groceryListWasUpdated
-        ? `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- A grocery list was generated for this thread via !grocerylist and the household grocery list was updated in the app with the items from this run.`
-        : `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- No grocery items were saved from this run (nothing to merge); the household grocery list was not updated by this request.`;
-      const pruneOutcomeLine =
-        effectiveGroceryMode === 'prune'
-          ? `\n- Prune mode removed ${prunedCount} stale item(s) attributed to this chat from the household grocery list.`
-          : '';
-      const commandOutcomeWithPrune = commandOutcomeBlock + pruneOutcomeLine;
+        ? `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- The household grocery list in the app changed this request: ${totalDbContentChanges} total (inserts: ${mergeStats.insertedCount}, amount updates: ${mergeStats.updatedCount}, prune removals: ${prunedCount}, replace-mode rows cleared: ${replaceClearedCount}). Provenance-only backfills (not list content): ${mergeStats.backfilledCount}.\n- Sanity check: grocery row count before ${beforeGroceryCount}, after ${afterGroceryCount}.`
+        : `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- The household grocery list in the app was not changed by this request (inserts: ${mergeStats.insertedCount}, amount updates: ${mergeStats.updatedCount}, prune removals: ${prunedCount}, replace-mode rows cleared: ${replaceClearedCount}; provenance backfills: ${mergeStats.backfilledCount}). Parsed item lines: ${normalizedItems.length}.\n- Sanity check: grocery row count before ${beforeGroceryCount}, after ${afterGroceryCount}.`;
+      const commandOutcomeWithPrune = commandOutcomeBlock;
 
       const itemsThisRunText =
         normalizedItems.length > 0
@@ -6126,9 +7140,15 @@ Rules:
         console.error('chat thread context upsert failed:', e.message || e);
       }
 
-      const reply = groceryListWasUpdated
-        ? 'I updated the grocery list. Head over to the Grocery List tab to check it.'
-        : 'I was not able to build a grocery list from our conversation.';
+      let reply;
+      if (groceryListWasUpdated) {
+        reply = 'I updated the grocery list. Head over to the Grocery List tab to check it.';
+      } else if (normalizedItems.length > 0) {
+        reply =
+          'The grocery list already had those items, so there wasn\'t anything new to update.';
+      } else {
+        reply = 'I was not able to build a grocery list from our conversation.';
+      }
 
       await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
       await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
@@ -6168,8 +7188,6 @@ Rules:
     );
     const recentConversation =
       conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
-
-    const memories = await getMemories(req.householdId);
 
     const memoryText = memories
       .map(memory => `${memory.key}: ${memory.value}`)
@@ -6221,6 +7239,33 @@ Rules:
       }
     }
 
+    let mixedMemoryProposal = null;
+    let mixedMemoryOfferLine = null;
+    if (hasStrongMemoryIntentKeywords(routePrompt)) {
+      const proposed = await tryAiMemoryProposal(anthropic, routePrompt, memories);
+      if (proposed) {
+        const mixed = isMixedIntentMemoryMessage(routePrompt);
+        if (!mixed) {
+          const reply = buildPendingActionReply(proposed, memoriesByKey);
+          await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+          if (typeof broadcastToChat === 'function') {
+            broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+          }
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(proposed)));
+          return res.end(reply);
+        }
+        mixedMemoryProposal = proposed;
+        mixedMemoryOfferLine = buildMixedMemoryOfferLine(proposed, routePrompt);
+      }
+    }
+
+    const mixedIntentBlock = mixedMemoryProposal
+      ? `
+
+    Mixed-intent (this user message): They asked for a primary task plus a memory-like fact. Complete the primary task first; apply the memory fact in-context (e.g. dietary exclusions). Do NOT add any line offering to save to household memory, asking to confirm a save, or mirroring the backend offer—the server appends exactly one such line after your reply; duplicate offer text is stripped. Do not ask again to save; a pending confirmation is already attached. Never output [[KB_OFFER_MEMORY_SAVE]] or any [[KB_...]] marker (it will be stripped).`
+      : '';
+
     const useWebSearchTool =
       householdWebSearchEnabled && shouldEnableWebSearchForPrompt(routePrompt);
 
@@ -6233,33 +7278,30 @@ Rules:
     const streamParams = {
       model: 'claude-sonnet-4-5',
       max_tokens: useWebSearchTool ? 4096 : 800,
-      system: `You are a concise household assistant. Respond in plain text by default. Only use code blocks when the user explicitly asks for code.
+      system: `You are KitchenBot: a concise household assistant. Always use first person (I/me/my)—never describe "KitchenBot" as a separate system. Plain text by default; code blocks only if the user asks.
 
-    Capability contract — this reply is plain text generation only. It does not run app actions.
-    - What actually changes persisted app state are user-typed commands and the Settings UI—not conversational phrasing. Command-backed examples: \`!remember <key> = <value>\` (memories), \`!grocerylist\` (grocery list from chat), \`!rename\` / \`!rename <title>\` (chat title), \`!love <name>\` (compliment boost). Listing memories: \`!memories\`. Full list: \`!help\`.
-    - Current-reply limitation: This normal chat answer cannot execute \`!\` commands or newly mutate persisted app state; only user-typed commands (and Settings) do that in their own turns—not conversational wording in this reply.
-    - Past-action honesty: If this chat’s history or the injected thread context clearly shows a command-backed action already ran in a prior turn (e.g. a \`!\` command with a matching assistant outcome), you may truthfully acknowledge that it happened. Do not deny past real app effects only because this reply is plain text generation. Do not invent prior actions that the chat does not support.
-    - You can suggest, draft, summarize, format, and explain. You cannot execute those commands yourself from this reply.
-    - Action honesty: Never claim you just changed the app in this reply (grocery list, memory, chat title, settings, etc.) unless you are quoting what the user must type or describing a hypothetical. Avoid "done", "saved", "updated", "I remembered", "I renamed" for state you did not actually cause in this turn. If they asked in plain English for persistence, say you have not changed anything in the app from this message, then give a draft and the right \`!\` command or next step. This does not require denying a prior turn that clearly succeeded—see past-action honesty above.
+    App contract: This message is plain text only; it does not run \`!\` commands or change stored state by itself. Persisted changes happen only through explicit commands, Settings, or when I offer a save/list update and the app attaches a real pending confirmation—your next reply alone cannot complete that unless the client sends that confirmation.
+    - Do not claim I saved, updated, or changed the app this turn unless the history shows a real command or confirmation outcome. Do not narrate a successful grocery or memory write unless the thread shows the actual backend confirmation for that action.
+    - New facts may inform this reply only; do not describe them as already saved or remembered for future use unless the backend actually executed a save in this thread (visible command outcome in history).
+    - Do not say \`I saved memory …\`, \`I updated memory …\`, or \`I've updated … preferences\` unless the thread history clearly shows the real command-backed assistant message from a save. Ephemeral facts: a new user fact not already in household memory below may be used only for this reply. Do not say I noted it, saved it, will remember it next time, updated preferences, or kept it in mind for future meals—unless quoting a confirmed command outcome from chat history. Only a real \`!remember\` or confirmed pending action is a save.
+    - Do not ask "which would you prefer?" or offer Settings vs chat-style forks for actions I cannot complete from the next natural-language reply. Give one clear path (e.g. edit in Settings, or confirm when I have attached a real pending action).
+    - Do not tell users to type \`!remember\` here; if they only say yes/sure/ok, they may be confirming an offer—no command tutorials.
+    ${mixedIntentBlock}
 
-    Interaction model honesty: You produce exactly one reply to the current user message. You cannot send a later follow-up on your own unless the user sends another message. If web search or other tools are attached for this request, use them within this same reply and deliver the useful result here—do not narrate work as if it will complete after you finish typing. Never imply background work, waiting, or a second outbound message (avoid phrasing like "let me search now", "stand by", "once I get the results", "I'll come back with", or any equivalent). Do not output raw search queries unless the user explicitly asks to see them.
+    One reply per user message; finish here (no "stand by" or promised follow-ups). If web_search is attached, use it in this reply. Do not print raw search queries unless asked.
 
-    Optional next-step offer (grocery only): If this reply is actually doing meal-planning/grocery-draft help for this chat (not an unrelated topic), you may end with an optional permission ask like "If you want, I can update the Grocery List tab for you." Do not claim it is already updated. Do not ask them to type \`!grocerylist\`. If and only if you include that optional offer, prepend exactly this hidden marker at the very start of the reply: [[KB_OFFER_GROCERY_UPDATE]] . Do not explain or expose the marker.
+    Grocery (draft-first): first output the shopping/ingredient list in this reply. Only after a concrete list in this message may you offer once: "If you want, I can add this to the Grocery List tab." (optionally add one short clause about plan swaps if relevant). Do not claim the tab is already updated. Do not say \`That's a command-backed action\`, \`run !grocerylist\`, or \`say yes and I'll add it\` unless you start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it)—that marker is what attaches a real pending action. If you do not use the marker, do not imply the user can confirm to save to the tab. Do not ask them to type \`!grocerylist\`.
 
     ${webSearchCapabilityBlock}
-    Source-specific content: You may only present ingredients, steps, prices, dates, or other details as coming from a named site, book, or URL if those exact details are already in this chat (including household memory below), or came from web_search tool results this turn. Otherwise you do not have that source—say so plainly. Never pass off pattern-matching or general knowledge as "from that page" or "from that recipe." If they share only a URL, you cannot give the real ingredient list from that page without tool results or pasted text; offer a clearly labeled generic version (e.g. "a typical baked mac and cheese, not the exact Chunky Chef recipe") or ask them to paste the ingredients.
+    Sources: Attribute ingredients/steps/prices to a URL or site only if those details are in this chat, memory below, or web_search results this turn; otherwise say you don't have that page. Generic help is OK if labeled approximate.
 
-    Label what you are giving when it matters: (1) Source-backed — only when text/facts are in chat or in this turn's search results. (2) Generic / approximate — say so explicitly. (3) Suggested next step — e.g. paste text, or use \`!remember\` / \`!grocerylist\`. (4) App actions — only as instructions for the user, not as claims you performed.
-
-    Consistency: When you do have a real selected recipe or source (from chat, memory, or search results), keep later lists faithful to it; do not silently drift. When you do not have the source, do not fake fidelity—say the content is unavailable and separate generic help from source-specific claims.
-
-    Thread-specific meal plan context (this chat only; last updated when someone runs \`!grocerylist\`; read-only during normal chat; not the live Grocery tab):
+    Thread meal-plan summary (read-only; updated on \`!grocerylist\`; not the live Grocery tab):
     ${threadCtx.mealPlanSummary.trim() || '(none yet)'}
 
-    Thread-specific cumulative grocery intent (this chat only; updated across \`!grocerylist\` runs in this thread; read-only here; not the live grocery list / grocery_items table):
+    Thread grocery intent (read-only; not the live grocery_items list):
     ${threadCtx.threadGrocerySummary.trim() || '(none yet)'}
 
-    Household memory (read-only context for you; household-wide; saving still requires \`!remember\` or other commands):
+    Household memory (read-only; edits via Settings or a confirmed save offer):
     ${memoryText}`,
       messages: claudeMessages,
     };
@@ -6274,26 +7316,67 @@ Rules:
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
+    if (mixedMemoryProposal) {
+      res.setHeader(
+        'X-KitchenBot-Pending-Action',
+        encodeURIComponent(JSON.stringify(mixedMemoryProposal))
+      );
+    }
 
     let finalReply = '';
+    let streamRawAccum = '';
     const pendingOfferMarker = '[[KB_OFFER_GROCERY_UPDATE]]';
     let pendingOfferDecisionMade = false;
     let pendingOfferAction = null;
     let pendingOfferBuffer = '';
+    let streamEnded = false;
+    let displayEmittedLen = 0;
 
-    function writeChatDelta(delta) {
-      if (!delta) return;
-      finalReply += delta;
-      res.write(delta);
+    /**
+     * Stream text that matches what we will persist: when no real grocery pending action is attached,
+     * strip fake grocery-offer lines before emitting (same as post-stream finalReply cleanup).
+     * Never show a grocery-offer line unless the matching pending action is actually attached.
+     */
+    function flushDisplayEmit() {
+      const cleaned = stripKitchenBotHiddenMarkers(streamRawAccum);
+      const persistPlain =
+        pendingOfferAction || mixedMemoryProposal ? cleaned : stripFakeGroceryOperationalLines(cleaned);
+      finalReply = persistPlain;
+
+      if (mixedMemoryProposal) return;
+
+      let emitPlain;
+      if (pendingOfferAction) {
+        emitPlain = cleaned;
+      } else {
+        emitPlain = persistPlain;
+        if (!streamEnded) {
+          const lastNl = emitPlain.lastIndexOf('\n');
+          if (lastNl === -1) return;
+          emitPlain = emitPlain.slice(0, lastNl + 1);
+        }
+      }
+
+      displayEmittedLen = Math.min(displayEmittedLen, emitPlain.length);
+      const newSuffix = emitPlain.slice(displayEmittedLen);
+      if (!newSuffix) return;
+      displayEmittedLen += newSuffix.length;
+      res.write(newSuffix);
       if (typeof broadcastToChat === 'function') {
         broadcastToChat(chatId, {
           type: 'stream_delta',
           householdId: req.householdId,
           chatId,
-          delta,
+          delta: newSuffix,
           user: name,
         });
       }
+    }
+
+    function writeChatDelta(delta) {
+      if (!delta) return;
+      streamRawAccum += delta;
+      flushDisplayEmit();
     }
 
     for await (const event of stream) {
@@ -6308,10 +7391,12 @@ Rules:
           ) {
             if (pendingOfferBuffer.startsWith(pendingOfferMarker)) {
               pendingOfferAction = { command: '!grocerylist' };
-              res.setHeader(
-                'X-KitchenBot-Pending-Action',
-                encodeURIComponent(JSON.stringify(pendingOfferAction))
-              );
+              if (!mixedMemoryProposal) {
+                res.setHeader(
+                  'X-KitchenBot-Pending-Action',
+                  encodeURIComponent(JSON.stringify(pendingOfferAction))
+                );
+              }
               pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
               pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
             }
@@ -6329,10 +7414,12 @@ Rules:
     if (!pendingOfferDecisionMade) {
       if (pendingOfferBuffer.startsWith(pendingOfferMarker)) {
         pendingOfferAction = { command: '!grocerylist' };
-        res.setHeader(
-          'X-KitchenBot-Pending-Action',
-          encodeURIComponent(JSON.stringify(pendingOfferAction))
-        );
+        if (!mixedMemoryProposal) {
+          res.setHeader(
+            'X-KitchenBot-Pending-Action',
+            encodeURIComponent(JSON.stringify(pendingOfferAction))
+          );
+        }
         pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
         pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
       }
@@ -6341,6 +7428,31 @@ Rules:
         pendingOfferBuffer = '';
       }
       pendingOfferDecisionMade = true;
+    }
+
+    streamEnded = true;
+    flushDisplayEmit();
+
+    // Grocery offers and mode-choice replies must continue into the real !grocerylist command path before final success is emitted.
+    if (!pendingOfferAction && !mixedMemoryProposal) {
+      finalReply = stripFakeGroceryOperationalLines(finalReply);
+    }
+
+    if (mixedMemoryProposal) {
+      finalReply = stripModelAuthoredMemoryOfferLines(finalReply);
+      if (mixedMemoryOfferLine) {
+        finalReply += '\n\n' + mixedMemoryOfferLine;
+      }
+      res.write(finalReply);
+      if (typeof broadcastToChat === 'function') {
+        broadcastToChat(chatId, {
+          type: 'stream_delta',
+          householdId: req.householdId,
+          chatId,
+          delta: finalReply,
+          user: name,
+        });
+      }
     }
 
     /* ---- COMPLIMENT LOGIC (per sending user) ---- */
@@ -6376,6 +7488,18 @@ Rules:
     }
 
     /* ---- END OF COMPLIMENT LOGIC ---- */
+
+    {
+      const offerSep = mixedMemoryProposal && mixedMemoryOfferLine ? '\n\n' + mixedMemoryOfferLine : null;
+      let beforeScrub = finalReply;
+      let afterScrub = '';
+      if (offerSep && finalReply.includes(offerSep)) {
+        const idx = finalReply.lastIndexOf(offerSep);
+        beforeScrub = finalReply.slice(0, idx);
+        afterScrub = finalReply.slice(idx);
+      }
+      finalReply = scrubUnsavedMemoryClaimsInNormalChatReply(beforeScrub) + afterScrub;
+    }
 
     await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReply);
     if (typeof broadcastToChat === 'function') {

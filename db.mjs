@@ -1088,7 +1088,7 @@ export function clearGroceryItems(householdId) {
   return new Promise((resolve, reject) => {
     db.run(`DELETE FROM grocery_items WHERE household_id = ?`, [householdId], function (err) {
       if (err) reject(err);
-      else resolve();
+      else resolve(this.changes || 0);
     });
   });
 }
@@ -1101,20 +1101,34 @@ function normalizeGroceryNameKeyForPrune(name) {
 }
 
 /**
- * Remove unchecked stale rows keyed by normalized product name, only when the row is attributed
- * to sourceChatId (from !grocerylist). Rows with NULL source_chat_id (legacy/manual) are left alone.
+ * Remove unchecked stale rows for prune mode:
+ * - Rows attributed to sourceChatId: delete when normalized name is not in the current run (unchanged).
+ * - Rows with NULL source_chat_id: delete only when normalized name is in staleNormalizedKeys (e.g. swapped-out ingredients).
+ * - Never delete checked rows. Never delete rows attributed to a different non-null chat.
  */
-export async function pruneStaleGroceryItemsForChat(householdId, currentRunNameKeys, sourceChatId) {
+export async function pruneStaleGroceryItemsForChat(
+  householdId,
+  currentRunNameKeys,
+  sourceChatId,
+  staleNormalizedKeys
+) {
   const cid = Number(sourceChatId);
   if (!Number.isFinite(cid)) return 0;
   const runKeys = currentRunNameKeys instanceof Set ? currentRunNameKeys : new Set();
+  const staleKeys = staleNormalizedKeys instanceof Set ? staleNormalizedKeys : new Set();
   const existing = await getGroceryItems(householdId);
   let removed = 0;
   for (const e of existing) {
     if (e.checked) continue;
-    if (e.source_chat_id == null || Number(e.source_chat_id) !== cid) continue;
     const k = normalizeGroceryNameKeyForPrune(e.name);
-    if (runKeys.has(k)) continue;
+    const sid = e.source_chat_id == null ? null : Number(e.source_chat_id);
+    let shouldDelete = false;
+    if (sid === cid) {
+      if (!runKeys.has(k)) shouldDelete = true;
+    } else if (sid == null && staleKeys.has(k)) {
+      shouldDelete = true;
+    }
+    if (!shouldDelete) continue;
     try {
       await deleteGroceryItem(householdId, e.id);
       removed += 1;
