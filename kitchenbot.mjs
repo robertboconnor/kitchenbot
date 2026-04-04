@@ -40,6 +40,7 @@ import {
   getHouseholdById,
   getHouseholdByKey,
   setHouseholdWebSearchEnabled,
+  setHouseholdSmartModeEnabled,
   listHouseholdUsers,
   getUserByHouseholdAndDisplayName,
   getHouseholdUserById,
@@ -54,7 +55,46 @@ import {
   getUserMessageCountsInHousehold,
   getChatThreadContext,
   upsertChatThreadContext,
+  updateChatThreadScene,
+  replaceChatThreadScene,
+  updateWeeklyPlanDraft,
+  clearChatRuntimeState,
+  setChatRuntimeState,
 } from './db.mjs';
+import {
+  sanitizePendingAction,
+  appendPendingMarkerToAssistantContent,
+  buildPendingActionReply,
+  isPendingActionConfirmation,
+  groceryTabOfferTextMatchesForPending,
+} from './pending-state.mjs';
+import { decideCommandRoute, weeklyPlanDraftHasMeaningfulContent, isWeeklyPlanningLikeUserTurn } from './interaction-engine.mjs';
+import { runSmartModeInterpreter as invokeSmartModeInterpreterModel } from './smart-mode-interpreter.mjs';
+import { handleSmartModeChatTurn } from './smart-chat-runtime.mjs';
+import { handleLegacyChatTurn } from './legacy-chat-runtime.mjs';
+import { runSmartTypedPlan } from './smart-plan-executor.mjs';
+import { runGrocerySharedCommandEffects as runGrocerySharedExecutorEffects, runWeeklyPlanGroceryDraftOfferResponse as runWeeklyPlanGroceryDraftOfferExecutorResponse } from './grocery-executor.mjs';
+import { runRememberSharedCommandEffects as runRememberSharedExecutorEffects } from './memory-executor.mjs';
+import {
+  listCapabilitiesForInterpreter,
+  renderSmartPendingReply,
+} from './capability-registry.mjs';
+import {
+  formatSmartGroceryPreviewArtifact,
+  generateSmartGroceryPreviewCommitReply,
+  formatSmartWeeklyPlanArtifact,
+  generateSmartGroceryModeChoiceReply,
+  generateSmartGroceryPreviewLead,
+  withSmartPlannerWeeklyPlanArtifact,
+} from './smart-artifact-renderers.mjs';
+import {
+  buildMixedMemoryOfferLine as buildSmartMixedMemoryOfferLine,
+  hasStrongMemoryIntentKeywords as hasSmartStrongMemoryIntentKeywords,
+  isDurableAutoMemoryCandidate as isSmartDurableAutoMemoryCandidate,
+  isMixedIntentMemoryMessage as isSmartMixedIntentMemoryMessage,
+  shouldApplyDurableAutoMemoryGuard as shouldApplySmartDurableAutoMemoryGuard,
+  tryAiMemoryProposal as trySmartAiMemoryProposal,
+} from './smart-memory-policy.mjs';
 import 'dotenv/config';
 import os from 'os';
 import http from 'http';
@@ -126,19 +166,456 @@ async function getAnthropicClient(householdId) {
     throw new Error('Household not found.');
   }
   const webSearchEnabled = Number(h.web_search_enabled) === 1;
+  const smartModeEnabled = Number(h.smart_mode_enabled) === 1;
   const mode = h.anthropic_key_mode || 'shared';
   if (mode === 'household') {
     const k = h.anthropic_api_key && String(h.anthropic_api_key).trim();
     if (!k) {
       throw new Error('This household does not have an Anthropic API key configured.');
     }
-    return { client: new Anthropic({ apiKey: k }), webSearchEnabled };
+    return { client: new Anthropic({ apiKey: k }), webSearchEnabled, smartModeEnabled };
   }
   const shared = process.env.ANTHROPIC_API_KEY && String(process.env.ANTHROPIC_API_KEY).trim();
   if (!shared) {
     throw new Error('Shared Anthropic API key is not configured on this server.');
   }
-  return { client: new Anthropic({ apiKey: shared }), webSearchEnabled };
+  return { client: new Anthropic({ apiKey: shared }), webSearchEnabled, smartModeEnabled };
+}
+
+function truncateSmartModeContext(s, max) {
+  const t = String(s ?? '');
+  if (t.length <= max) return t;
+  return t.slice(0, max - 1) + '…';
+}
+
+function parseJsonObjectFromModelText(raw) {
+  let s = String(raw ?? '').trim();
+  const fence = s.match(/^```(?:json)?\s*([\s\S]*?)```$/im);
+  if (fence) s = fence[1].trim();
+  try {
+    return JSON.parse(s);
+  } catch {
+    const m = s.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    try {
+      return JSON.parse(m[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** Compact line for system prompt; never dumps raw JSON. */
+function formatWeeklyPlanDraftForPrompt(draft) {
+  if (!draft || typeof draft !== 'object') return '(none yet)';
+  const label = String(draft.label ?? '').trim();
+  const meals = Array.isArray(draft.meals) ? draft.meals.filter((m) => String(m).trim()) : [];
+  const notes = String(draft.notes ?? '').trim();
+  const hasContent =
+    (label && label.length > 0) ||
+    meals.length > 0 ||
+    (notes && notes.length > 0);
+  if (!hasContent) return '(none yet)';
+  const parts = [];
+  if (label) parts.push(`label: ${label}`);
+  if (meals.length) parts.push(`meals: ${meals.map((m, i) => `${i + 1}) ${String(m).trim()}`).join(' · ')}`);
+  if (notes) parts.push(`notes: ${notes}`);
+  return truncateSmartModeContext(parts.join(' | '), 1200) || '(none yet)';
+}
+
+/**
+ * User-visible weekly plan from weeklyPlanDraft only (server-owned; no JSON, thread scene, grocery, plannerResume).
+ */
+function formatWeeklyPlanDraftVisibleBlock(draft) {
+  if (!draft || typeof draft !== 'object') return '';
+  const label = String(draft.label ?? '').trim();
+  const meals = Array.isArray(draft.meals) ? draft.meals.map((m) => String(m).trim()).filter(Boolean) : [];
+  const notes = String(draft.notes ?? '').trim();
+  const hasMeals = meals.length > 0;
+  const hasLabel = label.length > 0;
+  const hasNotes = notes.length > 0;
+  if (!hasMeals && !hasLabel && !hasNotes) return '';
+  const lines = ['Weekly plan'];
+  if (hasLabel) {
+    lines.push(label);
+    lines.push('');
+  } else {
+    lines.push('');
+  }
+  if (hasMeals) {
+    for (let i = 0; i < meals.length; i++) {
+      lines.push(`${i + 1}. ${meals[i]}`);
+    }
+  }
+  if (hasNotes) {
+    if (hasMeals) lines.push('');
+    lines.push(`Notes: ${notes}`);
+  }
+  return lines.join('\n');
+}
+
+/** @param {string} baseText @param {string} block */
+function appendWeeklyPlanVisibleBlockToAssistantText(baseText, block) {
+  const b = String(block ?? '').trim();
+  if (!b) return baseText;
+  const base = String(baseText ?? '');
+  return base ? `${base}\n\n${b}` : b;
+}
+
+/** After planner weekly_plan_draft_patch, grocery disambiguation messages should still show the canonical plan. */
+function withPlannerWeeklyPlanVisibleBlock(plannerWeeklyPatchAck, draft, replyForStore) {
+  if (!plannerWeeklyPatchAck) return replyForStore;
+  if (!weeklyPlanDraftHasMeaningfulContent(draft ?? {})) return replyForStore;
+  const block = formatWeeklyPlanDraftVisibleBlock(draft);
+  return block ? appendWeeklyPlanVisibleBlockToAssistantText(replyForStore, block) : replyForStore;
+}
+
+async function buildSmartModeInterpreterContext(input) {
+  const {
+    prompt,
+    chatId,
+    householdId,
+    memoriesByKey,
+    recoveredPending,
+    bodyExecutePending,
+    stripStoredMessageContentForDisplay,
+    smartModeEnabled: ctxSmartMode = true,
+  } = input;
+  const threadCtx = await getChatThreadContext(chatId, householdId);
+  const conv = await getMessages(chatId, householdId);
+  const lastUserMsg = [...conv].reverse().find((m) => m.role === 'user');
+  const lastAssistantMsg = [...conv].reverse().find((m) => m.role === 'assistant');
+  const previousUserMessageInThread = lastUserMsg
+    ? truncateSmartModeContext(
+        `${String(lastUserMsg.name ?? 'user')}: ${String(lastUserMsg.content ?? '')}`,
+        800
+      )
+    : null;
+  const lastAssistantVisible = lastAssistantMsg
+    ? truncateSmartModeContext(stripStoredMessageContentForDisplay(String(lastAssistantMsg.content ?? '')), 800)
+    : null;
+
+  const memoryLines = [...memoriesByKey.entries()]
+    .filter(([k]) => k !== 'assistant_name')
+    .map(([k, v]) => `${k}: ${truncateSmartModeContext(String(v), 220)}`)
+    .join('\n');
+  const householdMemoriesCompact = memoryLines.length ? truncateSmartModeContext(memoryLines, 8000) : '(none)';
+
+  let recoveredPendingSummary = null;
+  if (recoveredPending && typeof recoveredPending === 'object') {
+    recoveredPendingSummary = {
+      command: recoveredPending.command,
+      mode: recoveredPending.mode ?? null,
+      key: recoveredPending.args?.key ?? null,
+    };
+  }
+
+  let bodyExecutePendingSummary = null;
+  if (bodyExecutePending != null) {
+    const s = sanitizePendingAction(bodyExecutePending);
+    bodyExecutePendingSummary = s
+      ? { command: s.command, mode: s.mode ?? null, key: s.args?.key ?? null }
+      : '[unparsed]';
+  }
+
+  const threadScene =
+    threadCtx.threadScene && typeof threadCtx.threadScene === 'object' && !Array.isArray(threadCtx.threadScene)
+      ? threadCtx.threadScene
+      : {};
+  const threadSceneCompact =
+    Object.keys(threadScene).length === 0
+      ? '(empty)'
+      : truncateSmartModeContext(JSON.stringify(threadScene), 800);
+  const weeklyPlanDraftCompact = formatWeeklyPlanDraftForPrompt(threadCtx.weeklyPlanDraft ?? {});
+  const weeklyPlanMealsIndexed = Array.isArray(threadCtx.weeklyPlanDraft?.meals)
+    ? threadCtx.weeklyPlanDraft.meals
+        .map((meal, index) => `${index + 1}. ${String(meal ?? '').trim()}`)
+        .filter((line) => !/^\d+\.\s*$/.test(line))
+        .join('\n')
+    : '';
+
+  return {
+    smartModeEnabled: !!ctxSmartMode,
+    allowedCapabilities: listCapabilitiesForInterpreter(),
+    currentUserMessage: truncateSmartModeContext(prompt, 4000),
+    previousUserMessageInThread,
+    lastAssistantVisible,
+    weeklyPlanExists: weeklyPlanDraftHasMeaningfulContent(threadCtx.weeklyPlanDraft ?? {}),
+    threadHasGroceryIntent: String(threadCtx.threadGrocerySummary ?? '').trim().length > 0,
+    threadGrocerySummary: truncateSmartModeContext(threadCtx.threadGrocerySummary, 1200),
+    threadMealPlanSummary: truncateSmartModeContext(threadCtx.mealPlanSummary, 1200),
+    weeklyPlanDraftCompact,
+    weeklyPlanMealsIndexed: weeklyPlanMealsIndexed || '(none)',
+    threadSceneCompact,
+    householdMemoriesCompact,
+    recoveredPendingSummary,
+    bodyExecutePendingSummary,
+  };
+}
+
+const THREAD_SCENE_AUTO_FIELD_MAX = { mission: 500, openLoop: 500, activeMeal: 300 };
+
+function pickPriorThreadSceneForAutoUpdater(threadScene) {
+  const o = threadScene && typeof threadScene === 'object' && !Array.isArray(threadScene) ? threadScene : {};
+  return {
+    mission: typeof o.mission === 'string' ? o.mission : '',
+    openLoop: typeof o.openLoop === 'string' ? o.openLoop : '',
+    activeMeal: typeof o.activeMeal === 'string' ? o.activeMeal : '',
+  };
+}
+
+function buildRecentConversationSnippetForSceneUpdater(recentConversation, maxChars = 3500) {
+  const lines = [];
+  let total = 0;
+  const slice = recentConversation.slice(-12);
+  for (const m of slice) {
+    const role = m.role === 'user' ? 'user' : 'assistant';
+    const text =
+      m.role === 'user'
+        ? `${String(m.name ?? 'user')}: ${String(m.content ?? '')}`
+        : stripStoredMessageContentForDisplay(String(m.content ?? ''));
+    const line = `[${role}] ${truncateSmartModeContext(text, 900)}`;
+    if (total + line.length > maxChars) break;
+    lines.push(line);
+    total += line.length + 1;
+  }
+  return lines.join('\n');
+}
+
+function validateThreadSceneAutoPatch(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const ALLOWED = new Set(['mission', 'openLoop', 'activeMeal']);
+  const out = {};
+  for (const key of Object.keys(parsed)) {
+    if (!ALLOWED.has(key)) continue;
+    const v = parsed[key];
+    if (v === null || v === undefined) {
+      out[key] = '';
+    } else if (typeof v === 'string') {
+      out[key] = v.trim().slice(0, THREAD_SCENE_AUTO_FIELD_MAX[key]);
+    } else if (typeof v === 'number' && Number.isFinite(v)) {
+      out[key] = String(v).slice(0, THREAD_SCENE_AUTO_FIELD_MAX[key]);
+    } else if (typeof v === 'boolean') {
+      out[key] = v ? 'true' : '';
+    } else {
+      return null;
+    }
+  }
+  if (Object.keys(out).length === 0) return null;
+  return out;
+}
+
+/** Lightweight: user/assistant text suggests explicit pivot away from current thread work. */
+function threadScenePivotAbandonHint(combinedText) {
+  const s = String(combinedText ?? '');
+  return /\b(?:never mind|ignore that|forget that|changed my mind|stop|cancel)\b/i.test(s) ||
+    /\blet(?:'|’)?s do something else\b/i.test(s) ||
+    /\bwe(?:'|’)?re done with that\b/i.test(s) ||
+    /\bwe are done with that\b/i.test(s);
+}
+
+/**
+ * Best-effort LLM merge of mission / openLoop / activeMeal only (never lastAction or other server keys).
+ * Swallows all errors; does not block the HTTP response when invoked without await.
+ * @param {object} params — must include smartModeEnabled; no-ops when false (Smart Mode off).
+ */
+async function runThreadSceneAutoUpdaterAfterNormalChat(anthropic, params) {
+  if (!params.smartModeEnabled) return;
+  try {
+    const {
+      chatId,
+      householdId,
+      priorThreadScene,
+      routePrompt,
+      finalAssistantReply,
+      threadMealPlanSummary,
+      threadGrocerySummary,
+      householdMemoriesCompact,
+      recentConversationForContext,
+      trustedActionSummary,
+    } = params;
+    const priorFocus = pickPriorThreadSceneForAutoUpdater(priorThreadScene);
+    const snippet = buildRecentConversationSnippetForSceneUpdater(recentConversationForContext);
+    const payload = {
+      priorMissionOpenLoopActiveMeal: priorFocus,
+      threadMealPlanSummary: truncateSmartModeContext(String(threadMealPlanSummary ?? ''), 2000),
+      threadGrocerySummary: truncateSmartModeContext(String(threadGrocerySummary ?? ''), 2000),
+      householdMemoriesCompact: truncateSmartModeContext(String(householdMemoriesCompact ?? ''), 4000),
+      currentUserMessage: truncateSmartModeContext(String(routePrompt ?? ''), 4000),
+      finalAssistantReply: truncateSmartModeContext(String(finalAssistantReply ?? ''), 6000),
+      trustedActionSummary:
+        trustedActionSummary != null && String(trustedActionSummary).trim() !== ''
+          ? truncateSmartModeContext(String(trustedActionSummary), 500)
+          : null,
+      recentConversationSnippet: snippet,
+    };
+    const system = `You output ONLY one JSON object (no markdown, no code fences, no commentary).
+
+Allowed keys ONLY: "mission", "openLoop", "activeMeal". Each value must be a string or null.
+- Short, practical strings; ground them in the supplied inputs only. Do not invent specifics.
+- Do NOT output arrays, nested objects, or any keys other than mission, openLoop, activeMeal.
+- Do NOT output or guess lastAction, grocery counts, remember keys, or other server metadata.
+
+Clearing rules (be conservative):
+- Finishing a subtask (e.g. a command succeeded) usually does NOT erase the thread’s overall mission. Do NOT clear all three fields just because a command completed.
+- A successful command often resolves one open loop; you may clear or update openLoop when that step is clearly done. Do not assume the whole thread goal vanished.
+- Preserve mission unless the user clearly pivots, abandons the topic, or the broader goal is clearly complete. When uncertain, keep prior mission.
+- Preserve activeMeal when it still fits prior scene, meal/grocery summaries, or recent context; clear only with affirmative evidence it no longer applies.
+- Only clear a field when you have affirmative evidence it no longer applies; when uncertain, preserve prior values (re-output prior strings from priorMissionOpenLoopActiveMeal when needed).
+
+Field meanings:
+- mission: the thread’s overall goal or theme, or "" only when clearly none / abandoned.
+- openLoop: the next unresolved step or question, or "" when resolved or N/A.
+- activeMeal: current meal/dish focus if clearly implied, or "".`;
+
+    const res = await anthropic.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 512,
+      system,
+      messages: [
+        {
+          role: 'user',
+          content: `Infer updated thread working state from this turn.\n\nContext (JSON):\n${JSON.stringify(payload)}`,
+        },
+      ],
+    });
+    const blocks = res.content.filter((b) => b.type === 'text');
+    const raw = blocks.map((b) => b.text).join('\n').trim();
+    const parsed = parseJsonObjectFromModelText(raw);
+    const patch = validateThreadSceneAutoPatch(parsed);
+    if (!patch) return;
+
+    const trusted =
+      trustedActionSummary != null && String(trustedActionSummary).trim() !== '';
+
+    if (trusted) {
+      const priorMissionTrim = String(priorFocus.mission ?? '').trim();
+      if (
+        priorMissionTrim !== '' &&
+        Object.prototype.hasOwnProperty.call(patch, 'mission') &&
+        String(patch.mission ?? '').trim() === ''
+      ) {
+        const combinedTurn = `${String(routePrompt ?? '')}\n${String(finalAssistantReply ?? '')}`;
+        if (!threadScenePivotAbandonHint(combinedTurn)) {
+          patch.mission = priorFocus.mission;
+        }
+      }
+    }
+
+    const merged = {
+      mission: Object.prototype.hasOwnProperty.call(patch, 'mission') ? patch.mission : priorFocus.mission,
+      openLoop: Object.prototype.hasOwnProperty.call(patch, 'openLoop') ? patch.openLoop : priorFocus.openLoop,
+      activeMeal: Object.prototype.hasOwnProperty.call(patch, 'activeMeal')
+        ? patch.activeMeal
+        : priorFocus.activeMeal,
+    };
+    const hadPriorContent = ['mission', 'openLoop', 'activeMeal'].some(
+      (k) => String(priorFocus[k] ?? '').trim() !== ''
+    );
+    const mergedAllEmpty = ['mission', 'openLoop', 'activeMeal'].every(
+      (k) => String(merged[k] ?? '').trim() === ''
+    );
+    if (trusted && hadPriorContent && mergedAllEmpty) {
+      console.warn(
+        'Thread scene auto-update: rejected patch that would clear mission, openLoop, and activeMeal after command success'
+      );
+      return;
+    }
+
+    await updateChatThreadScene(chatId, householdId, patch);
+  } catch (e) {
+    console.error('Thread scene auto-update failed:', e?.message || e);
+  }
+}
+
+function validateWeeklyPlanDraftModelOutput(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (parsed.no_update === true) return { noUpdate: true };
+  const patch = {};
+  if (Object.prototype.hasOwnProperty.call(parsed, 'label') && typeof parsed.label === 'string') {
+    patch.label = parsed.label;
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'meals') && Array.isArray(parsed.meals)) {
+    patch.meals = parsed.meals;
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'mealEdits') && Array.isArray(parsed.mealEdits)) {
+    patch.mealEdits = parsed.mealEdits;
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'notes') && typeof parsed.notes === 'string') {
+    patch.notes = parsed.notes;
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'status')) {
+    const st = String(parsed.status ?? '').trim().toLowerCase();
+    if (st === 'empty') patch.status = st;
+  }
+  if (Object.keys(patch).length === 0) return null;
+  return { noUpdate: false, patch };
+}
+
+/**
+ * Best-effort weekly plan merge after normal chat (Smart Mode only). Swallows errors; never blocks response.
+ */
+async function runWeeklyPlanDraftAutoUpdaterAfterNormalChat(anthropic, params) {
+  if (!params.smartModeEnabled) return;
+  if (params.skipBecausePlannerPatched) return;
+  try {
+    const {
+      chatId,
+      householdId,
+      priorWeeklyPlanDraft,
+      routePrompt,
+      finalAssistantReply,
+      threadMealPlanSummary,
+      threadGrocerySummary,
+    } = params;
+    const system = `You output ONLY one JSON object (no markdown, no code fences, no commentary).
+
+Fields:
+- "no_update": boolean — required. Set true when this turn does NOT clearly discuss weekly dinner planning (meals for the week, choosing options for multiple nights, a rough weekly menu, or similar). When true, do not include any other keys.
+
+When no_update is false, include only these optional keys (merge into the chat's weekly dinner plan for this chat):
+- "label": short string (title or week label)
+- "meals": full replacement array of short dinner titles
+- "mealEdits": array of targeted updates. Each item must be one of:
+  {"op":"set","slot":1-based integer,"meal":"short dinner title"}
+  {"op":"replace_match","match":"prior meal text","meal":"short dinner title"}
+  {"op":"append","meal":"short dinner title"}
+  {"op":"remove","slot":1-based integer}
+- "notes": short string
+- "status": "empty" only — use it only when the user clearly abandoned weekly planning for now
+
+Rules:
+- Preserve other dinners unless the user clearly replaces the whole weekly plan.
+- If the user refines one dinner, prefer mealEdits over replacing the whole meals array.
+- Expand vague placeholders into plausible dinner concepts when the user gives enough context.
+- Be conservative: recipe lookups, single-meal questions with no weekly-plan context, or unrelated topics → no_update true.`;
+
+    const res = await anthropic.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 400,
+      system,
+      messages: [
+        {
+          role: 'user',
+          content: `Infer the weekly dinner plan for this chat from this turn only.\n\nContext JSON:\n${JSON.stringify({
+            priorWeeklyPlanDraft: priorWeeklyPlanDraft ?? {},
+            threadMealPlanSummary: truncateSmartModeContext(String(threadMealPlanSummary ?? ''), 1500),
+            threadGrocerySummary: truncateSmartModeContext(String(threadGrocerySummary ?? ''), 1500),
+            currentUserMessage: truncateSmartModeContext(String(routePrompt ?? ''), 3000),
+            finalAssistantReply: truncateSmartModeContext(String(finalAssistantReply ?? ''), 5000),
+          })}`,
+        },
+      ],
+    });
+    const blocks = res.content.filter((b) => b.type === 'text');
+    const raw = blocks.map((b) => b.text).join('\n').trim();
+    const parsed = parseJsonObjectFromModelText(raw);
+    const validated = validateWeeklyPlanDraftModelOutput(parsed);
+    if (!validated || validated.noUpdate) return;
+    await updateWeeklyPlanDraft(chatId, householdId, validated.patch);
+  } catch (e) {
+    console.error('Weekly plan draft auto-update failed:', e?.message || e);
+  }
 }
 
 /** Heuristic: attach Anthropic web search only when the user message likely needs live web context. */
@@ -486,6 +963,21 @@ async function upsertHouseholdMemory(householdId, rawKey, rawValue) {
   await upsertMemory(householdId, key, value);
 }
 
+const THREAD_SCENE_REMEMBER_PREVIEW_MAX = 120;
+
+function threadSceneRememberValuePreview(value) {
+  const s = String(value ?? '');
+  if (s.length <= THREAD_SCENE_REMEMBER_PREVIEW_MAX) return s;
+  return s.slice(0, THREAD_SCENE_REMEMBER_PREVIEW_MAX - 1) + '…';
+}
+
+/** Trusted server-owned thread scene patch only; never throws upward. */
+function safeUpdateThreadScene(chatId, householdId, patch) {
+  return updateChatThreadScene(chatId, householdId, patch).catch((e) => {
+    console.error('safeUpdateThreadScene failed:', e?.message || e);
+  });
+}
+
 /** Strip hidden KitchenBot control markers from model text before streaming or persisting. */
 function stripKitchenBotHiddenMarkers(text) {
   let s = String(text ?? '').replace(/\[\[KB_[A-Z0-9_]+\]\]/g, '');
@@ -541,6 +1033,14 @@ function stripFakeGroceryOperationalLines(text) {
     if (/^I can run !grocerylist for you/i.test(t)) continue;
     // Fake tab CTA: same opening as system prompt ("If you want,") plus small model drift ("If you'd like", "I can also add …").
     if (stripGroceryTabCtaLine.test(t)) continue;
+    // False declarative tab writes when no real pending/execute path (caller only invokes this when no grocery pending).
+    if (
+      /^I(?:'|\u2019)?ll add\b.+\bto(?:\s+your|\s+the)?\s+Grocery\s+List\s+tab\s+now\b/i.test(t) ||
+      /^I(?:'|\u2019)?m adding\b.+\bto(?:\s+your|\s+the)?\s+Grocery\s+List\s+tab\s+now\b/i.test(t) ||
+      /^I will add\b.+\bto(?:\s+your|\s+the)?\s+Grocery\s+List\s+tab\s+now\b/i.test(t)
+    ) {
+      continue;
+    }
     // Narrow CTA / confirmation invites (must mention grocery or shopping list); short lines only
     if (t.length <= 320 && /\b(?:grocery|shopping)\s+list\b/i.test(t)) {
       const asks = /\?\s*$/.test(t);
@@ -560,6 +1060,33 @@ function stripFakeGroceryOperationalLines(text) {
         continue;
       }
     }
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
+/**
+ * When no [[KB_PENDING]] memory action is attached to this stream, drop model lines that invite
+ * confirming a household-memory save (same trust model as stripFakeGroceryOperationalLines).
+ */
+function stripFakeMemoryPendingOfferLines(text) {
+  const lines = String(text ?? '').split('\n');
+  const out = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) {
+      out.push(line);
+      continue;
+    }
+    if (/^If you(?:'d)? like me to save it to household memory/i.test(t)) continue;
+    if (/^If you want, I can save .+ to household memory/i.test(t)) continue;
+    if (/^Would you like me to save .+ household memory/i.test(t)) continue;
+    if (/^Would you like me to save .+ to household memory/i.test(t)) continue;
+    if (/^If you confirm, I can save .+ household memory/i.test(t)) continue;
+    if (/^If you confirm, I can save .+ to household memory/i.test(t)) continue;
+    if (/^If you want this saved to household memory/i.test(t)) continue;
+    if (/^If you want that saved to household memory/i.test(t)) continue;
+    if (/^Want me to save .+ to household memory/i.test(t)) continue;
     out.push(line);
   }
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
@@ -786,14 +1313,18 @@ function tryExtractNaturalLanguageRememberPayload(raw) {
   }
 
   const anchoredPatterns = [
-    /^(?:please\s+)?remember\s+that\s+(.+)$/i,
-    /^(?:please\s+)?save\s+(?:this|it)\s+to\s+memory\s*:?\s*(.+)$/i,
-    /^(?:please\s+)?write\s+(?:this|it)\s+to\s+memory\s*:?\s*(.+)$/i,
-    /^(?:please\s+)?don['']t\s+forget\s+that\s+(.+)$/i,
+    /^(?:please\s+)?remember\s+that\s+(.*)$/is,
+    /^(?:please\s+)?save\s+(?:this|it|that)\s+to\s+(?:household\s+)?memory\b[.:\s]*(?:[-—]\s*)?(.*)$/is,
+    /^(?:please\s+)?write\s+(?:this|it|that)\s+to\s+(?:household\s+)?memory\b[.:\s]*(?:[-—]\s*)?(.*)$/is,
+    /^(?:please\s+)?don['']t\s+forget\s+that\s+(.*)$/is,
   ];
   for (const re of anchoredPatterns) {
     const m = s.match(re);
-    if (m?.[1]?.trim()) return { payload: m[1].trim() };
+    if (!m) continue;
+    let payload = (m[1] ?? '').trim();
+    if (payload) return { payload };
+    const stripped = s.replace(re, '').trim();
+    if (stripped) return { payload: stripped };
   }
   return null;
 }
@@ -964,6 +1495,11 @@ function tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft) {
   return sanitizePendingAction({ command: '!grocerylist' });
 }
 
+/**
+ * @param {object} [intentOpts]
+ * @param {boolean} [intentOpts.hasGroceryDraft]
+ * @param {boolean} [intentOpts.smartModeEnabled] when true, grocery NL pending can match despite draft-suppression / meal-ideation blockers (still requires strong grocery phrasing)
+ */
 function detectCommandIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(), intentOpts = {}) {
   const raw = String(prompt ?? '').trim();
   if (!raw) return { pendingAction: null };
@@ -1011,7 +1547,10 @@ function detectCommandIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(
     /\bcan\s+you\s+update\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
     /\bput\s+(?:this|these|those|it|them)\s+on\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower);
 
-  if (!groceryDraftSuppression && !hasMealIdeationLanguage && strongGroceryAppAction) {
+  const smartMode = !!intentOpts.smartModeEnabled;
+  const groceryNlBlockedByDraftOrMeal =
+    !smartMode && (groceryDraftSuppression || hasMealIdeationLanguage);
+  if (!groceryNlBlockedByDraftOrMeal && strongGroceryAppAction) {
     return { pendingAction: { command: '!grocerylist' } };
   }
 
@@ -1064,617 +1603,34 @@ function detectCommandIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(
   return { pendingAction: null };
 }
 
-function sanitizePendingAction(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  const cmd = String(raw.command ?? '');
-  if (cmd === '!grocerylist') {
-    const mode = raw.mode == null ? null : String(raw.mode);
-    if (mode == null || mode === '') return { command: '!grocerylist' };
-    if (mode === 'append' || mode === 'replace' || mode === 'prune') {
-      return { command: '!grocerylist', mode };
-    }
-    return null;
-  }
-  if (cmd === '!help') return { command: cmd };
-  if (cmd === '!remember') {
-    const key = normalizeRememberKeyForStorage(raw.args?.key);
-    const value = normalizeRememberValueForStorage(raw.args?.value);
-    if (!key || !value) return null;
-    return { command: '!remember', args: { key, value } };
-  }
-  if (cmd === '!rename') {
-    const mode = raw.mode === 'manual' ? 'manual' : 'auto';
-    if (mode === 'manual') {
-      const title = String(raw.args?.title ?? '').trim().slice(0, 200);
-      if (!title) return null;
-      return { command: '!rename', mode, args: { title } };
-    }
-    return { command: '!rename', mode: 'auto' };
-  }
-  return null;
-}
+function buildLegacyCommandGuidanceReply(pendingAction) {
+  const action = sanitizePendingAction(pendingAction);
+  if (!action) return 'I can help with chat here, and app changes happen through the explicit commands.';
 
-/**
- * Map a sanitized pending action to the route prompt used by /chat (must match client executePendingAction routing).
- */
-function routePromptFromSanitizedPendingAction(action, fallbackPrompt) {
-  if (!action || typeof action !== 'object') return fallbackPrompt;
-  const cmd = String(action.command ?? '');
-  if (cmd === '!grocerylist') return '!grocerylist';
-  if (cmd === '!help') return '!help';
-  if (cmd === '!rename') {
-    return action.mode === 'manual' && action.args?.title
-      ? `!rename ${String(action.args.title).trim()}`
-      : '!rename';
-  }
-  if (cmd === '!remember' && action.args?.key != null && action.args?.value != null) {
-    return `!remember ${action.args.key} = ${action.args.value}`;
-  }
-  return fallbackPrompt;
-}
-
-/**
- * Append a machine-readable pending payload to persisted assistant content (stripped for display).
- * @param {string} content
- * @param {object} pendingAction raw or sanitized pending object
- */
-function appendPendingMarkerToAssistantContent(content, pendingAction) {
-  const sanitized = sanitizePendingAction(pendingAction);
-  if (!sanitized) return String(content ?? '');
-  const encoded = encodeURIComponent(JSON.stringify(sanitized));
-  return String(content ?? '').trimEnd() + '\n[[KB_PENDING:' + encoded + ']]';
-}
-
-/**
- * Recover pending from hidden marker in stored assistant text (before regex fallbacks).
- * @returns {ReturnType<typeof sanitizePendingAction> | null}
- */
-function parsePendingMarkerFromAssistantContent(rawContent) {
-  const t = String(rawContent ?? '');
-  const m = t.match(/\[\[KB_PENDING:([^\]]+)\]\]/);
-  if (!m) return null;
-  try {
-    const json = decodeURIComponent(m[1]);
-    const obj = JSON.parse(json);
-    return sanitizePendingAction(obj);
-  } catch (e) {
-    return null;
-  }
-}
-
-function escapeInlineCodeSegment(s) {
-  return String(s ?? '').replace(/`/g, "'");
-}
-
-/**
- * @param {Map<string, string> | null} memoriesByKey When set, remember offers can acknowledge an existing key and show merged value.
- */
-function buildPendingActionReply(action, memoriesByKey = null) {
-  if (!action) return '';
   if (action.command === '!grocerylist') {
-    return "If you want, I can add this to the Grocery List tab. Want me to do that?";
-  }
-  if (action.command === '!help') {
-    return 'I can show the help menu for you. Want me to do that?';
-  }
-  if (action.command === '!remember' && action.args?.key && action.args?.value) {
-    const k = String(action.args.key);
-    const v = String(action.args.value);
-    const mergedCode = escapeInlineCodeSegment(`${k} = ${v}`);
-    const memMap = memoriesByKey instanceof Map ? memoriesByKey : null;
-    if (memMap && memMap.has(k)) {
-      const existingRaw = String(memMap.get(k) ?? '').trim();
-      if (existingRaw && existingRaw !== v.trim()) {
-        const existingEsc = escapeInlineCodeSegment(existingRaw);
-        const keyEsc = escapeInlineCodeSegment(k);
-        return (
-          `There is already a memory called \`${keyEsc}\` that says \`${existingEsc}\`. ` +
-          `I can add this to it as \`${mergedCode}\`. Want me to do that?`
-        );
-      }
-    }
-    return `I can save that to memory as \`${mergedCode}\`. Want me to do that?`;
+    return "I can't update the Grocery List from a normal chat message, but you can type `!grocerylist` and I'll build it there.";
   }
   if (action.command === '!remember') {
-    return 'I can save that to memory. Want me to do that?';
-  }
-  if (action.command === '!rename' && action.mode === 'manual') {
-    return `I can rename this chat to "${action.args.title}". Want me to do that?`;
+    const key = String(action.args?.key ?? '').trim();
+    const value = String(action.args?.value ?? '').trim();
+    if (key && value) {
+      return `I can't save that to household memory from a normal chat message, but you can type \`!remember ${key} = ${value}\`.`;
+    }
+    return "I can't save that to household memory from a normal chat message, but you can type `!remember key = value`.";
   }
   if (action.command === '!rename') {
-    return 'I can rename this chat for you based on the thread context. Want me to do that?';
-  }
-  return '';
-}
-
-/**
- * Closing line for mixed-intent memory (primary task + memory clause). Deterministic, specific;
- * pairs with X-KitchenBot-Pending-Action for the same sanitized !remember proposal.
- */
-function buildMixedMemoryOfferLine(pendingRemember, userMessage) {
-  const key = pendingRemember?.args?.key ?? '';
-  const val = String(pendingRemember?.args?.value ?? '').trim();
-  const raw = String(userMessage ?? '');
-
-  function nameHintFromMessage() {
-    const m1 = raw.match(/\b([A-Z][a-z]+)\s+does\s+not\s+like\b/);
-    if (m1) return m1[1];
-    const m2 = raw.match(/\b([a-z]+)\s+does\s+not\s+like\b/i);
-    if (m2) return m2[1].charAt(0).toUpperCase() + m2[1].slice(1).toLowerCase();
-    const m3 = raw.match(/\bremember(?:ing)?\s+that\s+([A-Z][a-z]+)\b/i);
-    if (m3) return m3[1];
-    const m4 = raw.match(/\bremember(?:ing)?\s+that\s+([a-z]{2,})\b/i);
-    if (m4) {
-      const w = m4[1].toLowerCase();
-      if (['your', 'the', 'our', 'my', 'this', 'that', 'their', 'they', 'there', 'she', 'he'].includes(w)) {
-        return null;
-      }
-      return m4[1].charAt(0).toUpperCase() + m4[1].slice(1).toLowerCase();
+    const title = String(action.args?.title ?? '').trim();
+    if (title) {
+      return `I can't rename the chat from a normal chat message, but you can type \`!rename ${title}\`.`;
     }
-    return null;
+    return "I can't rename the chat from a normal chat message, but you can type `!rename`.";
   }
-
-  if (!key || !val) {
-    return 'Want me to save that as a household preference too?';
+  if (action.command === '!help') {
+    return 'You can type `!help` any time to see the commands I support.';
   }
-
-    const prefMatch = key.match(/^([a-z][a-z0-9]*)_preferences$/);
-  if (prefMatch) {
-    const fromKey = prefMatch[1].charAt(0).toUpperCase() + prefMatch[1].slice(1);
-    const hint = nameHintFromMessage();
-    const label = hint && hint.toLowerCase() === prefMatch[1].toLowerCase() ? hint : fromKey;
-    const detail = String(val ?? '').trim();
-    if (detail) {
-      return `If you want, I can save ${label}'s preference (${detail}) so I remember it next time too.`;
-    }
-    return `Want me to save that as a household preference for ${label} too?`;
-  }
-
-  if (key === 'tone') {
-    const short = val.length > 70 ? val.slice(0, 67) + '…' : val;
-    return `If you want, I can save your tone preference (${short}) so I remember it next time too.`;
-  }
-
-  const fav = key.match(/^favorite_(food|pasta|meal)$/);
-  if (fav) {
-    const short = val.length > 60 ? val.slice(0, 57) + '…' : val;
-    return `Want me to save the favorite ${fav[1]} (${short}) as a household note too?`;
-  }
-
-  if (key === normalizeRememberKey('child_name')) {
-    const short = val.length > 60 ? val.slice(0, 57) + '…' : val;
-    return `If you want, I can save your child's name (${short}) for next time too.`;
-  }
-
-  if (key === normalizeRememberKey('household_staples')) {
-    const short = val.length > 90 ? val.slice(0, 87) + '…' : val;
-    return `If you want, I can save household staples (${short}) for next time too.`;
-  }
-
-  if (key === 'saved_note') {
-    const short = val.length > 90 ? val.slice(0, 87) + '…' : val;
-    return `If you want, I can save this (${short}) under household memory for next time too.`;
-  }
-
-  const short = val.length > 80 ? val.slice(0, 77) + '…' : val;
-  return `If you want, I can save that (${short}) so I remember it next time too.`;
+  return 'That kind of app change needs an explicit command here.';
 }
 
-/** Narrow gate: only run AI memory proposal when the user clearly invoked memory language. */
-function hasStrongMemoryIntentKeywords(text) {
-  const lower = String(text ?? '').toLowerCase();
-  if (/\bremember(?:ing)?\b/.test(lower)) return true;
-  if (/\bmemory\b/.test(lower)) return true;
-  if (/\bsave\s+this\b/.test(lower)) return true;
-  if (/\bdon['']t\s+forget\b/.test(lower)) return true;
-  return false;
-}
-
-/**
- * True when memory is likely secondary to another primary ask (meal plan, etc.).
- * Server-side heuristic; never overridden by the model.
- */
-function isMixedIntentMemoryMessage(raw) {
-  const nl = tryExtractNaturalLanguageRememberPayload(raw);
-  if (nl && 'mixed' in nl && nl.mixed) return true;
-  if (looksLikePrimaryNonMemoryTaskClause(raw) && /\b(remember|memory|remembering|don['']t\s+forget)\b/i.test(raw)) {
-    return true;
-  }
-  return false;
-}
-
-function parseJsonObjectFromModelText(raw) {
-  let s = String(raw ?? '').trim();
-  const fence = s.match(/^```(?:json)?\s*([\s\S]*?)```$/im);
-  if (fence) s = fence[1].trim();
-  try {
-    return JSON.parse(s);
-  } catch {
-    const m = s.match(/\{[\s\S]*\}/);
-    if (!m) return null;
-    try {
-      return JSON.parse(m[0]);
-    } catch {
-      return null;
-    }
-  }
-}
-
-/**
- * Structured memory proposal only; never persists. Returns a sanitized pending action or null.
- */
-async function tryAiMemoryProposal(anthropic, userMessage, memoriesList) {
-  if (!hasStrongMemoryIntentKeywords(userMessage)) return null;
-  const existing = (memoriesList || [])
-    .filter((m) => m && m.key !== 'assistant_name')
-    .map((m) => `${m.key}: ${m.value}`)
-    .join('\n');
-  try {
-    const res = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 400,
-      system: `You help propose household memory key/value pairs. Output ONLY one JSON object (no markdown fences, no commentary) with this shape:
-{"should_offer_memory":boolean,"key":string,"value":string,"confidence":number}
-
-Rules:
-- should_offer_memory: true only if the user clearly wants to save something for later recall (preferences, tone, dietary facts, names).
-- Prefer reusing an EXISTING key from the list when the new fact belongs to the same topic (e.g. consolidate Elle-related preferences under elle_preferences, not a new key like elle or elle_eggs).
-- Use stable snake_case keys (lowercase, underscores): e.g. elle_preferences, rob_preferences, household_staples, child_name, tone, favorite_food — never a long sentence as a key or keys like that_our_household_always_has_these_items. Values are short, natural preference text (e.g. "doesn't like eggs"), not commands or prefixes like "avoid …".
-- If the key already exists in the list, the value field must be the full merged text you want stored: combine prior facts with the new fact in clear prose; separate distinct facts with semicolons. Do not comma-splice unrelated clauses (e.g. avoid "doesn't like eggs, loves capers"); prefer "doesn't like eggs; loves capers" or two short sentences.
-- confidence: 0.0–1.0 (your confidence that this should be offered as a save).
-- If there is nothing to save, set should_offer_memory to false, key and value to "", confidence to 0.`,
-      messages: [
-        {
-          role: 'user',
-          content: `Existing household memories (keys are unique; reuse when appropriate):\n${existing || '(none)'}\n\nUser message:\n${String(userMessage).slice(0, 4000)}`,
-        },
-      ],
-    });
-    const blocks = res.content.filter((b) => b.type === 'text');
-    const raw = blocks.map((b) => b.text).join('\n').trim();
-    const parsed = parseJsonObjectFromModelText(raw);
-    if (!parsed || typeof parsed.should_offer_memory !== 'boolean') return null;
-    const conf = Number(parsed.confidence);
-    if (!parsed.should_offer_memory || !Number.isFinite(conf) || conf < 0.55) return null;
-    let key = normalizeRememberKeyForStorage(parsed.key);
-    let value = normalizeRememberValueForStorage(
-      String(parsed.value ?? '')
-        .trim()
-        .slice(0, 2000)
-    );
-    if (!key || !value) return null;
-    const memMap = new Map(
-      (memoriesList || []).filter((m) => m && m.key).map((m) => [m.key, m.value])
-    );
-    if (isSentenceLikeRememberKey(key)) {
-      const fromVal = inferRememberKeyAndValueFromPayload(value, memMap);
-      const fromUser = inferRememberKeyAndValueFromPayload(String(userMessage ?? '').trim(), memMap);
-      const picked =
-        fromVal && fromVal.key !== normalizeRememberKey('saved_note')
-          ? fromVal
-          : fromUser && fromUser.key !== normalizeRememberKey('saved_note')
-            ? fromUser
-            : null;
-      if (picked) {
-        key = picked.key;
-        value = picked.value;
-      } else {
-        key = normalizeRememberKey('saved_note');
-      }
-    }
-    const prior = (memoriesList || []).find((m) => m && m.key === key);
-    if (prior) {
-      const merged = mergeMemoryProposalWithExisting(String(prior.value ?? ''), value);
-      if (merged === null) return null;
-      if (merged.trim() === String(prior.value ?? '').trim()) return null;
-      value = merged;
-    }
-    return sanitizePendingAction({ command: '!remember', args: { key, value } });
-  } catch (e) {
-    if (isAnthropicSdkAuthOrKeyError(e)) throw e;
-    console.error('Memory proposal AI failed:', e.message || e);
-    return null;
-  }
-}
-
-/** Matches client-side pending confirmation phrases (short replies only). */
-function isShortAffirmativeConfirm(text) {
-  const t = String(text ?? '').trim();
-  if (t.length > 120) return false;
-  const lower = t.toLowerCase();
-  const s = lower.replace(/[!?.]/g, '').replace(/\s+/g, ' ').trim();
-  if (
-    [
-      'yes',
-      'yep',
-      'yeah',
-      'sure',
-      'do it',
-      'run it',
-      'go ahead',
-      'sure go ahead',
-      'sure, go ahead',
-      'yes please',
-      'okay',
-      'ok',
-      'okay do it',
-      'ok do it',
-      'please do',
-      'yeah save it',
-      'yes save it',
-      'sure save it',
-      'yep save it',
-      'ok save it',
-      'okay save it',
-      'yes save the preference please',
-      'yeah save the preference please',
-      'sure save the preference please',
-      'yep save the preference please',
-      'ok save the preference please',
-      'okay save the preference please',
-    ].includes(s)
-  ) {
-    return true;
-  }
-  if (/^(yes|yeah|yep|sure|ok|okay)\s+save\s+it$/.test(s)) {
-    return true;
-  }
-  if (/^(yes|yeah|yep|sure|ok|okay)\s+save(\s+the)?\s+preference(\s+please)?$/.test(s)) {
-    return true;
-  }
-  if (
-    /^(yes|yeah|yep|sure|ok|okay)\s+update(\s+the)?\s+preferences(\s+please)?$/.test(s) ||
-    /^(yes|yeah|yep|sure|ok|okay)\s+update\s+it(\s+please)?$/.test(s) ||
-    /^(yes|yeah|yep|sure|ok|okay)\s+save(\s+the)?\s+preferences(\s+please)?$/.test(s)
-  ) {
-    return true;
-  }
-  if (['add it', 'add them', 'update it', 'push it', 'push it over'].includes(s)) {
-    return true;
-  }
-  return /^(sure|yes|okay|ok)(?:,\s*|\s+)?(?:go ahead|do it|please)?$/.test(s);
-}
-
-/**
- * Natural-language confirmations for a recovered !grocerylist offer (not used without a matching last assistant offer).
- */
-function isNaturalLanguageGroceryPendingConfirmation(text) {
-  const t = String(text ?? '').trim();
-  if (t.length > 200) return false;
-  const lower = t.toLowerCase().replace(/\s+/g, ' ').trim();
-  if (/^\s*(why|what|when|where|who|how)\b/i.test(lower)) return false;
-  if (/\b(don'?t|do not|never mind|nevermind|cancel|no thanks|no thank you)\b/i.test(lower)) return false;
-  if (
-    /^(okay|ok|yes|sure|yeah|yep)\s*,?\s*(let'?s|let us)\s+update\s+(the\s+)?grocery\s+list\b/i.test(lower) ||
-    /^(let'?s|let us)\s+update\s+(the\s+)?grocery\s+list\b/i.test(lower)
-  ) {
-    return true;
-  }
-  if (
-    /^(okay|ok|yes|sure|yeah|yep)\s*,?\s*(please\s+)?(go ahead\s+(and\s+)?)?update\s+(the\s+)?grocery\s+list\b/i.test(lower)
-  ) {
-    return true;
-  }
-  if (
-    /^\s*(please\s+)?(go ahead\s+(and\s+)?)?update\s+(the\s+)?grocery\s+list\s*[!?.]*\s*$/i.test(lower)
-  ) {
-    return true;
-  }
-  if (
-    /\b(go ahead|please)\s*,?\s*(and\s+)?(update\s+(the\s+)?grocery\s+list|add\s+(this|that|it|these|those)\s+to\s+(the\s+)?grocery\s+list)\b/i.test(lower)
-  ) {
-    return true;
-  }
-  if (
-    /^(okay|ok|yes|sure|yeah|yep)\b/i.test(lower) &&
-    /\b(add|put)\s+(this|that|it|these|those)\s+to\s+(the\s+)?(grocery|shopping)\s+list\b/i.test(lower)
-  ) {
-    return true;
-  }
-  // Same phrases as tryGroceryTabDeicticFollowUpPending: explicit follow-up after an in-chat draft + recoverable tab offer—confirm !grocerylist instead of re-offering / streaming another draft.
-  if (
-    /\bmake\s+a\s+grocery\s+list\s+from\s+this\b/.test(lower) ||
-    /\bturn\s+this\s+into\s+(?:a\s+)?grocery\s+list\b/.test(lower)
-  ) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * True if the user is confirming a recovered sanitized pending action (extends short phrases with NL grocery confirms).
- * @param {string} text
- * @param {ReturnType<typeof sanitizePendingAction>} pending
- */
-function isPendingActionConfirmation(text, pending) {
-  if (!pending || !text) return false;
-  if (isShortAffirmativeConfirm(text)) return true;
-  const cmd = String(pending.command ?? '');
-  if (cmd === '!grocerylist') {
-    return isNaturalLanguageGroceryPendingConfirmation(text);
-  }
-  return false;
-}
-
-/**
- * Parse mixed-intent memory offer closing lines (same templates as buildMixedMemoryOfferLine).
- * @returns {ReturnType<typeof sanitizePendingAction> | null}
- */
-function recoverRememberFromMixedOfferAssistantContent(content) {
-  const t = stripKitchenBotHiddenMarkers(String(content ?? ''));
-  let m = t.match(
-    /If you want, I can save (.+?)['\u2019]s preference \(([^)]+)\) so I remember it next time too\.?/
-  );
-  if (m) {
-    const name = m[1].trim();
-    const detail = m[2].trim();
-    const key = normalizeRememberKey(`${name}_preferences`);
-    const value = detail;
-    return sanitizePendingAction({ command: '!remember', args: { key, value } });
-  }
-  m = t.match(
-    /If you want, I can save your tone preference \(([^)]+)\) so I remember it next time too\.?/
-  );
-  if (m) {
-    return sanitizePendingAction({ command: '!remember', args: { key: 'tone', value: m[1].trim() } });
-  }
-  m = t.match(/Want me to save the favorite (food|pasta|meal) \(([^)]+)\) as a household note too\?/);
-  if (m) {
-    return sanitizePendingAction({
-      command: '!remember',
-      args: { key: normalizeRememberKey(`favorite_${m[1]}`), value: m[2].trim() },
-    });
-  }
-  m = t.match(
-    /If you want, I can save this \(([^)]+)\) under household memory for next time too\.?/
-  );
-  if (m) {
-    const inferred = inferRememberKeyAndValueFromPayload(m[1].trim(), new Map());
-    if (inferred?.key && inferred?.value) {
-      return sanitizePendingAction({ command: '!remember', args: { key: inferred.key, value: inferred.value } });
-    }
-    return sanitizePendingAction({
-      command: '!remember',
-      args: { key: 'saved_note', value: m[1].trim() },
-    });
-  }
-  m = t.match(/If you want, I can save that \(([^)]+)\) so I remember it next time too\.?/);
-  if (m) {
-    const inferred = inferRememberKeyAndValueFromPayload(m[1].trim(), new Map());
-    if (inferred?.key && inferred?.value) {
-      return sanitizePendingAction({ command: '!remember', args: { key: inferred.key, value: inferred.value } });
-    }
-    return sanitizePendingAction({
-      command: '!remember',
-      args: { key: 'saved_note', value: m[1].trim() },
-    });
-  }
-  return null;
-}
-
-/**
- * Recover !remember from merge-aware offer (see buildPendingActionReply with existing key).
- */
-function parseRememberMergeOfferFromAssistantContent(content) {
-  const t = String(content ?? '');
-  const re =
-    /There is already a memory called `([^`]+)` that says `([^`]*)`\.\s+I can add this to it as `([^`]+)`\. Want me to do that\?/i;
-  const m = t.match(re);
-  if (!m) return null;
-  const combined = String(m[3] ?? '').trim();
-  const eq = combined.indexOf(' = ');
-  if (eq === -1) return null;
-  const keyRaw = combined.slice(0, eq).trim();
-  const valueRaw = combined.slice(eq + 3).trim();
-  const key = normalizeRememberKey(keyRaw);
-  const value = String(valueRaw).trim();
-  if (!key || !value) return null;
-  return sanitizePendingAction({ command: '!remember', args: { key, value } });
-}
-
-/**
- * Recover a !remember pending action from assistant message text (same chat).
- * Matches standard offer lines with plain and/or backticked key/value (case-insensitive anchor).
- * @returns {ReturnType<typeof sanitizePendingAction> | null}
- */
-function parseRememberPendingFromAssistantContent(rawContent) {
-  const content = stripKitchenBotHiddenMarkers(String(rawContent ?? ''));
-  const mergePending = parseRememberMergeOfferFromAssistantContent(content);
-  if (mergePending) return mergePending;
-  const anchorRe = /I can save that to memory as /i;
-  const am = anchorRe.exec(content);
-  if (!am) return recoverRememberFromMixedOfferAssistantContent(content);
-  const suffix = '. Want me to do that?';
-  const afterAnchor = am.index + am[0].length;
-  const end = content.indexOf(suffix, afterAnchor);
-  if (end === -1) return recoverRememberFromMixedOfferAssistantContent(content);
-  let mid = content.slice(afterAnchor, end).trim();
-  function stripOuterBackticks(seg) {
-    const t = String(seg).trim();
-    if (t.length >= 2 && t.startsWith('`') && t.endsWith('`')) return t.slice(1, -1);
-    return t;
-  }
-  const inner = stripOuterBackticks(mid);
-  const eq = inner.indexOf(' = ');
-  if (eq === -1) return recoverRememberFromMixedOfferAssistantContent(content);
-  const keyRaw = inner.slice(0, eq).trim();
-  const valueRaw = inner.slice(eq + 3).trim();
-  const key = normalizeRememberKey(keyRaw);
-  const value = String(valueRaw).trim();
-  if (!key || !value) return recoverRememberFromMixedOfferAssistantContent(content);
-  return sanitizePendingAction({ command: '!remember', args: { key, value } });
-}
-
-/**
- * Recover !grocerylist from assistant text (marker is stripped before persist; match visible offer lines).
- * @returns {ReturnType<typeof sanitizePendingAction> | null}
- */
-function recoverGroceryPendingFromAssistantContent(rawContent) {
-  const t = stripKitchenBotHiddenMarkers(String(rawContent ?? ''));
-  if (
-    /If you want, I can add this to (?:the )?Grocery List tab(?:\s+for you)?\.?/i.test(t) ||
-    /If you want, I can update (?:the )?Grocery List tab(?:\s+for you)?\.?/i.test(t) ||
-    /That's a command-backed action\.\s*I can run !grocerylist for you\.\s*Want me to do that\?/i.test(t) ||
-    /\bI can run !grocerylist for you\b/i.test(t)
-  ) {
-    return sanitizePendingAction({ command: '!grocerylist' });
-  }
-  return null;
-}
-
-/**
- * Recover !help / !rename offers from buildPendingActionReply text.
- * @returns {ReturnType<typeof sanitizePendingAction> | null}
- */
-function recoverHelpPendingFromAssistantContent(rawContent) {
-  const t = stripKitchenBotHiddenMarkers(String(rawContent ?? ''));
-  if (/I can show the help menu for you\.\s*Want me to do that\?/i.test(t)) {
-    return sanitizePendingAction({ command: '!help' });
-  }
-  return null;
-}
-
-/**
- * @returns {ReturnType<typeof sanitizePendingAction> | null}
- */
-function recoverRenamePendingFromAssistantContent(rawContent) {
-  const t = stripKitchenBotHiddenMarkers(String(rawContent ?? ''));
-  const manual = t.match(
-    /I can rename this chat to ["\u201c](.+?)["\u201d]\.\s*Want me to do that\?/i
-  );
-  if (manual) {
-    const title = String(manual[1] ?? '')
-      .trim()
-      .slice(0, 200);
-    if (title) return sanitizePendingAction({ command: '!rename', mode: 'manual', args: { title } });
-  }
-  if (
-    /I can rename this chat for you based on the thread context\.\s*Want me to do that\?/i.test(t)
-  ) {
-    return sanitizePendingAction({ command: '!rename', mode: 'auto' });
-  }
-  return null;
-}
-
-/**
- * If the client lost X-KitchenBot-Pending-Action, recover a pending action from the latest assistant message in this chat.
- * Replaces the old memory-only recoverRememberPendingFromLastAssistantMessage.
- * Parsers are ordered: [[KB_PENDING:…]] marker → remember → grocery → rename → help (memory before grocery when both appear, e.g. mixed intent + marker).
- * Add new command recoverers here; map them in routePromptFromSanitizedPendingAction.
- */
-async function recoverPendingActionFromLastAssistantMessage(chatId, householdId) {
-  const conv = await getMessages(chatId, householdId);
-  const lastAssistant = [...conv].reverse().find((m) => m.role === 'assistant');
-  if (!lastAssistant) return null;
-  const raw = lastAssistant.content;
-  return (
-    parsePendingMarkerFromAssistantContent(raw) ||
-    parseRememberPendingFromAssistantContent(raw) ||
-    recoverGroceryPendingFromAssistantContent(raw) ||
-    recoverRenamePendingFromAssistantContent(raw) ||
-    recoverHelpPendingFromAssistantContent(raw)
-  );
-}
 
 function parseThreadGrocerySummaryKeys(summaryText) {
   const keys = new Set();
@@ -3449,6 +3405,18 @@ app.get('/', (req, res) => {
               <button type="button" id="admin-web-search-save">Save web search setting</button>
               <span id="admin-web-search-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
             </div>
+            <h4 style="margin: 16px 0 8px; font-size: 15px;">Smart Mode</h4>
+            <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px; max-width: 560px;">
+              For the <strong>selected</strong> household only: when enabled, KitchenBot may treat more natural-language phrasings as <em>pending offers</em> (e.g. adding a grocery list) that still require your confirmation—same execution rules as when Smart Mode is off.
+            </p>
+            <label style="display: flex; align-items: flex-start; gap: 8px; max-width: 520px;">
+              <input type="checkbox" id="admin-smart-mode-enabled" style="margin-top: 3px;" />
+              <span>Enable Smart Mode for this household</span>
+            </label>
+            <div style="margin-top: 8px;">
+              <button type="button" id="admin-smart-mode-save">Save Smart Mode</button>
+              <span id="admin-smart-mode-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
+            </div>
             <h4 style="margin: 20px 0 8px; font-size: 15px;">Create household</h4>
             <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px;">Creates a new household with only the owner user. Share the household key and owner PIN separately.</p>
             <div style="display: flex; flex-direction: column; gap: 6px; max-width: 420px;">
@@ -3460,6 +3428,27 @@ app.get('/', (req, res) => {
             </div>
             <p id="admin-new-hh-msg" style="font-size: 13px; margin-top: 8px;"></p>
           </div>
+        </div>
+
+        <div
+          id="thread-debug-panel"
+          style="display: none; flex-shrink: 0; flex-direction: column; gap: 6px; padding: 4px 0; width: 100%; box-sizing: border-box;"
+        >
+          <span style="font-size: 12px; color: var(--text-soft);">[temp] thread scene</span>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+            <button type="button" id="thread-debug-load">Load thread scene</button>
+            <button type="button" id="thread-debug-sample">Write sample thread scene</button>
+            <button type="button" id="thread-debug-save">Save thread scene</button>
+          </div>
+          <textarea
+            id="thread-debug-scene-textarea"
+            rows="6"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Load thread scene JSON here…"
+            style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; padding: 8px;"
+          ></textarea>
+          <span id="thread-debug-status" style="font-size: 13px; color: var(--text-soft);"></span>
         </div>
 
         <div id="input-area">
@@ -3521,6 +3510,7 @@ app.get('/', (req, res) => {
         let currentHouseholdId = null;
         let currentUserId = null;
         let isCurrentUserOwner = false;
+        let sessionIsGlobalAdmin = false;
         let godModeReadOnly = false;
         let editingMemoryKey = null;
         /** Normalized display name (trim + lower) -> chat color key */
@@ -3566,6 +3556,14 @@ app.get('/', (req, res) => {
         let lastDeletedTimeout = null;
         let lastMePayload = null;
         const pendingActionByChatId = new Map();
+        /** Last persisted message count from /history per chat (DB rows only). */
+        const lastPersistedMessageCountByChatId = new Map();
+        /**
+         * Sender-only ephemeral !command turns (session memory): merged after each loadHistory.
+         * anchor = persisted row count when the exchange happened; seq = stable order for same anchor.
+         */
+        const ephemeralExchangesByChatId = new Map();
+        const nextEphemeralSeqByChatId = new Map();
 
         function isPendingActionAffirmative(text) {
           const t = String(text ?? '').trim().toLowerCase();
@@ -3656,12 +3654,12 @@ app.get('/', (req, res) => {
         function groceryPendingClarifyText(pending) {
           const opts = pending && Array.isArray(pending.options) ? pending.options : [];
           if (opts.some((o) => o.mode === 'prune')) {
-            return 'I need to know which behavior you want: keep the old items too, or remove the items we swapped out?';
+            return 'I can do that. Do you want me to keep the older items too, or remove the ones that no longer fit this version of the plan?';
           }
           if (opts.some((o) => o.mode === 'replace')) {
-            return "I need to know which behavior you want: start a new grocery list, or add these items to what's already there?";
+            return "I can do that. Do you want me to start fresh with this week's ingredients, or keep what's already there and add these on top?";
           }
-          return "Please choose one option so I don't run the wrong action: say 'add', 'start new', 'keep', or 'remove swapped-out items'.";
+          return "I just need one quick choice so I update the right list behavior: add these on top, start fresh, keep both, or remove the swapped-out items.";
         }
 
         /** Replace (start fresh) intent for grocery_mode_choice — not used for vague affirmations (caller checks first). */
@@ -3680,10 +3678,16 @@ app.get('/', (req, res) => {
             'start a new list',
             'start a new grocery list',
             'new list',
+            'new one',
+            'create a new one',
+            'create a new list',
+            'make a new one',
+            'make a new list',
             'start fresh',
             'start over',
             'wipe it and start over',
             'replace it',
+            'overwrite it',
             "replace what's there",
             'replace what’s there',
           ];
@@ -3713,7 +3717,11 @@ app.get('/', (req, res) => {
               /\bkeep\s+(?:them|old\s+items|everything|the\s+old(?:\s+items)?)\b/i.test(t) ||
               /\bkeep\s+old\b/i.test(t) ||
               /\badd\s+(?:to|these|it)\b/i.test(t) ||
-              /\badd\s+to\s+what(?:'|'|\u2019)s\s+(?:already\s+)?there\b/i.test(t);
+              /\badd\s+to\s+what(?:'|'|\u2019)s\s+(?:already\s+)?there\b/i.test(t) ||
+              /\badd\s+(?:them|these|those)\s+on\s+top\b/i.test(t) ||
+              /\bon\s+top\b/i.test(t) ||
+              /\bkeep\s+what(?:'|'|\u2019)s\s+there\s+and\s+add\b/i.test(t) ||
+              /\bkeep\s+what\s+is\s+there\s+and\s+add\b/i.test(t);
 
             const mealPrune =
               /\bprune\b/i.test(t) ||
@@ -4010,6 +4018,11 @@ app.get('/', (req, res) => {
           }
         }
 
+        function setThreadDebugPanelVisibility(isGlobalAdmin) {
+          const el = document.getElementById('thread-debug-panel');
+          if (el) el.style.display = isGlobalAdmin === true ? 'flex' : 'none';
+        }
+
         function showBootstrapForm() {
           const bf = document.getElementById('bootstrap-form');
           const lf = document.getElementById('login-form');
@@ -4038,6 +4051,8 @@ app.get('/', (req, res) => {
         }
 
         function showLogin() {
+          sessionIsGlobalAdmin = false;
+          setThreadDebugPanelVisibility(false);
           loginArea.style.display = 'block';
           appArea.style.display = 'none';
           headerEl.classList.add('hide-tabs');
@@ -4055,6 +4070,11 @@ app.get('/', (req, res) => {
           groceryPanel.style.display = tab === 'groceries' ? 'flex' : 'none';
           if (settingsPanel) settingsPanel.style.display = tab === 'settings' ? 'flex' : 'none';
           if (inputArea) inputArea.style.display = tab === 'chat' ? 'flex' : 'none';
+          const tdbg = document.getElementById('thread-debug-panel');
+          if (tdbg) {
+            if (tab !== 'chat') tdbg.style.display = 'none';
+            else setThreadDebugPanelVisibility(sessionIsGlobalAdmin);
+          }
           if (tab === 'settings') loadSettingsPanel();
         }
 
@@ -4716,17 +4736,28 @@ app.get('/', (req, res) => {
             }
             const webSaveBtn = document.getElementById('admin-web-search-save');
             if (webSaveBtn) webSaveBtn.disabled = godModeReadOnly;
+            const smartCb = document.getElementById('admin-smart-mode-enabled');
+            if (smartCb) {
+              smartCb.checked = !!d.household.smartModeEnabled;
+              smartCb.disabled = godModeReadOnly;
+            }
+            const smartSaveBtn = document.getElementById('admin-smart-mode-save');
+            if (smartSaveBtn) smartSaveBtn.disabled = godModeReadOnly;
             if (statEl) {
               statEl.textContent =
                 'Anthropic: ' +
                 (d.statusBrief || d.statusText || '') +
                 ' · Web search: ' +
-                (d.household.webSearchEnabled ? 'on' : 'off');
+                (d.household.webSearchEnabled ? 'on' : 'off') +
+                ' · Smart Mode: ' +
+                (d.household.smartModeEnabled ? 'on' : 'off');
             }
             updateAdminAnthropicFormVisibility();
             if (msgEl) msgEl.textContent = '';
             const webMsg = document.getElementById('admin-web-search-msg');
             if (webMsg) webMsg.textContent = '';
+            const smartMsg = document.getElementById('admin-smart-mode-msg');
+            if (smartMsg) smartMsg.textContent = '';
           } catch (e) {}
         }
 
@@ -4764,7 +4795,8 @@ app.get('/', (req, res) => {
                   msgLabel +
                   ' · ' +
                   hh.anthropicStatusLabel +
-                  (hh.webSearchEnabled ? ' · web search on' : '');
+                  (hh.webSearchEnabled ? ' · web search on' : '') +
+                  (hh.smartModeEnabled ? ' · smart on' : '');
                 listEl.appendChild(row);
               }
             }
@@ -4874,6 +4906,102 @@ app.get('/', (req, res) => {
         });
         resizePromptInput();
 
+        const threadDebugSceneTextarea = document.getElementById('thread-debug-scene-textarea');
+        const threadDebugStatus = document.getElementById('thread-debug-status');
+
+        async function threadDebugLoadScene() {
+          if (!currentChatId) {
+            alert('Open a chat first.');
+            return;
+          }
+          if (threadDebugStatus) threadDebugStatus.textContent = '';
+          try {
+            const r = await fetch('/debug/thread-context?chatId=' + encodeURIComponent(currentChatId));
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) {
+              alert(j.error || 'Request failed');
+              return;
+            }
+            if (threadDebugSceneTextarea) {
+              threadDebugSceneTextarea.value = JSON.stringify(j.threadScene != null ? j.threadScene : {}, null, 2);
+            }
+            if (threadDebugStatus) threadDebugStatus.textContent = 'Loaded thread scene.';
+          } catch (e) {
+            alert('Request failed');
+          }
+        }
+
+        const threadDebugLoadBtn = document.getElementById('thread-debug-load');
+        const threadDebugSampleBtn = document.getElementById('thread-debug-sample');
+        const threadDebugSaveBtn = document.getElementById('thread-debug-save');
+        if (threadDebugLoadBtn) threadDebugLoadBtn.addEventListener('click', () => void threadDebugLoadScene());
+        if (threadDebugSampleBtn) {
+          threadDebugSampleBtn.addEventListener('click', async () => {
+            if (!currentChatId) {
+              alert('Open a chat first.');
+              return;
+            }
+            if (threadDebugStatus) threadDebugStatus.textContent = '';
+            try {
+              const r = await fetch('/debug/thread-scene-sample', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chatId: currentChatId }),
+              });
+              const j = await r.json().catch(() => ({}));
+              if (!r.ok) {
+                alert(j.error || 'Request failed');
+                return;
+              }
+              if (threadDebugSceneTextarea) {
+                threadDebugSceneTextarea.value = JSON.stringify(j.threadScene != null ? j.threadScene : {}, null, 2);
+              }
+              if (threadDebugStatus) threadDebugStatus.textContent = 'Sample thread scene written.';
+            } catch (e) {
+              alert('Request failed');
+            }
+          });
+        }
+        if (threadDebugSaveBtn) {
+          threadDebugSaveBtn.addEventListener('click', async () => {
+            if (!currentChatId) {
+              alert('Open a chat first.');
+              return;
+            }
+            if (threadDebugStatus) threadDebugStatus.textContent = '';
+            const raw = threadDebugSceneTextarea ? String(threadDebugSceneTextarea.value ?? '').trim() : '';
+            let parsed;
+            try {
+              parsed = raw === '' ? {} : JSON.parse(raw);
+            } catch (e) {
+              alert('Invalid JSON in the box. Fix it before saving.');
+              return;
+            }
+            if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+              alert('Thread scene must be a JSON object (not an array or null).');
+              return;
+            }
+            try {
+              const r = await fetch('/debug/thread-scene-replace', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chatId: currentChatId, threadScene: parsed }),
+              });
+              const j = await r.json().catch(() => ({}));
+              if (!r.ok) {
+                alert(j.error || 'Request failed');
+                return;
+              }
+              if (threadDebugSceneTextarea) {
+                threadDebugSceneTextarea.value = JSON.stringify(j.threadScene != null ? j.threadScene : {}, null, 2);
+              }
+              if (threadDebugStatus) threadDebugStatus.textContent = 'Saved thread scene.';
+            } catch (e) {
+              alert('Request failed');
+            }
+          });
+        }
+
         function renderMarkdown(text) {
           if (typeof marked === 'undefined') return document.createTextNode(text);
           try {
@@ -4928,11 +5056,28 @@ app.get('/', (req, res) => {
             return;
           }
           const data = await response.json();
+          const persisted = data.conversation || [];
+          const cid = Number(currentChatId);
+          lastPersistedMessageCountByChatId.set(cid, persisted.length);
 
           chat.innerHTML = '';
 
-          for (const message of data.conversation) {
-            addMessage(message.role, message.name, message.content);
+          const epList = ephemeralExchangesByChatId.get(cid) || [];
+          const sortedEp = [...epList].sort((a, b) => a.anchor - b.anchor || a.seq - b.seq);
+          let pIdx = 0;
+          let dbEmitted = 0;
+          for (const ep of sortedEp) {
+            while (dbEmitted < ep.anchor && pIdx < persisted.length) {
+              const m = persisted[pIdx++];
+              addMessage(m.role, m.name, m.content);
+              dbEmitted++;
+            }
+            addMessage('user', ep.userName, ep.user);
+            addMessage('assistant', 'KitchenBot', ep.assistant);
+          }
+          while (pIdx < persisted.length) {
+            const m = persisted[pIdx++];
+            addMessage(m.role, m.name, m.content);
           }
           sendTypingViewing();
         }
@@ -5198,9 +5343,11 @@ app.get('/', (req, res) => {
             currentHouseholdId = data.householdId != null ? Number(data.householdId) : null;
             currentUserId = data.userId != null ? Number(data.userId) : null;
             isCurrentUserOwner = !!data.isOwner;
+            sessionIsGlobalAdmin = data.isGlobalAdmin === true;
             applyGodModeFromMe(data);
             syncMemoriesWrapVisibility();
             rebuildDisplayNameToColorFromMeChatColors(data.chatColors);
+            setThreadDebugPanelVisibility(data.isGlobalAdmin);
             showApp(data.name);
             await loadChatsAndEnsureOne();
             await loadHistory();
@@ -5285,6 +5432,36 @@ app.get('/', (req, res) => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ householdId: hid, webSearchEnabled: !!(cb && cb.checked) }),
+              });
+              const errBody = await r.json().catch(() => ({}));
+              if (!r.ok) {
+                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
+                return;
+              }
+              if (msgEl) msgEl.textContent = 'Saved.';
+              await loadGlobalAdminView();
+            } catch (e) {
+              if (msgEl) msgEl.textContent = 'Request failed.';
+            }
+          });
+        }
+
+        const adminSmartModeSave = document.getElementById('admin-smart-mode-save');
+        if (adminSmartModeSave) {
+          adminSmartModeSave.addEventListener('click', async () => {
+            const sel = document.getElementById('admin-anthropic-household-select');
+            const hid = sel && sel.value ? Number(sel.value) : NaN;
+            const msgEl = document.getElementById('admin-smart-mode-msg');
+            const cb = document.getElementById('admin-smart-mode-enabled');
+            if (!Number.isFinite(hid)) {
+              if (msgEl) msgEl.textContent = 'Select a household.';
+              return;
+            }
+            try {
+              const r = await fetch('/settings/anthropic/smart-mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ householdId: hid, smartModeEnabled: !!(cb && cb.checked) }),
               });
               const errBody = await r.json().catch(() => ({}));
               if (!r.ok) {
@@ -5693,6 +5870,8 @@ app.get('/', (req, res) => {
                 const meData = await meR.json();
                 rebuildDisplayNameToColorFromMeChatColors(meData.chatColors);
                 applyGodModeFromMe(meData);
+                sessionIsGlobalAdmin = meData.isGlobalAdmin === true;
+                setThreadDebugPanelVisibility(meData.isGlobalAdmin);
               }
             } catch (e) {}
             await loadChatsAndEnsureOne();
@@ -5825,6 +6004,9 @@ app.get('/', (req, res) => {
           chat.scrollTop = chat.scrollHeight;
           remoteStreamBodyEl = thinkingBody;
 
+          const ephemeralAnchorPersistedCount =
+            lastPersistedMessageCountByChatId.get(Number(currentChatId)) ?? 0;
+
           try {
             const response = await fetch('/chat', {
               method: 'POST',
@@ -5868,16 +6050,22 @@ app.get('/', (req, res) => {
             }
 
             const pendingActionHeader = response.headers.get('X-KitchenBot-Pending-Action');
-            if (pendingActionHeader && currentChatId != null) {
-              try {
-                pendingActionByChatId.set(
-                  Number(currentChatId),
-                  JSON.parse(decodeURIComponent(pendingActionHeader))
-                );
-              } catch (e) {
+            if (currentChatId != null) {
+              if (pendingActionHeader) {
+                try {
+                  pendingActionByChatId.set(
+                    Number(currentChatId),
+                    JSON.parse(decodeURIComponent(pendingActionHeader))
+                  );
+                } catch (e) {
+                  pendingActionByChatId.delete(Number(currentChatId));
+                }
+              } else {
                 pendingActionByChatId.delete(Number(currentChatId));
               }
             }
+
+            const chatResponseEphemeral = response.headers.get('X-KitchenBot-Ephemeral') === '1';
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -5907,6 +6095,21 @@ app.get('/', (req, res) => {
             chat.scrollTop = chat.scrollHeight;
             remoteStreamBodyEl = null;
             weAreStreamingThisChat = false;
+
+            if (chatResponseEphemeral && currentChatId != null) {
+              const cid = Number(currentChatId);
+              const seq = (nextEphemeralSeqByChatId.get(cid) || 0) + 1;
+              nextEphemeralSeqByChatId.set(cid, seq);
+              const list = ephemeralExchangesByChatId.get(cid) || [];
+              list.push({
+                anchor: ephemeralAnchorPersistedCount,
+                seq,
+                userName: speaker,
+                user: prompt,
+                assistant: fullReply,
+              });
+              ephemeralExchangesByChatId.set(cid, list);
+            }
 
             try {
               await loadHistory();
@@ -5949,12 +6152,16 @@ app.get('/', (req, res) => {
           currentHouseholdId = null;
           currentUserId = null;
           isCurrentUserOwner = false;
+          sessionIsGlobalAdmin = false;
           lastMePayload = null;
           applyGodModeFromMe({ isImpersonating: false, impersonationReadOnly: false });
           syncMemoriesWrapVisibility();
           displayNameToColor = {};
           showLogin();
           chat.innerHTML = '';
+          lastPersistedMessageCountByChatId.clear();
+          ephemeralExchangesByChatId.clear();
+          nextEphemeralSeqByChatId.clear();
         });
 
         groceryRefreshButton.addEventListener('click', async () => {
@@ -6409,6 +6616,7 @@ app.get('/settings/anthropic', requireHousehold, requireAuth, async (req, res) =
         key: h.household_key,
         anthropicKeyMode: mode,
         webSearchEnabled: Number(h.web_search_enabled) === 1,
+        smartModeEnabled: Number(h.smart_mode_enabled) === 1,
       },
       usingSharedKey: mode === 'shared',
       hasHouseholdKey: hasKey,
@@ -6471,6 +6679,30 @@ app.post(
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: e.message || 'Failed to save web search setting' });
+  }
+});
+
+app.post(
+  '/settings/anthropic/smart-mode',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireGlobalAdmin,
+  async (req, res) => {
+  try {
+    const householdId = Number(req.body.householdId);
+    if (!Number.isFinite(householdId)) {
+      return res.status(400).json({ error: 'householdId is required' });
+    }
+    const targetId = await resolveAnthropicTargetHouseholdId(req, res, householdId);
+    if (targetId == null) return;
+    const raw = req.body.smartModeEnabled;
+    const enabled = raw === true || raw === 1 || raw === '1' || String(raw).toLowerCase() === 'true';
+    await setHouseholdSmartModeEnabled(targetId, enabled);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: e.message || 'Failed to save Smart Mode setting' });
   }
 });
 
@@ -6630,6 +6862,109 @@ app.get('/history', requireHousehold, requireAuth, async (req, res) => {
   }
 });
 
+/** TEMP: global-admin-only thread context debug (remove when scene plumbing is verified). */
+app.get(
+  '/debug/thread-context',
+  requireHousehold,
+  requireAuth,
+  requireGlobalAdminRead,
+  async (req, res) => {
+    try {
+      const chatId = Number(req.query.chatId);
+      if (!Number.isFinite(chatId)) {
+        return res.status(400).json({ error: 'Invalid chatId' });
+      }
+      const chats = await listAllChats(req.householdId);
+      if (!chats.some((c) => Number(c.id) === chatId)) {
+        return res.status(404).json({ error: 'Chat not found' });
+      }
+      const ctx = await getChatThreadContext(chatId, req.householdId);
+      return res.json({
+        mealPlanSummary: ctx.mealPlanSummary,
+        threadGrocerySummary: ctx.threadGrocerySummary,
+        threadScene: ctx.threadScene,
+      });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: 'Server error' });
+    }
+  }
+);
+
+/** TEMP: global-admin-only sample thread scene write (remove when scene plumbing is verified). */
+app.post(
+  '/debug/thread-scene-sample',
+  requireHousehold,
+  requireAuth,
+  requireGlobalAdminRead,
+  requireNotImpersonatingReadOnly,
+  async (req, res) => {
+    try {
+      const chatId = Number(req.body.chatId);
+      if (!Number.isFinite(chatId)) {
+        return res.status(400).json({ error: 'Invalid chatId' });
+      }
+      const chats = await listAllChats(req.householdId);
+      if (!chats.some((c) => Number(c.id) === chatId)) {
+        return res.status(404).json({ error: 'Chat not found' });
+      }
+      await updateChatThreadScene(chatId, req.householdId, {
+        debugMarker: 'thread-scene-test',
+        mission: 'debug test',
+        updatedBy: 'debug button',
+      });
+      const ctx = await getChatThreadContext(chatId, req.householdId);
+      return res.json({
+        mealPlanSummary: ctx.mealPlanSummary,
+        threadGrocerySummary: ctx.threadGrocerySummary,
+        threadScene: ctx.threadScene,
+      });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: 'Server error' });
+    }
+  }
+);
+
+/** TEMP: global-admin-only full thread scene replace for editor (remove when scene plumbing is verified). */
+app.post(
+  '/debug/thread-scene-replace',
+  requireHousehold,
+  requireAuth,
+  requireGlobalAdminRead,
+  requireNotImpersonatingReadOnly,
+  async (req, res) => {
+    try {
+      const chatId = Number(req.body.chatId);
+      const rawScene = req.body.threadScene;
+      if (!Number.isFinite(chatId)) {
+        return res.status(400).json({ error: 'Invalid chatId' });
+      }
+      if (rawScene == null || typeof rawScene !== 'object' || Array.isArray(rawScene)) {
+        return res.status(400).json({ error: 'threadScene must be a plain object' });
+      }
+      const chats = await listAllChats(req.householdId);
+      if (!chats.some((c) => Number(c.id) === chatId)) {
+        return res.status(404).json({ error: 'Chat not found' });
+      }
+      try {
+        await replaceChatThreadScene(chatId, req.householdId, rawScene);
+      } catch (e) {
+        return res.status(400).json({ error: e.message || 'Invalid thread scene' });
+      }
+      const ctx = await getChatThreadContext(chatId, req.householdId);
+      return res.json({
+        mealPlanSummary: ctx.mealPlanSummary,
+        threadGrocerySummary: ctx.threadGrocerySummary,
+        threadScene: ctx.threadScene,
+      });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: 'Server error' });
+    }
+  }
+);
+
 const GROCERY_SECTION_KEYS = new Set(['produce', 'meat', 'dairy', 'frozen', 'dry', 'other']);
 
 /** Trim, drop empty names, coerce unknown sections to `other`. Compatible with !grocerylist and manual adds. */
@@ -6723,6 +7058,194 @@ async function mergeGroceryItemsFromAi(householdId, parsedItems, sourceChatId) {
   return { insertedCount, updatedCount, backfilledCount, changedCount };
 }
 
+/**
+ * Shared !remember execution (normal path + planner micro-plan). Does not end HTTP unless caller does.
+ * @param {object} opts
+ * @param {boolean} [opts.plannerMode] — skip user/assistant chat lines; still broadcast
+ * @param {boolean} [opts.smartModeEnabled] — when false, skip thread-scene metadata writes and scene auto-updater
+ */
+async function runRememberSharedCommandEffects({
+  req,
+  name,
+  chatId,
+  commandUserTextForPersistence,
+  memoryParsed,
+  memories,
+  anthropic,
+  routePrompt,
+  plannerMode = false,
+  smartModeEnabled = false,
+}) {
+  return runRememberSharedExecutorEffects({
+    req,
+    name,
+    chatId,
+    commandUserTextForPersistence,
+    memoryParsed,
+    memories,
+    anthropic,
+    routePrompt,
+    plannerMode,
+    smartModeEnabled,
+    deps: {
+      addMessage,
+      broadcastToChat,
+      getMessages,
+      runThreadSceneAutoUpdaterAfterNormalChat,
+    },
+  });
+}
+
+/**
+ * Weekly dinner plan → draft shopping list in chat only + confirmable pending !grocerylist (draft_chat_offer).
+ * Does not write grocery_items; user confirms to run the normal !grocerylist path.
+ */
+async function runWeeklyPlanGroceryDraftOfferResponse({
+  req,
+  res,
+  name,
+  chatId,
+  prompt,
+  memories,
+  memoriesByKey,
+  anthropic,
+}) {
+  return runWeeklyPlanGroceryDraftOfferExecutorResponse({
+    req,
+    res,
+    name,
+    chatId,
+    prompt,
+    memories,
+    memoriesByKey,
+    anthropic,
+    deps: {
+      addMessage,
+      broadcastToChat,
+      formatWeeklyPlanDraftForPrompt,
+      formatWeeklyPlanDraftVisibleBlock,
+      incrementUserMessageCountForSender,
+      normalizeGroceryItemsForPost,
+    },
+  });
+}
+
+/**
+ * Shared !grocerylist execution. Returns outcome for caller to end HTTP or continue to stream.
+ * @param {boolean} [opts.smartModeEnabled] — when false, skip thread-scene metadata writes and scene auto-updater (meal/thread summaries still update for !grocerylist)
+ * @returns {Promise<{ type: 'done', reply: string } | { type: 'disambiguation', reply: string, pendingHeader: string }>}
+ */
+async function runGrocerySharedCommandEffects({
+  req,
+  name,
+  chatId,
+  commandUserTextForPersistence,
+  routePrompt,
+  executePendingAction,
+  memories,
+  anthropic,
+  plannerMode = false,
+  skipIncrement = false,
+  plannerUserLineAlreadyAdded = false,
+  smartModeEnabled = false,
+  /** When set (planner multi-action), disambiguation assistant text is prefixed so the user sees a memory ack first. */
+  plannerRememberAck = null,
+  /** When set (planner weekly patch before grocery), disambiguation text is prefixed after the weekly ack. */
+  plannerWeeklyPatchAck = null,
+  /** Smart runtime owns response persistence when true. */
+  runtimeManagedResponse = false,
+}) {
+  return runGrocerySharedExecutorEffects({
+    req,
+    name,
+    chatId,
+    commandUserTextForPersistence,
+    routePrompt,
+    executePendingAction,
+    memories,
+    anthropic,
+    plannerMode,
+    skipIncrement,
+    plannerUserLineAlreadyAdded,
+    smartModeEnabled,
+    plannerRememberAck,
+    plannerWeeklyPatchAck,
+    runtimeManagedResponse,
+    deps: {
+      addMessage,
+      broadcastToChat,
+      clearGroceryItems,
+      combinePlannerDisambiguationWithRememberAck,
+      formatWeeklyPlanDraftForPrompt,
+      formatWeeklyPlanDraftVisibleBlock,
+      getMessages,
+      incrementUserMessageCountForSender,
+      mergeGroceryItemsFromAi,
+      normalizeGroceryItemsForPost,
+      normalizeGroceryNameKey,
+      parseThreadGrocerySummaryKeys,
+      pruneStaleGroceryItemsForChat,
+      runThreadSceneAutoUpdaterAfterNormalChat,
+      stripStoredMessageContentForDisplay,
+      withPlannerWeeklyPlanVisibleBlock,
+    },
+  });
+}
+
+function truncatePlannerAckValue(s, max = 120) {
+  const t = String(s ?? '').trim();
+  if (!t) return '';
+  if (t.length <= max) return t;
+  return t.slice(0, max - 1) + '…';
+}
+
+function buildPlannerRememberAckFragment(normKey, displayValue) {
+  const v = truncatePlannerAckValue(displayValue, 120);
+  const nk = String(normKey ?? '').trim();
+  if (v && nk) return `I saved that ${nk}: ${v}.`;
+  if (v) return `I saved that ${v}.`;
+  if (nk) return `I updated memory for ${nk}.`;
+  return 'I saved that in memory.';
+}
+
+function combinePlannerDisambiguationWithRememberAck(rememberAck, disambiguationBody) {
+  const ra = rememberAck && String(rememberAck).trim();
+  const d = String(disambiguationBody ?? '').trim();
+  if (!ra) return d;
+  if (!d) return ra;
+  return `${ra} ${d}`;
+}
+
+/** Both must be non-empty; used only when remember + grocery completed in one planner turn. */
+function composePlannerMultiActionStreamAck(rememberAck, groceryReply) {
+  const r = rememberAck && String(rememberAck).trim();
+  const g = groceryReply && String(groceryReply).trim();
+  if (r && g) return `${r} ${g}`;
+  return null;
+}
+
+/** Short acknowledgement line for planner weekly_plan_draft_patch (user-visible stream hint). */
+function buildWeeklyPlanPatchAck(patch) {
+  if (!patch || typeof patch !== 'object') return null;
+  const parts = [];
+  if (Object.prototype.hasOwnProperty.call(patch, 'label') && String(patch.label ?? '').trim()) {
+    parts.push(`title “${truncateSmartModeContext(String(patch.label).trim(), 48)}”`);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'meals') && Array.isArray(patch.meals)) {
+    const n = patch.meals.length;
+    if (n > 0) parts.push(`${n} dinner idea${n === 1 ? '' : 's'}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'notes') && String(patch.notes ?? '').trim()) {
+    parts.push('notes');
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'status')) {
+    const status = String(patch.status ?? '').trim().toLowerCase();
+    if (status === 'empty') parts.push('cleared');
+  }
+  if (parts.length === 0) return 'I updated your weekly dinner plan.';
+  return `I updated your weekly dinner plan (${parts.join(', ')}).`;
+}
+
 app.get('/groceries', requireHousehold, requireAuth, async (req, res) => {
   try {
     const items = await getGroceryItems(req.householdId);
@@ -6792,647 +7315,331 @@ app.post(
   }
 });
 
-app.post(
-  '/chat',
-  requireHousehold,
-  requireAuth,
-  requireNotImpersonatingReadOnly,
-  rateLimitChatMiddleware,
-  async (req, res) => {
-  try {
-    const prompt = req.body.prompt?.trim();
-    const name = req.user || req.body.name?.trim() || 'Rob';
-    const chatId = Number(req.body.chatId);
-    if (!Number.isFinite(chatId)) {
-      return res.status(400).json({ reply: 'chatId is required.' });
-    }
-    let executePendingAction = sanitizePendingAction(req.body.executePendingAction);
-    let routePrompt = routePromptFromSanitizedPendingAction(executePendingAction, prompt);
+async function handleCompatChatTurn({
+  req,
+  res,
+  name,
+  chatId,
+  prompt,
+  turn,
+  memories,
+  memoriesByKey,
+  anthropic,
+  householdWebSearchEnabled,
+  smartModeEnabled,
+  runtimeStateMode = 'legacy',
+}) {
+  let {
+    routePrompt,
+    executePendingAction,
+    commandUserTextForPersistence,
+    smartModeMixedMemoryHint = false,
+    smartModeClarifyHint = false,
+    plannerUserMessageAlreadyPersisted = false,
+    plannerSkipMixedMemoryOffer = false,
+    plannerStreamCompletedActionsAck = null,
+    skipWeeklyPlanDraftAutoUpdater = false,
+  } = turn;
+  const allowLegacyNaturalActionOffers = !!smartModeEnabled;
 
-    /** Last assistant recoverable pending (if any); used before NL intent and to avoid duplicate offers. */
-    let recoveredPending = null;
-    if (!executePendingAction && prompt) {
-      recoveredPending = await recoverPendingActionFromLastAssistantMessage(chatId, req.householdId);
-      if (recoveredPending && isPendingActionConfirmation(prompt, recoveredPending)) {
-        executePendingAction = recoveredPending;
-        routePrompt = routePromptFromSanitizedPendingAction(recoveredPending, prompt);
-        // Recovered confirmations must flow through the real command path, never plain chat.
+  let cmdRoute = decideCommandRoute({
+    routePrompt,
+    executePendingAction,
+    isMemoriesCommand,
+    isGroceryListCommand,
+    isSharedChatCommand,
+    isPrivateChatCommand,
+    parseMemoryCommand,
+  });
+
+  if (cmdRoute.kind === 'remember_shared') {
+    const applyGuard = shouldApplySmartDurableAutoMemoryGuard({
+      commandUserTextForPersistence,
+      executePendingAction,
+      bodyExecutePending: req.body?.executePendingAction,
+      isPendingActionConfirmation,
+    });
+    if (applyGuard) {
+      const threadCtxRememberRoute = await getChatThreadContext(chatId, req.householdId);
+      if (
+        !isSmartDurableAutoMemoryCandidate({
+          key: cmdRoute.memoryParsed.key,
+          value: cmdRoute.memoryParsed.value,
+          routePrompt,
+          threadCtx: threadCtxRememberRoute,
+          userPrompt: prompt,
+        })
+      ) {
+        executePendingAction = null;
+        routePrompt = commandUserTextForPersistence;
+        cmdRoute = decideCommandRoute({
+          routePrompt,
+          executePendingAction,
+          isMemoriesCommand,
+          isGroceryListCommand,
+          isSharedChatCommand,
+          isPrivateChatCommand,
+          parseMemoryCommand,
+        });
       }
     }
+  }
 
-    const commandUserTextForPersistence = executePendingAction ? prompt : routePrompt;
+  if (cmdRoute.kind === 'rename') {
+    const arg = cmdRoute.arg;
+    await incrementUserMessageCountForSender(req);
+    let title;
+    if (arg) {
+      title = arg.slice(0, 200);
+    } else {
+      const conv = await getMessages(chatId, req.householdId);
+      const forContext = conv.filter((m) => m.role !== 'user' || !String(m.content).trim().startsWith('!'));
+      const recent = forContext.length > 20 ? forContext.slice(-20) : forContext;
+      const titleMessages = recent.map((m) => ({
+        role: m.role,
+        content:
+          m.role === 'user' ? `${m.name}: ${m.content}` : stripStoredMessageContentForDisplay(m.content),
+      }));
+      try {
+        const titleRes = await anthropic.messages.create({
+          model: 'claude-sonnet-4-5',
+          max_tokens: 30,
+          system: 'You generate very short chat titles (3–6 words). Respond with ONLY the title, no quotes or punctuation.',
+          messages: [
+            ...titleMessages,
+            { role: 'user', content: 'Suggest a very short title for this chat (3–6 words only).' },
+          ],
+        });
+        const blocks = titleRes.content.filter((b) => b.type === 'text');
+        const raw = blocks.map((b) => b.text).join(' ').trim().split('\n')[0].trim();
+        title = raw && raw.length > 0 ? raw.slice(0, 80) : 'New chat';
+      } catch (e) {
+        if (isAnthropicSdkAuthOrKeyError(e)) throw e;
+        console.error('Title suggestion failed:', e);
+        title = 'New chat';
+      }
+    }
+    await updateChatTitle(chatId, req.householdId, title);
+    const reply = `Renamed this chat to "${title}".`;
+    res.setHeader('X-KitchenBot-Ephemeral', '1');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.end(reply);
+  }
 
-    const memories = await getMemories(req.householdId);
-    const memoriesByKey = new Map(memories.map((m) => [m.key, m.value]));
+  if (cmdRoute.kind === 'private_memories_list') {
+    const memoriesFiltered = memories.filter((m) => m.key !== 'assistant_name');
+    const reply = memoriesFiltered.length
+      ? 'Current memories:\n' + memoriesFiltered.map((memory) => `- ${memory.key}: ${memory.value}`).join('\n')
+      : 'No memories stored.';
+    res.setHeader('X-KitchenBot-Ephemeral', '1');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.end(reply);
+  }
 
-    // Only reach this fallback if no executePendingAction exists AND recovery failed.
-    if (!executePendingAction && prompt && isShortAffirmativeConfirm(prompt) && !String(routePrompt ?? '').trim().startsWith('!')) {
-      const reply =
-        'Looks like I thought there was an action ready to run here, but there wasn\'t. You can keep chatting normally, or if you meant to run a command, type it explicitly.';
-      await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
-      await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+  if (cmdRoute.kind === 'remember_shared') {
+    const { reply } = await runRememberSharedCommandEffects({
+      req,
+      name,
+      chatId,
+      commandUserTextForPersistence,
+      memoryParsed: cmdRoute.memoryParsed,
+      memories,
+      anthropic,
+      routePrompt,
+      plannerMode: false,
+      smartModeEnabled,
+    });
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.end(reply);
+  }
+
+  if (cmdRoute.kind === 'grocery_shared') {
+    const gOut = await runGrocerySharedCommandEffects({
+      req,
+      name,
+      chatId,
+      commandUserTextForPersistence,
+      routePrompt,
+      executePendingAction,
+      memories,
+      anthropic,
+      plannerMode: false,
+      skipIncrement: false,
+      plannerUserLineAlreadyAdded: false,
+      smartModeEnabled,
+    });
+    if (gOut.type === 'disambiguation') {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('X-KitchenBot-Pending-Action', gOut.pendingHeader);
+      return res.end(gOut.reply);
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.end(gOut.reply);
+  }
+
+  if (cmdRoute.kind === 'unknown_bang_command') {
+    const reply = 'Unknown command.\n\n' + getHelpReply();
+    await incrementUserMessageCountForSender(req);
+    res.setHeader('X-KitchenBot-Ephemeral', '1');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.end(reply);
+  }
+
+  if (cmdRoute.kind === 'prompt_required') {
+    return res.status(400).json({ reply: 'Prompt is required.' });
+  }
+
+  if (turn.kind === 'legacy_command_guidance') {
+    if (!plannerUserMessageAlreadyPersisted) {
+      await addMessage(chatId, req.householdId, 'user', name, routePrompt);
       await incrementUserMessageCountForSender(req);
       if (typeof broadcastToChat === 'function') {
         broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
       }
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.end(reply);
     }
-
-    if (!executePendingAction && routePrompt && !String(routePrompt).trim().startsWith('!')) {
-      if (!isShortAffirmativeConfirm(prompt)) {
-        const threadCtxForIntent = await getChatThreadContext(chatId, req.householdId);
-        const convForDraft = await getMessages(chatId, req.householdId);
-        const assistantContents = convForDraft
-          .filter((m) => m.role === 'assistant')
-          .slice(-3)
-          .map((m) => stripStoredMessageContentForDisplay(m.content));
-        const hasGroceryDraft = threadHasConcreteGroceryDraftForFollowUp(
-          threadCtxForIntent.threadGrocerySummary,
-          assistantContents
-        );
-        const intent = detectCommandIntentFromNaturalLanguage(routePrompt, memoriesByKey, {
-          hasGroceryDraft,
-        });
-        if (intent.pendingAction) {
-          const dupGroceryOffer =
-            recoveredPending &&
-            recoveredPending.command === '!grocerylist' &&
-            intent.pendingAction.command === '!grocerylist';
-          if (!dupGroceryOffer) {
-            const reply = buildPendingActionReply(intent.pendingAction, memoriesByKey);
-            await addMessage(chatId, req.householdId, 'user', name, routePrompt);
-            await addMessage(
-              chatId,
-              req.householdId,
-              'assistant',
-              'KitchenBot',
-              appendPendingMarkerToAssistantContent(reply, intent.pendingAction)
-            );
-            await incrementUserMessageCountForSender(req);
-            if (typeof broadcastToChat === 'function') {
-              broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-            }
-            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-            res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(intent.pendingAction)));
-            return res.end(reply);
-          }
-          // duplicate !grocerylist offer vs last assistant: fall through to normal chat for this turn
-        }
-      }
+    const reply = buildLegacyCommandGuidanceReply(turn.pendingAction);
+    await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+    if (typeof broadcastToChat === 'function') {
+      broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
     }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.end(reply);
+  }
 
-    // Private commands (!love, !help, !memories): isPrivateChatCommand — HTTP reply to sender only; no addMessage / broadcastToChat.
-    if (isPrivateChatCommand(routePrompt) && /^!love(?:\s|$)/.test(routePrompt)) {
-      const loveRest = routePrompt.match(/^!love\s*(.*)$/);
-      const targetName = loveRest && loveRest[1] != null ? String(loveRest[1]).trim() : '';
-      if (!targetName) {
-        const reply =
-          'Usage: !love <display name> — boosts that household user\'s compliment chances for their next messages. Example: !love Jamie';
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        return res.end(reply);
-      }
-      const targetUser = await getUserByHouseholdAndDisplayName(req.householdId, targetName);
-      if (!targetUser) {
-        const reply = 'No household user with that display name. Check spelling or add them under Settings.';
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        return res.end(reply);
-      }
-      await ensureUserComplimentStateRow(targetUser.id);
-      await setUserLoveBoost(targetUser.id, true);
-      const reply =
-        'Love boost activated for ' +
-        targetName +
-        '. Their next few messages are extra likely to get a compliment.';
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.end(reply);
-    }
-
-    if (routePrompt === '!help' && isPrivateChatCommand(routePrompt)) {
-      const reply = '📋 KitchenBot commands\n\n' + getHelpReply();
-      await incrementUserMessageCountForSender(req);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.end(reply);
-    }
-
-    let anthropic;
-    let householdWebSearchEnabled = false;
-    try {
-      const ac = await getAnthropicClient(req.householdId);
-      anthropic = ac.client;
-      householdWebSearchEnabled = ac.webSearchEnabled;
-    } catch (keyErr) {
-      const m = keyErr && String(keyErr.message);
-      if (m && m.includes('Household not found')) {
-        return res.status(503).json({ reply: 'Household not found.' });
-      }
-      return res.status(503).json({ reply: ANTHROPIC_KEY_USER_MESSAGE });
-    }
-
-    const renameMatch = routePrompt?.match(/^!rename\s*(.*)$/);
-    if (renameMatch) {
-      const arg = typeof renameMatch[1] === 'string' ? renameMatch[1].trim() : '';
-      await incrementUserMessageCountForSender(req);
-      let title;
-      if (arg) {
-        title = arg.slice(0, 200);
-      } else {
-        const conv = await getMessages(chatId, req.householdId);
-        const forContext = conv.filter(m => m.role !== 'user' || !String(m.content).trim().startsWith('!'));
-        const recent = forContext.length > 20 ? forContext.slice(-20) : forContext;
-        const titleMessages = recent.map(m => ({
-          role: m.role,
-          content:
-            m.role === 'user' ? `${m.name}: ${m.content}` : stripStoredMessageContentForDisplay(m.content),
-        }));
-        try {
-          const titleRes = await anthropic.messages.create({
-            model: 'claude-sonnet-4-5',
-            max_tokens: 30,
-            system: 'You generate very short chat titles (3–6 words). Respond with ONLY the title, no quotes or punctuation.',
-            messages: [
-              ...titleMessages,
-              { role: 'user', content: 'Suggest a very short title for this chat (3–6 words only).' },
-            ],
-          });
-          const blocks = titleRes.content.filter(b => b.type === 'text');
-          const raw = blocks.map(b => b.text).join(' ').trim().split('\n')[0].trim();
-          title = (raw && raw.length > 0) ? raw.slice(0, 80) : 'New chat';
-        } catch (e) {
-          if (isAnthropicSdkAuthOrKeyError(e)) throw e;
-          console.error('Title suggestion failed:', e);
-          title = 'New chat';
-        }
-      }
-      await updateChatTitle(chatId, req.householdId, title);
-      const reply = `Renamed this chat to "${title}".`;
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.end(reply);
-    }
-
-    const memoriesCommand = isMemoriesCommand(routePrompt);
-
-    const memoryParsed =
-      executePendingAction?.command === '!remember'
-        ? { key: executePendingAction.args.key, value: executePendingAction.args.value }
-        : parseMemoryCommand(routePrompt);
-    const groceryListCommand = isGroceryListCommand(routePrompt);
-
-    if (memoriesCommand && isPrivateChatCommand(routePrompt)) {
-      const memoriesFiltered = memories.filter((m) => m.key !== 'assistant_name');
-
-      const reply = memoriesFiltered.length
-        ? 'Current memories:\n' + memoriesFiltered.map(memory => `- ${memory.key}: ${memory.value}`).join('\n')
-        : 'No memories stored.';
-
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.end(reply);
-    }
-
-    // Shared command !remember: isSharedChatCommand (memoryParsed); persist + broadcast.
-    if (memoryParsed && isSharedChatCommand(routePrompt, memoryParsed)) {
-      await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
-      let reply;
-      if (memoryParsed.error) {
-        reply = memoryParsed.error;
-        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-      } else {
-        const normKey = normalizeRememberKeyForStorage(memoryParsed.key);
-        const newValue = normalizeRememberValueForStorage(memoryParsed.value);
-        const existing = memories.find((r) => r.key === normKey);
-        if (!existing) {
-          await upsertHouseholdMemory(req.householdId, memoryParsed.key, memoryParsed.value);
-          reply = `Got it. I saved memory ${normKey} = ${newValue}.`;
-        } else {
-          const existingValue = String(existing.value ?? '');
-          const merged = mergeMemoryProposalWithExisting(existingValue, newValue);
-          if (merged === null || merged.trim() === existingValue.trim()) {
-            reply = `No change — ${normKey} already includes that.`;
-          } else {
-            const mergedStored = normalizeRememberValueForStorage(merged);
-            await upsertHouseholdMemory(req.householdId, normKey, mergedStored);
-            reply = `Got it. I saved memory ${normKey} = ${mergedStored}.`;
-          }
-        }
-        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-      }
-      if (typeof broadcastToChat === 'function') {
-        broadcastToChat(chatId, {
-          type: 'chat_updated',
-          householdId: req.householdId,
-          chatId,
-          user: name,
-        });
-      }
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.end(reply);
-    }
-
-    if (groceryListCommand && isSharedChatCommand(routePrompt, memoryParsed)) {
-      await incrementUserMessageCountForSender(req);
-      const requestedGroceryMode =
-        executePendingAction && executePendingAction.command === '!grocerylist'
-          ? executePendingAction.mode || null
-          : null;
-
-      const conversation = await getMessages(chatId, req.householdId);
-      const conversationForContext = conversation.filter(
-        m => m.role !== 'user' || !String(m.content || '').trim().startsWith('!')
-      );
-      const recentConversation =
-        conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
-
-      const priorCtx = await getChatThreadContext(chatId, req.householdId);
-      const priorMealPlanSummary = priorCtx.mealPlanSummary;
-      const priorThreadGrocerySummary = priorCtx.threadGrocerySummary;
-      const threadHasGroceryContext = priorThreadGrocerySummary.trim().length > 0;
-      const existingGroceryItems = await getGroceryItems(req.householdId);
-
-      const memoryText = memories
-        .map(memory => `${memory.key}: ${memory.value}`)
-        .join('\n');
-
-      if (requestedGroceryMode == null && !threadHasGroceryContext && existingGroceryItems.length > 0) {
-        const reply =
-          "Looks like you already have items in your Grocery tab. Do you want me to start a new list or add these to what's already there?";
-        await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
-        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-        if (typeof broadcastToChat === 'function') {
-          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-        }
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.setHeader(
-          'X-KitchenBot-Pending-Action',
-          encodeURIComponent(
-            JSON.stringify({
-              type: 'grocery_mode_choice',
-              options: [
-                { command: '!grocerylist', mode: 'replace' },
-                { command: '!grocerylist', mode: 'append' },
-              ],
-            })
-          )
-        );
-        return res.end(reply);
-      }
-
-      const claudeMessages = recentConversation.map(message => ({
-        role: message.role,
-        content:
-          message.role === 'user'
-            ? `${message.name}: ${message.content}`
-            : stripStoredMessageContentForDisplay(message.content),
-      }));
-
-      const groceryResponse = await anthropic.messages.create({
-        model: 'claude-sonnet-4-5',
-        max_tokens: 400,
-        system: `You are a household assistant that generates grocery lists.
-
-Household memory:
-${memoryText}
-
-When the user asks for a grocery list, respond ONLY with plain text lines in the format:
-section | product | amount
-
-Where:
-- section is one of: produce, meat, dairy, frozen, dry, other
-- product is a short item name
-- amount is a human-readable quantity (like "2 lbs", "3", "1 carton")`,
-        messages: [
-          ...claudeMessages,
-          {
-            role: 'user',
-            content:
-              'Based on the meal planning we have discussed, build a complete grocery list using the format "section | product | amount", one item per line. Do not include any commentary, headers, or bullet points—only raw lines in that format.'
-          }
-        ],
-      });
-
-      const textBlocks = groceryResponse.content.filter(
-        block => block.type === 'text'
-      );
-      const fullText = textBlocks.map(b => b.text).join('\n');
-
-      const lines = fullText
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0);
-
-      const items = [];
-
-      for (const line of lines) {
-        const parts = line.split('|').map(p => p.trim());
-        if (parts.length < 2) continue;
-        const [sectionRaw, nameRaw, amountRaw] = parts;
-        const nameTrim = String(nameRaw).trim();
-        if (!sectionRaw || !nameTrim) continue;
-
-        items.push({
-          section: sectionRaw,
-          name: nameTrim,
-          amount: amountRaw != null ? String(amountRaw).trim() : '',
-        });
-      }
-
-      const normalizedItems = normalizeGroceryItemsForPost(items);
-      const priorKeys = parseThreadGrocerySummaryKeys(priorThreadGrocerySummary);
-      const runKeys = new Set(normalizedItems.map((i) => normalizeGroceryNameKey(i.name)).filter(Boolean));
-      const likelyRemovedKeys = new Set([...priorKeys].filter((k) => !runKeys.has(k)));
-      const likelyAddedKeys = new Set([...runKeys].filter((k) => !priorKeys.has(k)));
-      const planChangedLikely =
-        priorKeys.size > 0 && runKeys.size > 0 && (likelyRemovedKeys.size > 0 || likelyAddedKeys.size > 0);
-
-      if (requestedGroceryMode == null && threadHasGroceryContext && planChangedLikely) {
-        const reply =
-          'We made some changes to this plan. Do you want me to keep the old items or remove the items we swapped out?';
-        await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
-        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-        if (typeof broadcastToChat === 'function') {
-          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-        }
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.setHeader(
-          'X-KitchenBot-Pending-Action',
-          encodeURIComponent(
-            JSON.stringify({
-              type: 'grocery_mode_choice',
-              options: [
-                { command: '!grocerylist', mode: 'append' },
-                { command: '!grocerylist', mode: 'prune' },
-              ],
-            })
-          )
-        );
-        return res.end(reply);
-      }
-
-      const effectiveGroceryMode = requestedGroceryMode || 'append';
-      const beforeGroceryCount = existingGroceryItems.length;
-      let replaceClearedCount = 0;
-      let prunedCount = 0;
-      if (effectiveGroceryMode === 'replace') {
-        replaceClearedCount = await clearGroceryItems(req.householdId);
-      } else if (effectiveGroceryMode === 'prune') {
-        try {
-          prunedCount = await pruneStaleGroceryItemsForChat(
-            req.householdId,
-            runKeys,
-            chatId,
-            likelyRemovedKeys
-          );
-        } catch (e) {
-          console.error('Grocery prune failed:', e.message || e);
-        }
-      }
-      let mergeStats = { insertedCount: 0, updatedCount: 0, backfilledCount: 0, changedCount: 0 };
-      if (normalizedItems.length > 0) {
-        mergeStats = await mergeGroceryItemsFromAi(req.householdId, normalizedItems, chatId);
-      }
-      const afterGroceryItems = await getGroceryItems(req.householdId);
-      const afterGroceryCount = afterGroceryItems.length;
-
-      const totalDbContentChanges =
-        replaceClearedCount + prunedCount + mergeStats.changedCount;
-      const groceryListWasUpdated = totalDbContentChanges > 0;
-
-      const conversationSnippet = recentConversation
-        .map((m) =>
-          m.role === 'user'
-            ? `${m.name}: ${m.content}`
-            : stripStoredMessageContentForDisplay(String(m.content ?? ''))
-        )
-        .join('\n\n');
-      const commandOutcomeBlock = groceryListWasUpdated
-        ? `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- The household grocery list in the app changed this request: ${totalDbContentChanges} total (inserts: ${mergeStats.insertedCount}, amount updates: ${mergeStats.updatedCount}, prune removals: ${prunedCount}, replace-mode rows cleared: ${replaceClearedCount}). Provenance-only backfills (not list content): ${mergeStats.backfilledCount}.\n- Sanity check: grocery row count before ${beforeGroceryCount}, after ${afterGroceryCount}.`
-        : `Command outcome (this request only — server facts; treat as true):\n- User ran !grocerylist in this chat.\n- The household grocery list in the app was not changed by this request (inserts: ${mergeStats.insertedCount}, amount updates: ${mergeStats.updatedCount}, prune removals: ${prunedCount}, replace-mode rows cleared: ${replaceClearedCount}; provenance backfills: ${mergeStats.backfilledCount}). Parsed item lines: ${normalizedItems.length}.\n- Sanity check: grocery row count before ${beforeGroceryCount}, after ${afterGroceryCount}.`;
-      const commandOutcomeWithPrune = commandOutcomeBlock;
-
-      const itemsThisRunText =
-        normalizedItems.length > 0
-          ? normalizedItems
-              .map((i) => `${i.section} | ${i.name} | ${i.amount || ''}`)
-              .join('\n')
-          : '(none parsed this run)';
-
-      let mealPlanToStore = priorMealPlanSummary;
-      let threadGroceryToStore = priorThreadGrocerySummary;
-
-      try {
-        const summaryResponse = await anthropic.messages.create({
-          model: 'claude-sonnet-4-5',
-          max_tokens: 700,
-          system: `You maintain one concise, factual meal-plan summary for a single chat thread. Output plain text only (no markdown). At most a few short paragraphs total.
-
-Rules:
-- Produce a full replacement summary for the thread (not an open-ended append).
-- Cover: planned meals or themes; ingredient choices; substitutions or additions; ingredients the user explicitly rejected or wanted to avoid when clear; unresolved questions if any.
-- Ground statements in the prior summary, household memory, recent conversation, and the "Command outcome" block below; do not invent specifics beyond them.
-- Do not invent app or database actions. You may state outcomes that appear explicitly in the "Command outcome (this request only)" section.`,
-          messages: [
-            {
-              role: 'user',
-              content: `${commandOutcomeWithPrune}\n\nPrevious meal-plan summary for this thread (may be empty):\n${priorMealPlanSummary.trim() || '(none)'}\n\nHousehold memory:\n${memoryText || '(none)'}\n\nRecent conversation (this chat, before this !grocerylist turn is persisted):\n${conversationSnippet}\n\nWrite the updated replacement summary for this thread. Reflect the command outcome above accurately (e.g. if the grocery list was updated in the app, say so; do not say the user still needs to run a command to save it).`,
-            },
-          ],
-        });
-        const summaryBlocks = summaryResponse.content.filter((b) => b.type === 'text');
-        const newMealPlanSummary = summaryBlocks.map((b) => b.text).join('\n').trim();
-        if (newMealPlanSummary) {
-          mealPlanToStore = newMealPlanSummary;
-        }
-      } catch (e) {
-        console.error('Meal plan summary update failed:', e.message || e);
-      }
-
-      try {
-        const groceryCumulativeResponse = await anthropic.messages.create({
-          model: 'claude-sonnet-4-5',
-          max_tokens: 900,
-          system: `You maintain one cumulative plain-text summary of what this chat thread has decided to buy across all !grocerylist runs (purchase intent for this thread). Output plain text only (no markdown). Be concise.
-
-Use these section headings when you have content (omit empty sections):
-Proteins
-Produce
-Dairy / frozen
-Pantry / starches
-Other
-Notes / clarifications
-
-Rules:
-- Output a full replacement summary that merges the previous cumulative thread grocery summary with this run's items and the thread context below. Dedupe overlapping items; keep the list stable and scannable.
-- Ground items in the previous thread grocery summary, meal plan context, conversation, and the "Items from this run" lines only—do not pull from any household grocery database or shopping tab.
-- Do not invent items not supported by those inputs.`,
-          messages: [
-            {
-              role: 'user',
-              content: `${commandOutcomeWithPrune}\n\nPrevious cumulative thread grocery summary (may be empty):\n${priorThreadGrocerySummary.trim() || '(none)'}\n\nMeal plan context for this thread (may be empty):\n${mealPlanToStore.trim() || '(none)'}\n\nItems from this !grocerylist run (section | product | amount):\n${itemsThisRunText}\n\nHousehold memory (context only):\n${memoryText || '(none)'}\n\nRecent conversation (this chat, before this !grocerylist line is persisted):\n${conversationSnippet}\n\nWrite the full replacement cumulative thread grocery summary for what this thread intends to buy so far.`,
-            },
-          ],
-        });
-        const gBlocks = groceryCumulativeResponse.content.filter((b) => b.type === 'text');
-        const newThreadGrocery = gBlocks.map((b) => b.text).join('\n').trim();
-        if (newThreadGrocery) {
-          threadGroceryToStore = newThreadGrocery;
-        }
-      } catch (e) {
-        console.error('Thread grocery summary update failed:', e.message || e);
-      }
-
-      try {
-        await upsertChatThreadContext(chatId, req.householdId, {
-          mealPlanSummary: mealPlanToStore,
-          threadGrocerySummary: threadGroceryToStore,
-        });
-      } catch (e) {
-        console.error('chat thread context upsert failed:', e.message || e);
-      }
-
-      let reply;
-      if (groceryListWasUpdated) {
-        reply = 'I updated the grocery list. Head over to the Grocery List tab to check it.';
-      } else if (normalizedItems.length > 0) {
-        reply =
-          'The grocery list already had those items, so there wasn\'t anything new to update.';
-      } else {
-        reply = 'I was not able to build a grocery list from our conversation.';
-      }
-
-      await addMessage(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
-      await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-      if (typeof broadcastToChat === 'function') {
-        broadcastToChat(chatId, {
-          type: 'chat_updated',
-          householdId: req.householdId,
-          chatId,
-          user: name,
-        });
-      }
-
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.end(reply);
-    }
-
-    if (String(routePrompt ?? '').trim().startsWith('!')) {
-      const reply = 'Unknown command.\n\n' + getHelpReply();
-      await incrementUserMessageCountForSender(req);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.end(reply);
-    }
-
-    if (!routePrompt) {
-      return res.status(400).json({ reply: 'Prompt is required.' });
-    }
-
+  if (!plannerUserMessageAlreadyPersisted) {
     await addMessage(chatId, req.householdId, 'user', name, routePrompt);
     await incrementUserMessageCountForSender(req);
     if (typeof broadcastToChat === 'function') {
       broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
     }
+  }
 
-    const conversation = await getMessages(chatId, req.householdId);
-    const conversationForContext = conversation.filter(
-      m => m.role !== 'user' || !String(m.content || '').trim().startsWith('!')
-    );
-    const recentConversation =
-      conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
+  const conversation = await getMessages(chatId, req.householdId);
+  const conversationForContext = conversation.filter(
+    (m) => m.role !== 'user' || !String(m.content || '').trim().startsWith('!')
+  );
+  const recentConversation = conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
+  const memoryText = memories.map((memory) => `${memory.key}: ${memory.value}`).join('\n');
+  const threadCtx = await getChatThreadContext(chatId, req.householdId);
+  const mainThreadScene =
+    threadCtx.threadScene && typeof threadCtx.threadScene === 'object' && !Array.isArray(threadCtx.threadScene)
+      ? threadCtx.threadScene
+      : {};
+  const threadSceneCompactMain = smartModeEnabled
+    ? Object.keys(mainThreadScene).length === 0
+      ? '(empty)'
+      : truncateSmartModeContext(JSON.stringify(mainThreadScene), 800)
+    : '(not injected for this reply)';
+  const weeklyPlanDraftCompact = smartModeEnabled
+    ? formatWeeklyPlanDraftForPrompt(threadCtx.weeklyPlanDraft ?? {})
+    : '(not available in this chat)';
+  const claudeMessages = recentConversation.map((message) => ({
+    role: message.role,
+    content:
+      message.role === 'user'
+        ? `${message.name}: ${message.content}`
+        : stripStoredMessageContentForDisplay(message.content),
+  }));
+  const userMessagesForTitle = conversation.filter((m) => m.role === 'user');
+  const shouldNameChat = userMessagesForTitle.length === 1 || userMessagesForTitle.length === 3;
 
-    const memoryText = memories
-      .map(memory => `${memory.key}: ${memory.value}`)
-      .join('\n');
-
-    const threadCtx = await getChatThreadContext(chatId, req.householdId);
-
-    const claudeMessages = recentConversation.map(message => ({
-      role: message.role,
-      content:
-        message.role === 'user'
-          ? `${message.name}: ${message.content}`
-          : stripStoredMessageContentForDisplay(message.content),
-    }));
-
-    const userMessagesForTitle = conversation.filter(
-      m => m.role === 'user'
-    );
-
-    const shouldNameChat =
-      userMessagesForTitle.length === 1 || userMessagesForTitle.length === 3;
-
-    if (shouldNameChat) {
-      try {
-        const titleResponse = await anthropic.messages.create({
-          model: 'claude-sonnet-4-5',
-          max_tokens: 30,
-          system:
-            'You generate very short chat titles (3-6 words) based on the conversation. Respond with ONLY the title text, no quotes or punctuation.',
-          messages: [
-            ...claudeMessages.slice(-10),
-            {
-              role: 'user',
-              content:
-                'Based on this conversation, generate a very short, descriptive title for this chat (3-6 words only, no quotes).',
-            },
-          ],
-        });
-
-        const titleBlocks = titleResponse.content.filter(
-          b => b.type === 'text'
-        );
-        const rawTitle = titleBlocks.map(b => b.text).join(' ').trim().split('\n')[0].trim();
-        const safeTitle = (rawTitle && rawTitle.length > 0) ? rawTitle.slice(0, 80) : 'New chat';
-        await updateChatTitle(chatId, req.householdId, safeTitle);
-      } catch (e) {
-        if (isAnthropicSdkAuthOrKeyError(e)) throw e;
-        console.error('Title generation failed:', e);
-      }
+  if (shouldNameChat) {
+    try {
+      const titleResponse = await anthropic.messages.create({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 30,
+        system:
+          'You generate very short chat titles (3-6 words) based on the conversation. Respond with ONLY the title text, no quotes or punctuation.',
+        messages: [
+          ...claudeMessages.slice(-10),
+          {
+            role: 'user',
+            content: 'Based on this conversation, generate a very short, descriptive title for this chat (3-6 words only, no quotes).',
+          },
+        ],
+      });
+      const titleBlocks = titleResponse.content.filter((b) => b.type === 'text');
+      const rawTitle = titleBlocks.map((b) => b.text).join(' ').trim().split('\n')[0].trim();
+      const safeTitle = rawTitle && rawTitle.length > 0 ? rawTitle.slice(0, 80) : 'New chat';
+      await updateChatTitle(chatId, req.householdId, safeTitle);
+    } catch (e) {
+      if (isAnthropicSdkAuthOrKeyError(e)) throw e;
+      console.error('Title generation failed:', e);
     }
+  }
 
-    let mixedMemoryProposal = null;
-    let mixedMemoryOfferLine = null;
-    if (hasStrongMemoryIntentKeywords(routePrompt)) {
-      const proposed = await tryAiMemoryProposal(anthropic, routePrompt, memories);
-      if (proposed) {
-        const mixed = isMixedIntentMemoryMessage(routePrompt);
-        if (!mixed) {
-          const reply = buildPendingActionReply(proposed, memoriesByKey);
-          await addMessage(
-            chatId,
-            req.householdId,
-            'assistant',
-            'KitchenBot',
-            appendPendingMarkerToAssistantContent(reply, proposed)
-          );
-          if (typeof broadcastToChat === 'function') {
-            broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-          }
-          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-          res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(proposed)));
-          return res.end(reply);
+  let mixedMemoryProposal = null;
+  let mixedMemoryOfferLine = null;
+  if (allowLegacyNaturalActionOffers && hasSmartStrongMemoryIntentKeywords(routePrompt) && !plannerSkipMixedMemoryOffer) {
+    const proposed = await trySmartAiMemoryProposal(anthropic, routePrompt, memories, threadCtx, {
+      isAnthropicSdkAuthOrKeyError,
+    });
+    if (proposed) {
+      const mixed = isSmartMixedIntentMemoryMessage(routePrompt) || !!smartModeMixedMemoryHint;
+      if (!mixed) {
+        const reply = buildPendingActionReply(proposed, memoriesByKey);
+        const persistedAssistantContent = appendPendingMarkerToAssistantContent(reply, proposed);
+        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', persistedAssistantContent);
+        if (typeof broadcastToChat === 'function') {
+          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
         }
-        mixedMemoryProposal = proposed;
-        mixedMemoryOfferLine = buildMixedMemoryOfferLine(proposed, routePrompt);
+        if (runtimeStateMode === 'smart') {
+          await setChatRuntimeState(chatId, req.householdId, {
+            mode: 'smart',
+            pending: { action: proposed },
+            checkpoint: {},
+          }).catch(() => {});
+        }
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(proposed)));
+        return res.end(reply);
       }
+      mixedMemoryProposal = proposed;
+      mixedMemoryOfferLine = buildSmartMixedMemoryOfferLine(proposed, routePrompt);
     }
+  }
 
-    const mixedIntentBlock = mixedMemoryProposal
-      ? `
+  const mixedIntentBlock = mixedMemoryProposal
+    ? `
 
     Mixed-intent (this user message): They asked for a primary task plus a memory-like fact. Complete the primary task first; apply the memory fact in-context (e.g. dietary exclusions). Do NOT add any line offering to save to household memory, asking to confirm a save, or mirroring the backend offer—the server appends exactly one such line after your reply; duplicate offer text is stripped. Do not ask again to save; a pending confirmation is already attached. Never output [[KB_OFFER_MEMORY_SAVE]] or any [[KB_...]] marker (it will be stripped).`
+    : '';
+  const useWebSearchTool = householdWebSearchEnabled && shouldEnableWebSearchForPrompt(routePrompt);
+  const webSearchCapabilityBlock = useWebSearchTool
+    ? `Web (this request): Anthropic web_search IS attached. Only attribute content to a site or URL if the search tool actually returned that material this turn. Do not fabricate "exact" ingredients, steps, or quotes from a page you did not receive via the tool. If the tool did not return a page body, say you do not have the exact text from that source.`
+    : householdWebSearchEnabled
+      ? `Web (this request): Web search is NOT attached—no live fetch of links for this reply. Seeing a URL in the user's message does not mean you read it. Do not imply you extracted, checked, read, or matched that page.`
+      : `Web (this request): Web search is off for this household. You cannot load URLs. A link in the chat is not page content—do not imply you read it.`;
+  const smartModeCapabilityBlock = smartModeEnabled
+    ? 'Natural-language app actions are available when clearly intended.'
+    : 'App changes only happen through explicit commands or a real pending confirmation already attached by the app.';
+  const legacyModeBehaviorBlock = !smartModeEnabled
+    ? `
+    Command-first contract:
+    - I can chat naturally, but I cannot execute app actions from a normal chat message.
+    - If the user asks me to change app state in normal language, reply naturally and point them to the right explicit command.
+    - Use these commands when relevant: !grocerylist, !remember <key> = <value>, !rename, !help.
+    - Do not imply a pending confirmation exists unless a real command flow already attached one.
+    - Do not offer "I can do that for you" style confirmations for grocery, memory, rename, or help from normal language.
+    - Do not mention hidden modes, internal settings, or alternate versions of KitchenBot.
+    - Do not create or update weekly-plan state here. Meal-planning discussion may stay conversational only.`
+    : '';
+  const smartModeClarifyBlock =
+    smartModeEnabled && smartModeClarifyHint
+      ? `\n    Smart Mode hint: If the user message is ambiguous, ask one short clarifying question before answering.`
       : '';
-
-    const useWebSearchTool =
-      householdWebSearchEnabled && shouldEnableWebSearchForPrompt(routePrompt);
-
-    const webSearchCapabilityBlock = useWebSearchTool
-      ? `Web (this request): Anthropic web_search IS attached. Only attribute content to a site or URL if the search tool actually returned that material this turn. Do not fabricate "exact" ingredients, steps, or quotes from a page you did not receive via the tool. If the tool did not return a page body, say you do not have the exact text from that source.`
-      : householdWebSearchEnabled
-        ? `Web (this request): Web search is NOT attached—no live fetch of links for this reply. Seeing a URL in the user's message does not mean you read it. Do not imply you extracted, checked, read, or matched that page.`
-        : `Web (this request): Web search is off for this household. You cannot load URLs. A link in the chat is not page content—do not imply you read it.`;
-
-    const streamParams = {
-      model: 'claude-sonnet-4-5',
-      max_tokens: useWebSearchTool ? 4096 : 800,
-      system: `You are KitchenBot: a concise household assistant. Always use first person (I/me/my)—never describe "KitchenBot" as a separate system. Plain text by default; code blocks only if the user asks.
+  const plannerCompletedActionsBlock = plannerStreamCompletedActionsAck
+    ? `\n    Planner (this request): The server already completed these actions; you may open your reply by acknowledging them as fact:\n    ${plannerStreamCompletedActionsAck}\n    If this block is present, the usual restriction below against claiming memory or grocery tab updates does not apply to those specific outcomes—they are confirmed for this request.`
+    : '';
+  const weeklyPlanServerVisibleHint =
+    smartModeEnabled &&
+    (skipWeeklyPlanDraftAutoUpdater || isWeeklyPlanningLikeUserTurn(routePrompt, threadCtx.weeklyPlanDraft ?? {}))
+      ? `\n    Weekly plan visibility: When this turn updates the chat's weekly dinner plan, the server appends a fixed "Weekly plan" block after your reply. Acknowledge briefly; do not repeat the full numbered meal list in prose.`
+      : '';
+  const streamParams = {
+    model: 'claude-sonnet-4-5',
+    max_tokens: useWebSearchTool ? 4096 : 800,
+    system: `You are KitchenBot: a concise household assistant. Always use first person (I/me/my)—never describe "KitchenBot" as a separate system. Plain text by default; code blocks only if the user asks.
 
     App contract: This message is plain text only; it does not run \`!\` commands or change stored state by itself. Persisted changes happen only through explicit commands, Settings, or when I offer a save/list update and the app attaches a real pending confirmation—your next reply alone cannot complete that unless the client sends that confirmation.
     - Do not claim I saved, updated, or changed the app this turn unless the history shows a real command or confirmation outcome. Do not narrate a successful grocery or memory write unless the thread shows the actual backend confirmation for that action.
@@ -7444,9 +7651,14 @@ Rules:
 
     One reply per user message; finish here (no "stand by" or promised follow-ups). If web_search is attached, use it in this reply. Do not print raw search queries unless asked.
 
-    Grocery (draft-first): first output the shopping/ingredient list in this reply. If you do not start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it), include one brief sentence that this list is a draft in chat only and the Grocery List tab in the app is unchanged by this reply alone—so users are not left wondering whether the real tab updated. Only after a concrete list in this message may you offer once: "If you want, I can add this to the Grocery List tab." (optionally add one short clause about plan swaps if relevant). Do not claim the tab is already updated. Do not say \`That's a command-backed action\`, \`run !grocerylist\`, or \`say yes and I'll add it\` unless you start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it)—that marker is what attaches a real pending action. If you do not use the marker, do not imply the user can confirm to save to the tab. Do not ask them to type \`!grocerylist\`.
+    ${smartModeEnabled ? `Grocery (draft-first): first output the shopping/ingredient list in this reply. If you do not start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it), include one brief sentence that this list is a draft in chat only and the Grocery List tab in the app is unchanged by this reply alone—so users are not left wondering whether the real tab updated. Only after a concrete list in this message may you offer once: "If you want, I can add this to the Grocery List tab." (optionally add one short clause about plan swaps if relevant). Do not claim the tab is already updated. Do not say \`That's a command-backed action\`, \`run !grocerylist\`, or \`say yes and I'll add it\` unless you start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it)—that marker is what attaches a real pending action. If you do not use the marker, do not imply the user can confirm to save to the tab. Do not ask them to type \`!grocerylist\`.` : `If the user asks for grocery, memory, rename, or help actions in ordinary language, explain the right command naturally and stop there. Do not mention any hidden modes or internal settings. Do not ask "Would you like to run that now?" unless a real pending confirmation is already attached.`}
 
     ${webSearchCapabilityBlock}
+    ${smartModeCapabilityBlock}
+    ${legacyModeBehaviorBlock}
+    ${smartModeClarifyBlock}
+    ${plannerCompletedActionsBlock}
+    ${weeklyPlanServerVisibleHint}
     Sources: Attribute ingredients/steps/prices to a URL or site only if those details are in this chat, memory below, or web_search results this turn; otherwise say you don't have that page. Generic help is OK if labeled approximate.
 
     Thread meal-plan summary (read-only; updated on \`!grocerylist\`; not the live Grocery tab):
@@ -7455,230 +7667,398 @@ Rules:
     Thread grocery intent (read-only; not the live grocery_items list):
     ${threadCtx.threadGrocerySummary.trim() || '(none yet)'}
 
+    Weekly dinner plan draft (read-only; chat-scoped; not household memory; not the Grocery tab; updated best-effort after Smart Mode replies only):
+    ${weeklyPlanDraftCompact}
+
+    Thread scene (server-owned compact JSON for this chat; read-only soft continuity—it may help you stay coherent across turns; it does NOT mean a DB write should happen now; it does NOT override explicit commands, pending actions, or recovery; do not claim an app action happened unless the thread already shows that outcome):
+    ${threadSceneCompactMain}
+
     Household memory (read-only; edits via Settings or a confirmed save offer):
     ${memoryText}`,
-      messages: claudeMessages,
-    };
-    if (useWebSearchTool) {
-      streamParams.tools = [
-        { type: 'web_search_20250305', name: 'web_search', max_uses: 5 },
-      ];
-    }
-
-    const stream = await anthropic.messages.stream(streamParams);
-
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.setHeader('X-Accel-Buffering', 'no');
-    if (mixedMemoryProposal) {
-      res.setHeader(
-        'X-KitchenBot-Pending-Action',
-        encodeURIComponent(JSON.stringify(mixedMemoryProposal))
-      );
-    }
-
-    let finalReply = '';
-    let streamRawAccum = '';
-    const pendingOfferMarker = '[[KB_OFFER_GROCERY_UPDATE]]';
-    let pendingOfferDecisionMade = false;
-    let pendingOfferAction = null;
-    let pendingOfferBuffer = '';
-    let streamEnded = false;
-    let displayEmittedLen = 0;
-
-    /**
-     * Stream text that matches what we will persist: when no real grocery pending action is attached,
-     * strip fake grocery-offer lines before emitting (same as post-stream finalReply cleanup).
-     * Never show a grocery-offer line unless the matching pending action is actually attached.
-     */
-    function flushDisplayEmit() {
-      const cleaned = stripKitchenBotHiddenMarkers(streamRawAccum);
-      // Mixed-intent: only [[KB_PENDING]] encodes memory; grocery header/marker are suppressed — strip model grocery CTAs so "yes" is not ambiguous.
-      const persistPlain =
-        pendingOfferAction && !mixedMemoryProposal ? cleaned : stripFakeGroceryOperationalLines(cleaned);
-      finalReply = persistPlain;
-
-      if (mixedMemoryProposal) return;
-
-      let emitPlain;
-      if (pendingOfferAction) {
-        emitPlain = cleaned;
-      } else {
-        emitPlain = persistPlain;
-        if (!streamEnded) {
-          const lastNl = emitPlain.lastIndexOf('\n');
-          if (lastNl === -1) return;
-          emitPlain = emitPlain.slice(0, lastNl + 1);
-        }
-      }
-
-      displayEmittedLen = Math.min(displayEmittedLen, emitPlain.length);
-      const newSuffix = emitPlain.slice(displayEmittedLen);
-      if (!newSuffix) return;
-      displayEmittedLen += newSuffix.length;
-      res.write(newSuffix);
-      if (typeof broadcastToChat === 'function') {
-        broadcastToChat(chatId, {
-          type: 'stream_delta',
-          householdId: req.householdId,
-          chatId,
-          delta: newSuffix,
-          user: name,
-        });
-      }
-    }
-
-    function writeChatDelta(delta) {
-      if (!delta) return;
-      streamRawAccum += delta;
-      flushDisplayEmit();
-    }
-
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        const delta = event.delta.text;
-        pendingOfferBuffer += delta;
-        if (!pendingOfferDecisionMade) {
-          if (
-            pendingOfferBuffer.length >= pendingOfferMarker.length ||
-            pendingOfferBuffer.includes('\n') ||
-            pendingOfferBuffer.includes('\r')
-          ) {
-            if (pendingOfferBuffer.startsWith(pendingOfferMarker)) {
-              pendingOfferAction = { command: '!grocerylist' };
-              if (!mixedMemoryProposal) {
-                res.setHeader(
-                  'X-KitchenBot-Pending-Action',
-                  encodeURIComponent(JSON.stringify(pendingOfferAction))
-                );
-              }
-              pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
-              pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
-            }
-            pendingOfferDecisionMade = true;
-            if (pendingOfferBuffer) {
-              writeChatDelta(pendingOfferBuffer);
-              pendingOfferBuffer = '';
-            }
-        }
-          continue;
-        }
-        writeChatDelta(delta);
-      }
-    }
-    if (!pendingOfferDecisionMade) {
-      if (pendingOfferBuffer.startsWith(pendingOfferMarker)) {
-        pendingOfferAction = { command: '!grocerylist' };
-        if (!mixedMemoryProposal) {
-          res.setHeader(
-            'X-KitchenBot-Pending-Action',
-            encodeURIComponent(JSON.stringify(pendingOfferAction))
-          );
-        }
-        pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
-        pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
-      }
-      if (pendingOfferBuffer) {
-        writeChatDelta(pendingOfferBuffer);
-        pendingOfferBuffer = '';
-      }
-      pendingOfferDecisionMade = true;
-    }
-
-    streamEnded = true;
-    flushDisplayEmit();
-
-    // Grocery offers and mode-choice replies must continue into the real !grocerylist command path before final success is emitted.
-    if (!pendingOfferAction && !mixedMemoryProposal) {
-      finalReply = stripFakeGroceryOperationalLines(finalReply);
-    }
-
-    if (mixedMemoryProposal) {
-      finalReply = stripModelAuthoredMemoryOfferLines(finalReply);
-      if (mixedMemoryOfferLine) {
-        finalReply += '\n\n' + mixedMemoryOfferLine;
-      }
-      res.write(finalReply);
-      if (typeof broadcastToChat === 'function') {
-        broadcastToChat(chatId, {
-          type: 'stream_delta',
-          householdId: req.householdId,
-          chatId,
-          delta: finalReply,
-          user: name,
-        });
-      }
-    }
-
-    /* ---- COMPLIMENT LOGIC (per sending user) ---- */
-
-    const senderForCompliment = await getHouseholdUserById(req.householdId, req.userId);
-    const complimentsEnabled =
-      senderForCompliment &&
-      (senderForCompliment.compliments_enabled === null ||
-        senderForCompliment.compliments_enabled === undefined ||
-        Number(senderForCompliment.compliments_enabled) === 1);
-    if (complimentsEnabled) {
-      await ensureUserComplimentStateRow(req.userId);
-      const state = await getUserComplimentState(req.userId);
-      const { trigger } = shouldTriggerCompliment(state);
-
-      if (trigger) {
-        const { compliment, template } = selectComplimentAvoidingRecent(compliments, complimentTemplates, state);
-        const complimentLine = template.replace('%s', compliment);
-        const complimentAppend = '\n\n' + complimentLine;
-        finalReply += complimentAppend;
-        await recordCompliment(req.userId, compliment, template);
-        res.write(complimentAppend);
-        if (typeof broadcastToChat === 'function') {
-          broadcastToChat(chatId, {
-            type: 'stream_delta',
-            householdId: req.householdId,
-            chatId,
-            delta: complimentAppend,
-            user: name,
-          });
-        }
-      }
-    }
-
-    /* ---- END OF COMPLIMENT LOGIC ---- */
-
-    {
-      const offerSep = mixedMemoryProposal && mixedMemoryOfferLine ? '\n\n' + mixedMemoryOfferLine : null;
-      let beforeScrub = finalReply;
-      let afterScrub = '';
-      if (offerSep && finalReply.includes(offerSep)) {
-        const idx = finalReply.lastIndexOf(offerSep);
-        beforeScrub = finalReply.slice(0, idx);
-        afterScrub = finalReply.slice(idx);
-      }
-      finalReply = scrubUnsavedMemoryClaimsInNormalChatReply(beforeScrub) + afterScrub;
-    }
-
-    const streamPendingForMarker = mixedMemoryProposal || pendingOfferAction || null;
-    const finalReplyToPersist = streamPendingForMarker
-      ? appendPendingMarkerToAssistantContent(finalReply, streamPendingForMarker)
-      : finalReply;
-    await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReplyToPersist);
-    if (typeof broadcastToChat === 'function') {
-      broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-    }
-
-    return res.end();
-
-  } catch (error) {
-    console.error(error);
-    if (!res.headersSent) {
-      if (isAnthropicSdkAuthOrKeyError(error)) {
-        return res.status(503).json({ reply: ANTHROPIC_KEY_USER_MESSAGE });
-      }
-      const msg = error && error.message;
-      return res.status(500).json({ reply: msg || 'Something went wrong.' });
-    }
-    res.end();
+    messages: claudeMessages,
+  };
+  if (useWebSearchTool) {
+    streamParams.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }];
   }
-});
+
+  const stream = await anthropic.messages.stream(streamParams);
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Transfer-Encoding', 'chunked');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (mixedMemoryProposal) {
+    res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(mixedMemoryProposal)));
+  }
+
+  let finalReply = '';
+  let streamRawAccum = '';
+  const pendingOfferMarker = '[[KB_OFFER_GROCERY_UPDATE]]';
+  let pendingOfferDecisionMade = false;
+  let pendingOfferAction = null;
+  let pendingOfferBuffer = '';
+  let streamEnded = false;
+  let displayEmittedLen = 0;
+
+  function flushDisplayEmit() {
+    const cleaned = stripKitchenBotHiddenMarkers(streamRawAccum);
+    let persistPlain = pendingOfferAction && !mixedMemoryProposal ? cleaned : stripFakeGroceryOperationalLines(cleaned);
+    if (!mixedMemoryProposal) {
+      persistPlain = stripFakeMemoryPendingOfferLines(persistPlain);
+    }
+    finalReply = persistPlain;
+    if (mixedMemoryProposal) return;
+    let emitPlain;
+    if (pendingOfferAction) {
+      emitPlain = !mixedMemoryProposal ? stripFakeMemoryPendingOfferLines(cleaned) : cleaned;
+    } else {
+      emitPlain = persistPlain;
+      if (!streamEnded) {
+        const lastNl = emitPlain.lastIndexOf('\n');
+        if (lastNl === -1) return;
+        emitPlain = emitPlain.slice(0, lastNl + 1);
+      }
+    }
+    displayEmittedLen = Math.min(displayEmittedLen, emitPlain.length);
+    const newSuffix = emitPlain.slice(displayEmittedLen);
+    if (!newSuffix) return;
+    displayEmittedLen += newSuffix.length;
+    res.write(newSuffix);
+    if (typeof broadcastToChat === 'function') {
+      broadcastToChat(chatId, {
+        type: 'stream_delta',
+        householdId: req.householdId,
+        chatId,
+        delta: newSuffix,
+        user: name,
+      });
+    }
+  }
+
+  function writeChatDelta(delta) {
+    if (!delta) return;
+    streamRawAccum += delta;
+    flushDisplayEmit();
+  }
+
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+      const delta = event.delta.text;
+      pendingOfferBuffer += delta;
+      if (!pendingOfferDecisionMade) {
+        if (
+          pendingOfferBuffer.length >= pendingOfferMarker.length ||
+          pendingOfferBuffer.includes('\n') ||
+          pendingOfferBuffer.includes('\r')
+        ) {
+          if (smartModeEnabled && pendingOfferBuffer.startsWith(pendingOfferMarker)) {
+            pendingOfferAction = { command: '!grocerylist', source: 'draft_chat_offer' };
+            if (!mixedMemoryProposal) {
+              res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(pendingOfferAction)));
+            }
+            pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
+            pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
+          }
+          pendingOfferDecisionMade = true;
+          if (pendingOfferBuffer) {
+            writeChatDelta(pendingOfferBuffer);
+            pendingOfferBuffer = '';
+          }
+        }
+        continue;
+      }
+      writeChatDelta(delta);
+    }
+  }
+  if (!pendingOfferDecisionMade) {
+    if (smartModeEnabled && pendingOfferBuffer.startsWith(pendingOfferMarker)) {
+      pendingOfferAction = { command: '!grocerylist', source: 'draft_chat_offer' };
+      if (!mixedMemoryProposal) {
+        res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(pendingOfferAction)));
+      }
+      pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
+      pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
+    }
+    if (pendingOfferBuffer) {
+      writeChatDelta(pendingOfferBuffer);
+      pendingOfferBuffer = '';
+    }
+    pendingOfferDecisionMade = true;
+  }
+
+  streamEnded = true;
+  flushDisplayEmit();
+
+  const cleanedStreamForGroceryOffer = stripKitchenBotHiddenMarkers(streamRawAccum);
+  if (smartModeEnabled && !pendingOfferAction && !mixedMemoryProposal && groceryTabOfferTextMatchesForPending(cleanedStreamForGroceryOffer)) {
+    pendingOfferAction = { command: '!grocerylist', source: 'draft_chat_offer' };
+    res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(pendingOfferAction)));
+    finalReply = stripFakeMemoryPendingOfferLines(cleanedStreamForGroceryOffer);
+  }
+  if (!pendingOfferAction && !mixedMemoryProposal) {
+    finalReply = stripFakeGroceryOperationalLines(finalReply);
+  }
+  if (!mixedMemoryProposal) {
+    finalReply = stripFakeMemoryPendingOfferLines(finalReply);
+  }
+
+  if (mixedMemoryProposal) {
+    finalReply = stripModelAuthoredMemoryOfferLines(finalReply);
+    if (mixedMemoryOfferLine) {
+      finalReply += '\n\n' + mixedMemoryOfferLine;
+    }
+    res.write(finalReply);
+    if (typeof broadcastToChat === 'function') {
+      broadcastToChat(chatId, {
+        type: 'stream_delta',
+        householdId: req.householdId,
+        chatId,
+        delta: finalReply,
+        user: name,
+      });
+    }
+  }
+
+  const senderForCompliment = await getHouseholdUserById(req.householdId, req.userId);
+  const complimentsEnabled =
+    senderForCompliment &&
+    (senderForCompliment.compliments_enabled === null ||
+      senderForCompliment.compliments_enabled === undefined ||
+      Number(senderForCompliment.compliments_enabled) === 1);
+  if (complimentsEnabled) {
+    await ensureUserComplimentStateRow(req.userId);
+    const state = await getUserComplimentState(req.userId);
+    const { trigger } = shouldTriggerCompliment(state);
+    if (trigger) {
+      const { compliment, template } = selectComplimentAvoidingRecent(compliments, complimentTemplates, state);
+      const complimentLine = template.replace('%s', compliment);
+      const complimentAppend = '\n\n' + complimentLine;
+      finalReply += complimentAppend;
+      await recordCompliment(req.userId, compliment, template);
+      res.write(complimentAppend);
+      if (typeof broadcastToChat === 'function') {
+        broadcastToChat(chatId, {
+          type: 'stream_delta',
+          householdId: req.householdId,
+          chatId,
+          delta: complimentAppend,
+          user: name,
+        });
+      }
+    }
+  }
+
+  {
+    const offerSep = mixedMemoryProposal && mixedMemoryOfferLine ? '\n\n' + mixedMemoryOfferLine : null;
+    let beforeScrub = finalReply;
+    let afterScrub = '';
+    if (offerSep && finalReply.includes(offerSep)) {
+      const idx = finalReply.lastIndexOf(offerSep);
+      beforeScrub = finalReply.slice(0, idx);
+      afterScrub = finalReply.slice(idx);
+    }
+    finalReply = scrubUnsavedMemoryClaimsInNormalChatReply(beforeScrub) + afterScrub;
+  }
+
+  let weeklyPlanDraftSyncAwaited = false;
+  let threadCtxForWeeklyVisible = threadCtx;
+  if (smartModeEnabled && !skipWeeklyPlanDraftAutoUpdater && isWeeklyPlanningLikeUserTurn(routePrompt, threadCtx.weeklyPlanDraft ?? {})) {
+    await runWeeklyPlanDraftAutoUpdaterAfterNormalChat(anthropic, {
+      smartModeEnabled,
+      chatId,
+      householdId: req.householdId,
+      priorWeeklyPlanDraft: threadCtx.weeklyPlanDraft ?? {},
+      routePrompt,
+      finalAssistantReply: finalReply,
+      threadMealPlanSummary: threadCtx.mealPlanSummary,
+      threadGrocerySummary: threadCtx.threadGrocerySummary,
+      skipBecausePlannerPatched: false,
+    });
+    weeklyPlanDraftSyncAwaited = true;
+    threadCtxForWeeklyVisible = await getChatThreadContext(chatId, req.householdId);
+  }
+
+  let weeklyPlanVisibleAppend = '';
+  if (skipWeeklyPlanDraftAutoUpdater && weeklyPlanDraftHasMeaningfulContent(threadCtx.weeklyPlanDraft ?? {})) {
+    weeklyPlanVisibleAppend = formatWeeklyPlanDraftVisibleBlock(threadCtx.weeklyPlanDraft ?? {});
+  } else if (weeklyPlanDraftSyncAwaited && weeklyPlanDraftHasMeaningfulContent(threadCtxForWeeklyVisible.weeklyPlanDraft ?? {})) {
+    weeklyPlanVisibleAppend = formatWeeklyPlanDraftVisibleBlock(threadCtxForWeeklyVisible.weeklyPlanDraft ?? {});
+  }
+
+  if (weeklyPlanVisibleAppend) {
+    const append = '\n\n' + weeklyPlanVisibleAppend;
+    finalReply += append;
+    res.write(append);
+    if (typeof broadcastToChat === 'function') {
+      broadcastToChat(chatId, {
+        type: 'stream_delta',
+        householdId: req.householdId,
+        chatId,
+        delta: append,
+        user: name,
+      });
+    }
+  }
+
+  const streamPendingForMarker = mixedMemoryProposal || pendingOfferAction || null;
+  const finalReplyToPersist = streamPendingForMarker
+    ? appendPendingMarkerToAssistantContent(finalReply, streamPendingForMarker)
+    : finalReply;
+  await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReplyToPersist);
+  if (runtimeStateMode === 'smart' && streamPendingForMarker) {
+    await setChatRuntimeState(chatId, req.householdId, {
+      mode: 'smart',
+      pending: { action: streamPendingForMarker },
+      checkpoint: {},
+    }).catch(() => {});
+  } else if (runtimeStateMode === 'smart') {
+    await clearChatRuntimeState(chatId, req.householdId).catch(() => {});
+  }
+  void runThreadSceneAutoUpdaterAfterNormalChat(anthropic, {
+    smartModeEnabled,
+    chatId,
+    householdId: req.householdId,
+    priorThreadScene: mainThreadScene,
+    routePrompt,
+    finalAssistantReply: finalReply,
+    threadMealPlanSummary: threadCtxForWeeklyVisible.mealPlanSummary,
+    threadGrocerySummary: threadCtxForWeeklyVisible.threadGrocerySummary,
+    householdMemoriesCompact: memoryText,
+    recentConversationForContext: recentConversation,
+    trustedActionSummary: null,
+  });
+  void runWeeklyPlanDraftAutoUpdaterAfterNormalChat(anthropic, {
+    smartModeEnabled,
+    chatId,
+    householdId: req.householdId,
+    priorWeeklyPlanDraft: threadCtx.weeklyPlanDraft ?? {},
+    routePrompt,
+    finalAssistantReply: finalReply,
+    threadMealPlanSummary: threadCtx.mealPlanSummary,
+    threadGrocerySummary: threadCtx.threadGrocerySummary,
+    skipBecausePlannerPatched: skipWeeklyPlanDraftAutoUpdater || weeklyPlanDraftSyncAwaited,
+  });
+  if (typeof broadcastToChat === 'function') {
+    broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+  }
+
+  return res.end();
+}
+
+app.post(
+  '/chat',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  rateLimitChatMiddleware,
+  async (req, res) => {
+    try {
+      const prompt = req.body.prompt?.trim();
+      const name = req.user || req.body.name?.trim() || 'Rob';
+      const chatId = Number(req.body.chatId);
+      if (!Number.isFinite(chatId)) {
+        return res.status(400).json({ reply: 'chatId is required.' });
+      }
+
+      const sharedDeps = {
+        ANTHROPIC_KEY_USER_MESSAGE,
+        addMessage,
+        broadcastToChat,
+        buildMixedMemoryOfferLine: buildSmartMixedMemoryOfferLine,
+        buildSmartModeInterpreterContext,
+        clearChatRuntimeState,
+        clearGroceryItems,
+        complimentTemplates,
+        compliments,
+        combinePlannerDisambiguationWithRememberAck,
+        detectCommandIntentFromNaturalLanguage,
+        ensureUserComplimentStateRow,
+        formatSmartGroceryPreviewArtifact,
+        formatSmartWeeklyPlanArtifact,
+        formatWeeklyPlanDraftForPrompt,
+        formatWeeklyPlanDraftVisibleBlock,
+        generateSmartGroceryModeChoiceReply,
+        generateSmartGroceryPreviewCommitReply,
+        generateSmartGroceryPreviewLead,
+        getAnthropicClient,
+        getChatThreadContext,
+        getHelpReply,
+        getMessages,
+        getUserByHouseholdAndDisplayName,
+        handleCompatChatTurn,
+        hasStrongMemoryIntentKeywords: hasSmartStrongMemoryIntentKeywords,
+        incrementUserMessageCountForSender,
+        invokeSmartModeInterpreterModel,
+        isDurableAutoMemoryCandidate: isSmartDurableAutoMemoryCandidate,
+        isAnthropicSdkAuthOrKeyError,
+        isGroceryListCommand,
+        isMixedIntentMemoryMessage: isSmartMixedIntentMemoryMessage,
+        isMemoriesCommand,
+        isPrivateChatCommand,
+        isSharedChatCommand,
+        mergeGroceryItemsFromAi,
+        normalizeGroceryItemsForPost,
+        normalizeGroceryNameKey,
+        parseMemoryCommand,
+        parseThreadGrocerySummaryKeys,
+        pruneStaleGroceryItemsForChat,
+        runGrocerySharedCommandEffects,
+        runThreadSceneAutoUpdaterAfterNormalChat,
+        runRememberSharedCommandEffects,
+        runSmartTypedPlan,
+        runWeeklyPlanDraftAutoUpdaterAfterNormalChat,
+        runWeeklyPlanGroceryDraftOfferResponse,
+        scrubUnsavedMemoryClaimsInNormalChatReply,
+        setUserLoveBoost,
+        shouldApplyDurableAutoMemoryGuard: (args) =>
+          shouldApplySmartDurableAutoMemoryGuard({ ...args, isPendingActionConfirmation }),
+        shouldEnableWebSearchForPrompt,
+        stripFakeGroceryOperationalLines,
+        stripFakeMemoryPendingOfferLines,
+        stripKitchenBotHiddenMarkers,
+        stripModelAuthoredMemoryOfferLines,
+        truncateSmartModeContext,
+        stripStoredMessageContentForDisplay,
+        threadHasConcreteGroceryDraftForFollowUp,
+        tryAiMemoryProposal: trySmartAiMemoryProposal,
+        updateChatTitle,
+        withSmartPlannerWeeklyPlanArtifact,
+        withPlannerWeeklyPlanVisibleBlock,
+      };
+
+      if (Number((await getHouseholdById(req.householdId))?.smart_mode_enabled) === 1) {
+        return await handleSmartModeChatTurn({
+          req,
+          res,
+          name,
+          chatId,
+          prompt,
+          deps: {
+            ...sharedDeps,
+            runTypedPlan: runSmartTypedPlan,
+          },
+        });
+      }
+
+      return await handleLegacyChatTurn({
+        req,
+        res,
+        name,
+        chatId,
+        prompt,
+        deps: sharedDeps,
+      });
+    } catch (error) {
+      console.error(error);
+      if (!res.headersSent) {
+        if (isAnthropicSdkAuthOrKeyError(error)) {
+          return res.status(503).json({ reply: ANTHROPIC_KEY_USER_MESSAGE });
+        }
+        const msg = error && error.message;
+        return res.status(500).json({ reply: msg || 'Something went wrong.' });
+      }
+      res.end();
+    }
+  }
+);
 
 const wss = new WebSocketServer({ server });
 

@@ -69,6 +69,7 @@ db.serialize(() => {
       anthropic_key_mode TEXT NOT NULL DEFAULT 'shared',
       anthropic_api_key TEXT,
       web_search_enabled INTEGER NOT NULL DEFAULT 0,
+      smart_mode_enabled INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -149,6 +150,17 @@ db.serialize(() => {
       household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
       meal_plan_summary TEXT NOT NULL DEFAULT '',
       thread_grocery_summary TEXT NOT NULL DEFAULT '',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS chat_runtime_state (
+      chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+      household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+      mode TEXT NOT NULL DEFAULT 'smart',
+      pending_json TEXT NOT NULL DEFAULT '{}',
+      checkpoint_json TEXT NOT NULL DEFAULT '{}',
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -252,6 +264,51 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    name: '007_add_smart_mode_enabled_to_households',
+    async up() {
+      if (!(await migrationTableHasColumn('households', 'smart_mode_enabled'))) {
+        await migrationRun(
+          `ALTER TABLE households ADD COLUMN smart_mode_enabled INTEGER NOT NULL DEFAULT 0`
+        );
+      }
+    },
+  },
+  {
+    name: '008_add_thread_scene_json_to_chat_meal_plan_context',
+    async up() {
+      if (!(await migrationTableHasColumn('chat_meal_plan_context', 'thread_scene_json'))) {
+        await migrationRun(
+          `ALTER TABLE chat_meal_plan_context ADD COLUMN thread_scene_json TEXT NOT NULL DEFAULT '{}'`
+        );
+      }
+    },
+  },
+  {
+    name: '009_add_weekly_plan_draft_json_to_chat_meal_plan_context',
+    async up() {
+      if (!(await migrationTableHasColumn('chat_meal_plan_context', 'weekly_plan_draft_json'))) {
+        await migrationRun(
+          `ALTER TABLE chat_meal_plan_context ADD COLUMN weekly_plan_draft_json TEXT NOT NULL DEFAULT '{}'`
+        );
+      }
+    },
+  },
+  {
+    name: '010_add_chat_runtime_state',
+    async up() {
+      await migrationRun(`
+        CREATE TABLE IF NOT EXISTS chat_runtime_state (
+          chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+          household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+          mode TEXT NOT NULL DEFAULT 'smart',
+          pending_json TEXT NOT NULL DEFAULT '{}',
+          checkpoint_json TEXT NOT NULL DEFAULT '{}',
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    },
+  },
 ];
 
 /** Runs ordered migrations once each; fails startup if any migration fails. */
@@ -320,7 +377,7 @@ export function getHouseholdById(householdId) {
   return new Promise((resolve, reject) => {
     db.get(
       `
-      SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, created_at
+      SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, smart_mode_enabled, created_at
       FROM households
       WHERE id = ?
       `,
@@ -341,7 +398,7 @@ export function getHouseholdByKey(householdKey) {
   return new Promise((resolve, reject) => {
     db.get(
       `
-      SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, created_at
+      SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, smart_mode_enabled, created_at
       FROM households
       WHERE household_key = ?
       `,
@@ -411,6 +468,20 @@ export function setHouseholdWebSearchEnabled(householdId, enabled) {
   return new Promise((resolve, reject) => {
     db.run(
       `UPDATE households SET web_search_enabled = ? WHERE id = ?`,
+      [enabled ? 1 : 0, householdId],
+      function (err) {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+/** Global admin only: enable/disable Smart Mode (broader NL pending-offer detection) for a household. */
+export function setHouseholdSmartModeEnabled(householdId, enabled) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE households SET smart_mode_enabled = ? WHERE id = ?`,
       [enabled ? 1 : 0, householdId],
       function (err) {
         if (err) reject(err);
@@ -528,7 +599,7 @@ export async function listAllHouseholdsSummary() {
   }
   const rows = await new Promise((resolve, reject) => {
     db.all(
-      `SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled FROM households ORDER BY id ASC`,
+      `SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, smart_mode_enabled FROM households ORDER BY id ASC`,
       [],
       (err, r) => {
         if (err) reject(err);
@@ -557,6 +628,7 @@ export async function listAllHouseholdsSummary() {
       hasHouseholdKey: hasKey,
       anthropicStatusLabel,
       webSearchEnabled: Number(h.web_search_enabled) === 1,
+      smartModeEnabled: Number(h.smart_mode_enabled) === 1,
       totalMessages: messageCountByHouseholdId.get(h.id) ?? 0,
       users: users.map((u) => ({ id: u.id, displayName: u.display_name, role: u.role })),
     });
@@ -801,12 +873,307 @@ export function updateChatTitle(chatId, householdId, title) {
   });
 }
 
-/** Thread-scoped context from !grocerylist only; normal chat reads, never writes. */
+function parseThreadSceneJson(raw) {
+  if (raw == null || raw === '') return {};
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function parseWeeklyPlanDraftJson(raw) {
+  if (raw == null || raw === '') return {};
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function parseChatRuntimeStateJson(raw) {
+  if (raw == null || raw === '') return {};
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+const MAX_THREAD_SCENE_JSON_CHARS = 12000;
+const MAX_WEEKLY_PLAN_DRAFT_JSON_CHARS = 6000;
+
+const PLANNER_RESUME_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function sanitizeWeeklyMealTitle(raw) {
+  return String(raw ?? '').trim().slice(0, 120);
+}
+
+function sanitizeWeeklyMealList(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .slice(0, 20)
+    .map((m) => sanitizeWeeklyMealTitle(m))
+    .filter((s) => s.length > 0);
+}
+
+function normalizeMealMatchKey(raw) {
+  return String(raw ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\b(?:the|a|an|some|thing|dish|dinner|meal|night)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function mealMatchScore(target, candidate) {
+  const t = normalizeMealMatchKey(target);
+  const c = normalizeMealMatchKey(candidate);
+  if (!t || !c) return 0;
+  if (t === c) return 1000;
+  if (c.includes(t) || t.includes(c)) return 500 + Math.min(t.length, c.length);
+  const tTokens = new Set(t.split(' ').filter(Boolean));
+  const cTokens = c.split(' ').filter(Boolean);
+  let overlap = 0;
+  for (const token of cTokens) {
+    if (tTokens.has(token)) overlap += 1;
+  }
+  return overlap;
+}
+
+function findBestMealMatchIndex(meals, matchText) {
+  const list = Array.isArray(meals) ? meals : [];
+  let bestIndex = -1;
+  let bestScore = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    const score = mealMatchScore(matchText, list[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = i;
+    }
+  }
+  return bestScore > 0 ? bestIndex : -1;
+}
+
+function sanitizeWeeklyMealEdit(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const op = String(raw.op ?? '').trim().toLowerCase();
+  if (op === 'set') {
+    const slot = Math.trunc(Number(raw.slot));
+    const meal = sanitizeWeeklyMealTitle(raw.meal);
+    if (!Number.isFinite(slot) || slot < 1 || slot > 20 || !meal) return null;
+    return { op: 'set', slot, meal };
+  }
+  if (op === 'remove') {
+    const slot = Math.trunc(Number(raw.slot));
+    if (!Number.isFinite(slot) || slot < 1 || slot > 20) return null;
+    return { op: 'remove', slot };
+  }
+  if (op === 'append') {
+    const meal = sanitizeWeeklyMealTitle(raw.meal);
+    if (!meal) return null;
+    return { op: 'append', meal };
+  }
+  if (op === 'replace_match') {
+    const match = String(raw.match ?? '').trim().slice(0, 120);
+    const meal = sanitizeWeeklyMealTitle(raw.meal);
+    if (!match || !meal) return null;
+    return { op: 'replace_match', match, meal };
+  }
+  return null;
+}
+
+function sanitizeWeeklyMealEdits(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .slice(0, 20)
+    .map((edit) => sanitizeWeeklyMealEdit(edit))
+    .filter(Boolean);
+}
+
+function applyWeeklyMealEdits(baseMeals, rawEdits) {
+  const meals = sanitizeWeeklyMealList(baseMeals);
+  const edits = sanitizeWeeklyMealEdits(rawEdits);
+  if (edits.length === 0) return meals;
+  const nextMeals = [...meals];
+  for (const edit of edits) {
+    if (edit.op === 'append') {
+      if (nextMeals.length < 20) nextMeals.push(edit.meal);
+      continue;
+    }
+    if (edit.op === 'set') {
+      const index = edit.slot - 1;
+      if (index >= nextMeals.length) nextMeals.push(edit.meal);
+      else nextMeals[index] = edit.meal;
+      continue;
+    }
+    if (edit.op === 'remove') {
+      const index = edit.slot - 1;
+      if (index >= 0 && index < nextMeals.length) nextMeals.splice(index, 1);
+      continue;
+    }
+    if (edit.op === 'replace_match') {
+      const index = findBestMealMatchIndex(nextMeals, edit.match);
+      if (index >= 0) nextMeals[index] = edit.meal;
+      else if (nextMeals.length < 20) nextMeals.push(edit.meal);
+    }
+  }
+  return sanitizeWeeklyMealList(nextMeals);
+}
+
+/**
+ * Strict server-side shape for plannerResume nested in weekly plan draft.
+ * remainingActions: only !grocerylist (remember must not appear — completed before checkpoint).
+ */
+function sanitizePlannerResumeForStorage(pr) {
+  if (!pr || typeof pr !== 'object' || Array.isArray(pr)) return null;
+  if (pr.active !== true) return null;
+  if (String(pr.kind ?? '') !== 'grocery_disambiguation_resume') return null;
+  const createdAt = Number(pr.createdAt);
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return null;
+  if (Date.now() - createdAt > PLANNER_RESUME_MAX_AGE_MS) return null;
+  const rawActions = pr.remainingActions;
+  if (!Array.isArray(rawActions) || rawActions.length !== 1) return null;
+  const a0 = rawActions[0];
+  if (!a0 || typeof a0 !== 'object' || Array.isArray(a0)) return null;
+  const cmd = String(a0.command ?? '');
+  if (cmd !== '!grocerylist') return null;
+  const mode = a0.mode != null ? String(a0.mode) : null;
+  if (
+    mode != null &&
+    mode !== '' &&
+    mode !== 'append' &&
+    mode !== 'replace' &&
+    mode !== 'prune'
+  ) {
+    return null;
+  }
+  const actionOut = { command: '!grocerylist' };
+  if (mode && (mode === 'append' || mode === 'replace' || mode === 'prune')) {
+    actionOut.mode = mode;
+  }
+  let rememberAckFragment = null;
+  if (Object.prototype.hasOwnProperty.call(pr, 'rememberAckFragment')) {
+    const raf = pr.rememberAckFragment;
+    if (raf === null || raf === undefined) {
+      rememberAckFragment = null;
+    } else if (typeof raf === 'string') {
+      rememberAckFragment = raf.trim().slice(0, 600) || null;
+    } else {
+      return null;
+    }
+  }
+  return {
+    active: true,
+    kind: 'grocery_disambiguation_resume',
+    createdAt,
+    remainingActions: [actionOut],
+    rememberAckFragment,
+  };
+}
+
+/**
+ * Planner-only: weekly plan draft fields with no plannerResume and no unknown keys.
+ * Same field rules as sanitizeWeeklyPlanDraftPatch for label/meals/notes/status.
+ * @returns {Record<string, unknown> | null} null if empty object from model or no-op after sanitize
+ */
+export function sanitizePlannerWeeklyPlanPatchOnly(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  for (const k of Object.keys(raw)) {
+    if (k !== 'label' && k !== 'meals' && k !== 'mealEdits' && k !== 'notes' && k !== 'status') return null;
+  }
+  const patch = {};
+  if (Object.prototype.hasOwnProperty.call(raw, 'label')) {
+    if (typeof raw.label !== 'string' && raw.label != null) return null;
+    if (typeof raw.label === 'string') patch.label = raw.label.trim().slice(0, 200);
+    else patch.label = '';
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'meals')) {
+    if (raw.meals == null) patch.meals = [];
+    else if (Array.isArray(raw.meals)) patch.meals = sanitizeWeeklyMealList(raw.meals);
+    else return null;
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'mealEdits')) {
+    if (raw.mealEdits == null) patch.mealEdits = [];
+    else if (Array.isArray(raw.mealEdits)) patch.mealEdits = sanitizeWeeklyMealEdits(raw.mealEdits);
+    else return null;
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'notes')) {
+    if (typeof raw.notes !== 'string' && raw.notes != null) return null;
+    if (typeof raw.notes === 'string') patch.notes = raw.notes.trim().slice(0, 500);
+    else patch.notes = '';
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'status')) {
+    const st = String(raw.status ?? '').trim().toLowerCase();
+    if (st !== 'empty') return null;
+    patch.status = st;
+  }
+  if (Object.keys(patch).length === 0) return null;
+  return patch;
+}
+
+/**
+ * Sanitize a shallow patch for weekly plan draft (label, meals, notes, status, plannerResume).
+ * plannerResume: null removes the key from merged draft when merged explicitly.
+ * @returns {Record<string, unknown> | null} null if nothing valid to merge
+ */
+function sanitizeWeeklyPlanDraftPatch(patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
+  const out = {};
+  let hasPlannerResumeDelete = false;
+  if (Object.prototype.hasOwnProperty.call(patch, 'plannerResume')) {
+    if (patch.plannerResume === null) {
+      hasPlannerResumeDelete = true;
+    } else {
+      const sr = sanitizePlannerResumeForStorage(patch.plannerResume);
+      if (sr) out.plannerResume = sr;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'label')) {
+    if (typeof patch.label === 'string') out.label = patch.label.trim().slice(0, 200);
+    else if (patch.label === null || patch.label === undefined) out.label = '';
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'meals')) {
+    if (Array.isArray(patch.meals)) {
+      out.meals = sanitizeWeeklyMealList(patch.meals);
+    } else if (patch.meals === null || patch.meals === undefined) {
+      out.meals = [];
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'mealEdits')) {
+    if (Array.isArray(patch.mealEdits)) {
+      out.mealEdits = sanitizeWeeklyMealEdits(patch.mealEdits);
+    } else if (patch.mealEdits === null || patch.mealEdits === undefined) {
+      out.mealEdits = [];
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'notes')) {
+    if (typeof patch.notes === 'string') out.notes = patch.notes.trim().slice(0, 500);
+    else if (patch.notes === null || patch.notes === undefined) out.notes = '';
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'status')) {
+    const st = String(patch.status ?? '').trim().toLowerCase();
+    if (st === 'empty') out.status = st;
+  }
+  if (hasPlannerResumeDelete) {
+    out.__deletePlannerResume = true;
+  }
+  if (Object.keys(out).length > 0) return out;
+  return null;
+}
+
+/** Thread-scoped context: meal/grocery summaries, thread scene, weekly plan draft (read-only for chat prompts). */
 export function getChatThreadContext(chatId, householdId) {
   return new Promise((resolve, reject) => {
     db.get(
       `
-      SELECT meal_plan_summary, thread_grocery_summary
+      SELECT meal_plan_summary, thread_grocery_summary, thread_scene_json, weekly_plan_draft_json
       FROM chat_meal_plan_context
       WHERE chat_id = ? AND household_id = ?
       `,
@@ -814,12 +1181,201 @@ export function getChatThreadContext(chatId, householdId) {
       (err, row) => {
         if (err) reject(err);
         else if (!row) {
-          resolve({ mealPlanSummary: '', threadGrocerySummary: '' });
+          resolve({
+            mealPlanSummary: '',
+            threadGrocerySummary: '',
+            threadScene: {},
+            weeklyPlanDraft: {},
+          });
         } else {
           resolve({
             mealPlanSummary: String(row.meal_plan_summary ?? ''),
             threadGrocerySummary: String(row.thread_grocery_summary ?? ''),
+            threadScene: parseThreadSceneJson(row.thread_scene_json),
+            weeklyPlanDraft: parseWeeklyPlanDraftJson(row.weekly_plan_draft_json),
           });
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Shallow-merge patch into persisted weekly plan draft JSON. Preserves meal_plan_summary, thread_grocery_summary, thread_scene_json.
+ * Creates the row if missing. Ignores invalid patch shapes.
+ */
+export function updateWeeklyPlanDraft(chatId, householdId, patch) {
+  const sanitized = sanitizeWeeklyPlanDraftPatch(patch);
+  if (!sanitized) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    db.get(
+      `
+      SELECT meal_plan_summary, thread_grocery_summary, thread_scene_json, weekly_plan_draft_json
+      FROM chat_meal_plan_context
+      WHERE chat_id = ? AND household_id = ?
+      `,
+      [chatId, householdId],
+      (err, row) => {
+        if (err) return reject(err);
+        const existing = parseWeeklyPlanDraftJson(row?.weekly_plan_draft_json);
+        const delPr = sanitized.__deletePlannerResume === true;
+        const { __deletePlannerResume, mealEdits, ...restSan } = sanitized;
+        const merged = { ...existing, ...restSan };
+        if (Object.prototype.hasOwnProperty.call(sanitized, 'meals') || Array.isArray(mealEdits)) {
+          const baseMeals = Object.prototype.hasOwnProperty.call(restSan, 'meals')
+            ? restSan.meals
+            : existing.meals;
+          merged.meals = applyWeeklyMealEdits(baseMeals, mealEdits);
+        }
+        if (delPr) {
+          delete merged.plannerResume;
+        }
+        let jsonStr;
+        try {
+          jsonStr = JSON.stringify(merged);
+        } catch {
+          return resolve();
+        }
+        if (jsonStr.length > MAX_WEEKLY_PLAN_DRAFT_JSON_CHARS) {
+          return resolve();
+        }
+        if (row) {
+          db.run(
+            `
+            UPDATE chat_meal_plan_context
+            SET weekly_plan_draft_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE chat_id = ? AND household_id = ?
+            `,
+            [jsonStr, chatId, householdId],
+            function (err2) {
+              if (err2) reject(err2);
+              else resolve();
+            }
+          );
+        } else {
+          db.run(
+            `
+            INSERT INTO chat_meal_plan_context (chat_id, household_id, meal_plan_summary, thread_grocery_summary, thread_scene_json, weekly_plan_draft_json, updated_at)
+            VALUES (?, ?, '', '', '{}', ?, CURRENT_TIMESTAMP)
+            `,
+            [chatId, householdId, jsonStr],
+            function (err2) {
+              if (err2) reject(err2);
+              else resolve();
+            }
+          );
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Shallow-merge `patch` into persisted thread scene. Preserves meal_plan_summary and thread_grocery_summary.
+ * Creates the row if missing. Does not replace grocery/meal columns.
+ */
+export function updateChatThreadScene(chatId, householdId, patch) {
+  const p = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
+  return new Promise((resolve, reject) => {
+    db.get(
+      `
+      SELECT meal_plan_summary, thread_grocery_summary, thread_scene_json
+      FROM chat_meal_plan_context
+      WHERE chat_id = ? AND household_id = ?
+      `,
+      [chatId, householdId],
+      (err, row) => {
+        if (err) return reject(err);
+        const existing = parseThreadSceneJson(row?.thread_scene_json);
+        let merged = { ...existing, ...p };
+        let jsonStr = JSON.stringify(merged);
+        if (jsonStr.length > MAX_THREAD_SCENE_JSON_CHARS) {
+          merged = existing;
+          jsonStr = JSON.stringify(merged);
+        }
+        if (row) {
+          db.run(
+            `
+            UPDATE chat_meal_plan_context
+            SET thread_scene_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE chat_id = ? AND household_id = ?
+            `,
+            [jsonStr, chatId, householdId],
+            function (err2) {
+              if (err2) reject(err2);
+              else resolve();
+            }
+          );
+        } else {
+          db.run(
+            `
+            INSERT INTO chat_meal_plan_context (chat_id, household_id, meal_plan_summary, thread_grocery_summary, thread_scene_json, updated_at)
+            VALUES (?, ?, '', '', ?, CURRENT_TIMESTAMP)
+            `,
+            [chatId, householdId, jsonStr],
+            function (err2) {
+              if (err2) reject(err2);
+              else resolve();
+            }
+          );
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Replace persisted thread scene JSON exactly (no merge). Preserves meal_plan_summary and thread_grocery_summary.
+ * Creates the row if missing. Intended for temp admin editor tools; trusted app code continues to use updateChatThreadScene for merges.
+ */
+export function replaceChatThreadScene(chatId, householdId, sceneObject) {
+  if (sceneObject == null || typeof sceneObject !== 'object' || Array.isArray(sceneObject)) {
+    return Promise.reject(new Error('thread scene must be a plain object'));
+  }
+  let jsonStr;
+  try {
+    jsonStr = JSON.stringify(sceneObject);
+  } catch {
+    return Promise.reject(new Error('thread scene is not JSON-serializable'));
+  }
+  if (jsonStr.length > MAX_THREAD_SCENE_JSON_CHARS) {
+    return Promise.reject(new Error('thread scene JSON exceeds maximum size'));
+  }
+  return new Promise((resolve, reject) => {
+    db.get(
+      `
+      SELECT meal_plan_summary, thread_grocery_summary, thread_scene_json
+      FROM chat_meal_plan_context
+      WHERE chat_id = ? AND household_id = ?
+      `,
+      [chatId, householdId],
+      (err, row) => {
+        if (err) return reject(err);
+        if (row) {
+          db.run(
+            `
+            UPDATE chat_meal_plan_context
+            SET thread_scene_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE chat_id = ? AND household_id = ?
+            `,
+            [jsonStr, chatId, householdId],
+            function (err2) {
+              if (err2) reject(err2);
+              else resolve();
+            }
+          );
+        } else {
+          db.run(
+            `
+            INSERT INTO chat_meal_plan_context (chat_id, household_id, meal_plan_summary, thread_grocery_summary, thread_scene_json, updated_at)
+            VALUES (?, ?, '', '', ?, CURRENT_TIMESTAMP)
+            `,
+            [chatId, householdId, jsonStr],
+            function (err2) {
+              if (err2) reject(err2);
+              else resolve();
+            }
+          );
         }
       }
     );
@@ -847,6 +1403,72 @@ export function upsertChatThreadContext(chatId, householdId, { mealPlanSummary, 
       }
     );
   });
+}
+
+export function getChatRuntimeState(chatId, householdId) {
+  return new Promise((resolve, reject) => {
+    db.get(
+      `
+      SELECT mode, pending_json, checkpoint_json
+      FROM chat_runtime_state
+      WHERE chat_id = ? AND household_id = ?
+      `,
+      [chatId, householdId],
+      (err, row) => {
+        if (err) reject(err);
+        else if (!row) {
+          resolve({ mode: 'smart', pending: {}, checkpoint: {} });
+        } else {
+          resolve({
+            mode: String(row.mode ?? 'smart') || 'smart',
+            pending: parseChatRuntimeStateJson(row.pending_json),
+            checkpoint: parseChatRuntimeStateJson(row.checkpoint_json),
+          });
+        }
+      }
+    );
+  });
+}
+
+export function setChatRuntimeState(chatId, householdId, state = {}) {
+  const mode = String(state.mode ?? 'smart').trim() || 'smart';
+  let pendingJson = '{}';
+  let checkpointJson = '{}';
+  try {
+    pendingJson = JSON.stringify(
+      state.pending && typeof state.pending === 'object' && !Array.isArray(state.pending) ? state.pending : {}
+    );
+    checkpointJson = JSON.stringify(
+      state.checkpoint && typeof state.checkpoint === 'object' && !Array.isArray(state.checkpoint)
+        ? state.checkpoint
+        : {}
+    );
+  } catch {
+    return Promise.reject(new Error('runtime state must be JSON-serializable'));
+  }
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+      INSERT INTO chat_runtime_state (chat_id, household_id, mode, pending_json, checkpoint_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(chat_id) DO UPDATE SET
+        household_id = excluded.household_id,
+        mode = excluded.mode,
+        pending_json = excluded.pending_json,
+        checkpoint_json = excluded.checkpoint_json,
+        updated_at = CURRENT_TIMESTAMP
+      `,
+      [chatId, householdId, mode, pendingJson, checkpointJson],
+      function (err) {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+export function clearChatRuntimeState(chatId, householdId) {
+  return setChatRuntimeState(chatId, householdId, { mode: 'smart', pending: {}, checkpoint: {} });
 }
 
 export function addMessage(chatId, householdId, role, name, content) {
