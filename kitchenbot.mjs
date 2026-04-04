@@ -60,6 +60,7 @@ import {
   updateWeeklyPlanDraft,
   clearChatRuntimeState,
   setChatRuntimeState,
+  getAnthropicUsageLedgerAllRows,
 } from './db.mjs';
 import {
   sanitizePendingAction,
@@ -95,6 +96,11 @@ import {
   shouldApplyDurableAutoMemoryGuard as shouldApplySmartDurableAutoMemoryGuard,
   tryAiMemoryProposal as trySmartAiMemoryProposal,
 } from './smart-memory-policy.mjs';
+import {
+  createLoggedAnthropicMessage,
+  finalizeLoggedAnthropicStream,
+  estimateAnthropicLedgerCostUsd,
+} from './anthropic-usage.mjs';
 import 'dotenv/config';
 import os from 'os';
 import http from 'http';
@@ -180,6 +186,113 @@ async function getAnthropicClient(householdId) {
     throw new Error('Shared Anthropic API key is not configured on this server.');
   }
   return { client: new Anthropic({ apiKey: shared }), webSearchEnabled, smartModeEnabled };
+}
+
+function normalizeUsageFilterBoolean(raw) {
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (!s || s === 'all') return null;
+  if (s === 'enabled' || s === 'used' || s === 'true' || s === '1') return true;
+  if (s === 'disabled' || s === 'not_used' || s === 'false' || s === '0') return false;
+  return null;
+}
+
+function classifyUsageBucket(callPurpose) {
+  return String(callPurpose ?? '') === 'chat_reply' ? 'actual_chat' : 'background';
+}
+
+function isoDayStartUtc(rawDate) {
+  const s = String(rawDate ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  return `${s}T00:00:00Z`;
+}
+
+function isoNextDayStartUtc(rawDate) {
+  const s = String(rawDate ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 19) + 'Z';
+}
+
+function buildAnthropicUsageReport(rows) {
+  const totals = {
+    callCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    estimatedCostUsd: 0,
+    estimatedCostAvailable: true,
+  };
+
+  const byHousehold = new Map();
+  const byPurpose = new Map();
+  const byBucket = new Map();
+  const byWebSearchEnabled = new Map();
+  const byWebSearchUsage = new Map();
+
+  function bump(map, key, row, costUsd) {
+    const k = String(key);
+    if (!map.has(k)) {
+      map.set(k, {
+        key: k,
+        callCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        estimatedCostUsd: 0,
+        estimatedCostAvailable: true,
+      });
+    }
+    const entry = map.get(k);
+    entry.callCount += 1;
+    entry.inputTokens += Number(row.input_tokens ?? 0) || 0;
+    entry.outputTokens += Number(row.output_tokens ?? 0) || 0;
+    entry.cacheCreationInputTokens += Number(row.cache_creation_input_tokens ?? 0) || 0;
+    entry.cacheReadInputTokens += Number(row.cache_read_input_tokens ?? 0) || 0;
+    if (costUsd == null) {
+      entry.estimatedCostAvailable = false;
+    } else if (entry.estimatedCostAvailable) {
+      entry.estimatedCostUsd += costUsd;
+    }
+  }
+
+  for (const row of rows) {
+    totals.callCount += 1;
+    totals.inputTokens += Number(row.input_tokens ?? 0) || 0;
+    totals.outputTokens += Number(row.output_tokens ?? 0) || 0;
+    totals.cacheCreationInputTokens += Number(row.cache_creation_input_tokens ?? 0) || 0;
+    totals.cacheReadInputTokens += Number(row.cache_read_input_tokens ?? 0) || 0;
+    const costUsd = estimateAnthropicLedgerCostUsd(row);
+    if (costUsd == null) {
+      totals.estimatedCostAvailable = false;
+    } else if (totals.estimatedCostAvailable) {
+      totals.estimatedCostUsd += costUsd;
+    }
+    bump(byHousehold, row.household_id, row, costUsd);
+    bump(byPurpose, row.call_purpose, row, costUsd);
+    bump(byBucket, classifyUsageBucket(row.call_purpose), row, costUsd);
+    bump(byWebSearchEnabled, Number(row.web_search_enabled_at_call) === 1 ? 'enabled' : 'disabled', row, costUsd);
+    bump(byWebSearchUsage, Number(row.used_web_search_tool) === 1 ? 'used' : 'not_used', row, costUsd);
+  }
+
+  function finalizeGroups(map) {
+    return Array.from(map.values()).sort((a, b) => {
+      if (b.inputTokens !== a.inputTokens) return b.inputTokens - a.inputTokens;
+      return b.callCount - a.callCount;
+    });
+  }
+
+  return {
+    totals,
+    byHousehold: finalizeGroups(byHousehold),
+    byPurpose: finalizeGroups(byPurpose),
+    byBucket: finalizeGroups(byBucket),
+    byWebSearchEnabled: finalizeGroups(byWebSearchEnabled),
+    byWebSearchUsage: finalizeGroups(byWebSearchUsage),
+  };
 }
 
 function truncateSmartModeContext(s, max) {
@@ -468,7 +581,7 @@ Field meanings:
 - openLoop: the next unresolved step or question, or "" when resolved or N/A.
 - activeMeal: current meal/dish focus if clearly implied, or "".`;
 
-    const res = await anthropic.messages.create({
+    const res = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 512,
       system,
@@ -478,6 +591,14 @@ Field meanings:
           content: `Infer updated thread working state from this turn.\n\nContext (JSON):\n${JSON.stringify(payload)}`,
         },
       ],
+    }, {
+      householdId,
+      chatId,
+      smartModeEnabled: !!params.smartModeEnabled,
+      callSurface: 'background',
+      callPurpose: 'thread_scene_auto_update',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const blocks = res.content.filter((b) => b.type === 'text');
     const raw = blocks.map((b) => b.text).join('\n').trim();
@@ -590,7 +711,7 @@ Rules:
 - Expand vague placeholders into plausible dinner concepts when the user gives enough context.
 - Be conservative: recipe lookups, single-meal questions with no weekly-plan context, or unrelated topics → no_update true.`;
 
-    const res = await anthropic.messages.create({
+    const res = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 400,
       system,
@@ -606,6 +727,14 @@ Rules:
           })}`,
         },
       ],
+    }, {
+      householdId,
+      chatId,
+      smartModeEnabled: !!params.smartModeEnabled,
+      callSurface: 'background',
+      callPurpose: 'weekly_plan_auto_update',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const blocks = res.content.filter((b) => b.type === 'text');
     const raw = blocks.map((b) => b.text).join('\n').trim();
@@ -1756,6 +1885,87 @@ app.get('/admin/households/:id', requireHousehold, requireAuth, requireGlobalAdm
         latestMessageAt: stats.latestMessageAt,
         messagesByUser,
       },
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdminRead, async (req, res) => {
+  try {
+    const householdIdRaw = req.query.householdId;
+    const householdId =
+      householdIdRaw == null || String(householdIdRaw).trim() === '' || String(householdIdRaw).trim() === 'all'
+        ? null
+        : Number(householdIdRaw);
+    if (householdId != null && !Number.isFinite(householdId)) {
+      return res.status(400).json({ error: 'Invalid household id' });
+    }
+
+    const startDate = isoDayStartUtc(req.query.startDate);
+    const endDateExclusive = isoNextDayStartUtc(req.query.endDate);
+    const filters = {
+      householdId,
+      startDate,
+      endDate: endDateExclusive,
+      callPurpose: req.query.callPurpose ? String(req.query.callPurpose).trim() : null,
+      callSurface: req.query.callSurface ? String(req.query.callSurface).trim() : null,
+      webSearchEnabledAtCall: normalizeUsageFilterBoolean(req.query.webSearchEnabled),
+      usedWebSearchTool: normalizeUsageFilterBoolean(req.query.usedWebSearchUsed),
+    };
+
+    const [rows, households] = await Promise.all([
+      getAnthropicUsageLedgerAllRows(filters),
+      listAllHouseholdsSummary(),
+    ]);
+
+    const householdNameById = new Map(households.map((hh) => [Number(hh.id), hh.name]));
+    const report = buildAnthropicUsageReport(rows);
+    const recentRows = rows.slice(0, 100).map((row) => ({
+      id: row.id,
+      createdAt: row.created_at,
+      householdId: Number(row.household_id),
+      householdName: householdNameById.get(Number(row.household_id)) || `Household ${row.household_id}`,
+      chatId: row.chat_id != null ? Number(row.chat_id) : null,
+      smartModeEnabled: Number(row.smart_mode_enabled) === 1,
+      callSurface: row.call_surface,
+      callPurpose: row.call_purpose,
+      bucket: classifyUsageBucket(row.call_purpose),
+      model: row.model,
+      requestKind: row.request_kind,
+      inputTokens: Number(row.input_tokens ?? 0) || 0,
+      outputTokens: Number(row.output_tokens ?? 0) || 0,
+      cacheCreationInputTokens: Number(row.cache_creation_input_tokens ?? 0) || 0,
+      cacheReadInputTokens: Number(row.cache_read_input_tokens ?? 0) || 0,
+      webSearchEnabledAtCall: Number(row.web_search_enabled_at_call) === 1,
+      usedWebSearchTool: Number(row.used_web_search_tool) === 1,
+      estimatedCostUsd: estimateAnthropicLedgerCostUsd(row),
+    }));
+
+    const byHousehold = report.byHousehold.map((entry) => ({
+      ...entry,
+      householdId: Number(entry.key),
+      householdName: householdNameById.get(Number(entry.key)) || `Household ${entry.key}`,
+    }));
+
+    return res.json({
+      filtersApplied: {
+        householdId,
+        startDate: req.query.startDate ? String(req.query.startDate) : null,
+        endDate: req.query.endDate ? String(req.query.endDate) : null,
+        callPurpose: filters.callPurpose || null,
+        callSurface: filters.callSurface || null,
+        webSearchEnabled: filters.webSearchEnabledAtCall,
+        usedWebSearchTool: filters.usedWebSearchTool,
+      },
+      totals: report.totals,
+      byHousehold,
+      byPurpose: report.byPurpose,
+      byBucket: report.byBucket,
+      byWebSearchEnabled: report.byWebSearchEnabled,
+      byWebSearchUsage: report.byWebSearchUsage,
+      recentRows,
     });
   } catch (e) {
     console.error(e);
@@ -3376,6 +3586,40 @@ app.get('/', (req, res) => {
               <p id="admin-pin-global-msg" style="margin: 8px 0 0; font-size: 13px; color: var(--accent-strong);"></p>
               <p id="admin-anthropic-selected-status" style="margin: 10px 0 0; font-size: 13px;"></p>
             </div>
+            <h4 style="margin: 16px 0 8px; font-size: 15px;">Anthropic usage</h4>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin-bottom:8px;">
+              <div>
+                <label for="admin-usage-start-date" style="font-size: 12px; color: var(--text-soft); display:block;">Start date</label>
+                <input id="admin-usage-start-date" type="date" />
+              </div>
+              <div>
+                <label for="admin-usage-end-date" style="font-size: 12px; color: var(--text-soft); display:block;">End date</label>
+                <input id="admin-usage-end-date" type="date" />
+              </div>
+              <div>
+                <label for="admin-usage-household-select" style="font-size: 12px; color: var(--text-soft); display:block;">Household</label>
+                <select id="admin-usage-household-select"></select>
+              </div>
+              <div>
+                <label for="admin-usage-websearch-setting" style="font-size: 12px; color: var(--text-soft); display:block;">Web search setting</label>
+                <select id="admin-usage-websearch-setting">
+                  <option value="all">All</option>
+                  <option value="enabled">Enabled</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </div>
+              <div>
+                <label for="admin-usage-websearch-used" style="font-size: 12px; color: var(--text-soft); display:block;">Web search used</label>
+                <select id="admin-usage-websearch-used">
+                  <option value="all">All</option>
+                  <option value="used">Used</option>
+                  <option value="not_used">Not used</option>
+                </select>
+              </div>
+              <button type="button" id="admin-usage-refresh">Refresh usage</button>
+            </div>
+            <div id="admin-usage-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
+            <div id="admin-usage-report" style="margin-bottom: 16px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 13px;"></div>
             <h4 style="margin: 16px 0 8px; font-size: 15px;">Anthropic mode</h4>
             <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px;">Switch who provides the API key for the <strong>selected</strong> household. Owners set their own key under My household when mode is household.</p>
             <div id="admin-anthropic-edit-controls">
@@ -3428,27 +3672,6 @@ app.get('/', (req, res) => {
             </div>
             <p id="admin-new-hh-msg" style="font-size: 13px; margin-top: 8px;"></p>
           </div>
-        </div>
-
-        <div
-          id="thread-debug-panel"
-          style="display: none; flex-shrink: 0; flex-direction: column; gap: 6px; padding: 4px 0; width: 100%; box-sizing: border-box;"
-        >
-          <span style="font-size: 12px; color: var(--text-soft);">[temp] thread scene</span>
-          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
-            <button type="button" id="thread-debug-load">Load thread scene</button>
-            <button type="button" id="thread-debug-sample">Write sample thread scene</button>
-            <button type="button" id="thread-debug-save">Save thread scene</button>
-          </div>
-          <textarea
-            id="thread-debug-scene-textarea"
-            rows="6"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="Load thread scene JSON here…"
-            style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; padding: 8px;"
-          ></textarea>
-          <span id="thread-debug-status" style="font-size: 13px; color: var(--text-soft);"></span>
         </div>
 
         <div id="input-area">
@@ -3510,7 +3733,6 @@ app.get('/', (req, res) => {
         let currentHouseholdId = null;
         let currentUserId = null;
         let isCurrentUserOwner = false;
-        let sessionIsGlobalAdmin = false;
         let godModeReadOnly = false;
         let editingMemoryKey = null;
         /** Normalized display name (trim + lower) -> chat color key */
@@ -4018,11 +4240,6 @@ app.get('/', (req, res) => {
           }
         }
 
-        function setThreadDebugPanelVisibility(isGlobalAdmin) {
-          const el = document.getElementById('thread-debug-panel');
-          if (el) el.style.display = isGlobalAdmin === true ? 'flex' : 'none';
-        }
-
         function showBootstrapForm() {
           const bf = document.getElementById('bootstrap-form');
           const lf = document.getElementById('login-form');
@@ -4051,8 +4268,6 @@ app.get('/', (req, res) => {
         }
 
         function showLogin() {
-          sessionIsGlobalAdmin = false;
-          setThreadDebugPanelVisibility(false);
           loginArea.style.display = 'block';
           appArea.style.display = 'none';
           headerEl.classList.add('hide-tabs');
@@ -4070,11 +4285,6 @@ app.get('/', (req, res) => {
           groceryPanel.style.display = tab === 'groceries' ? 'flex' : 'none';
           if (settingsPanel) settingsPanel.style.display = tab === 'settings' ? 'flex' : 'none';
           if (inputArea) inputArea.style.display = tab === 'chat' ? 'flex' : 'none';
-          const tdbg = document.getElementById('thread-debug-panel');
-          if (tdbg) {
-            if (tab !== 'chat') tdbg.style.display = 'none';
-            else setThreadDebugPanelVisibility(sessionIsGlobalAdmin);
-          }
           if (tab === 'settings') loadSettingsPanel();
         }
 
@@ -4565,6 +4775,143 @@ app.get('/', (req, res) => {
           if (help) help.style.display = isShared ? 'block' : 'none';
         }
 
+        function escapeAdminHtml(value) {
+          return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        }
+
+        function formatAdminUsageUsd(value, available = true) {
+          if (!available) return 'Unavailable';
+          const n = Number(value);
+          if (!Number.isFinite(n)) return 'Unavailable';
+          return '$' + n.toFixed(4);
+        }
+
+        function renderAdminUsageSection(title, rows, labelKey) {
+          if (!Array.isArray(rows) || rows.length === 0) {
+            return (
+              '<div style="margin-top:10px;"><strong>' +
+              escapeAdminHtml(title) +
+              '</strong><div style="margin-top:4px;color:var(--text-soft);">No rows.</div></div>'
+            );
+          }
+          let html =
+            '<div style="margin-top:10px;"><strong>' +
+            escapeAdminHtml(title) +
+            '</strong><table style="width:100%; border-collapse:collapse; margin-top:4px; font-size:12px;">' +
+            '<thead><tr><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">' +
+            escapeAdminHtml(labelKey) +
+            '</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Calls</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">In</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Out</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Est. cost</th></tr></thead><tbody>';
+          for (const row of rows) {
+            const label = row.householdName || row.key || '—';
+            html +=
+              '<tr><td style="padding:4px 4px 4px 0;">' +
+              escapeAdminHtml(label) +
+              '</td><td style="padding:4px; text-align:right;">' +
+              escapeAdminHtml(row.callCount != null ? row.callCount : 0) +
+              '</td><td style="padding:4px; text-align:right;">' +
+              escapeAdminHtml(row.inputTokens != null ? row.inputTokens : 0) +
+              '</td><td style="padding:4px; text-align:right;">' +
+              escapeAdminHtml(row.outputTokens != null ? row.outputTokens : 0) +
+              '</td><td style="padding:4px; text-align:right;">' +
+              escapeAdminHtml(
+                formatAdminUsageUsd(row.estimatedCostUsd, row.estimatedCostAvailable !== false)
+              ) +
+              '</td></tr>';
+          }
+          html += '</tbody></table></div>';
+          return html;
+        }
+
+        function renderAdminUsageReport(reportData) {
+          const root = document.getElementById('admin-usage-report');
+          if (!root) return;
+          if (!reportData || !reportData.totals) {
+            root.innerHTML = '<span style="color: var(--text-soft);">No usage data yet.</span>';
+            return;
+          }
+          const totals = reportData.totals || {};
+          let html = '<strong>Anthropic call ledger</strong><br />';
+          html += 'Calls: ' + escapeAdminHtml(totals.callCount != null ? totals.callCount : 0) + '<br />';
+          html += 'Input tokens: ' + escapeAdminHtml(totals.inputTokens != null ? totals.inputTokens : 0) + '<br />';
+          html += 'Output tokens: ' + escapeAdminHtml(totals.outputTokens != null ? totals.outputTokens : 0) + '<br />';
+          html +=
+            'Estimated cost: ' +
+            escapeAdminHtml(
+              formatAdminUsageUsd(totals.estimatedCostUsd, totals.estimatedCostAvailable !== false)
+            ) +
+            '<br />';
+          html += renderAdminUsageSection('By bucket', reportData.byBucket || [], 'Bucket');
+          html += renderAdminUsageSection('By household', reportData.byHousehold || [], 'Household');
+          html += renderAdminUsageSection('By purpose', reportData.byPurpose || [], 'Purpose');
+          html += renderAdminUsageSection('By web search setting', reportData.byWebSearchEnabled || [], 'Setting');
+          html += renderAdminUsageSection('By actual web search usage', reportData.byWebSearchUsage || [], 'Usage');
+          const recentRows = Array.isArray(reportData.recentRows) ? reportData.recentRows : [];
+          html += '<div style="margin-top:10px;"><strong>Recent calls</strong>';
+          if (recentRows.length === 0) {
+            html += '<div style="margin-top:4px;color:var(--text-soft);">No rows.</div>';
+          } else {
+            html +=
+              '<table style="width:100%; border-collapse:collapse; margin-top:4px; font-size:12px;">' +
+              '<thead><tr><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">Time</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">Household</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">Purpose</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">Model</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">In</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Out</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Cost</th></tr></thead><tbody>';
+            for (const row of recentRows) {
+              html +=
+                '<tr><td style="padding:4px 4px 4px 0;">' +
+                escapeAdminHtml(row.createdAt || '—') +
+                '</td><td style="padding:4px;">' +
+                escapeAdminHtml(row.householdName || row.householdId || '—') +
+                '</td><td style="padding:4px;">' +
+                escapeAdminHtml(row.callPurpose || '—') +
+                '</td><td style="padding:4px;">' +
+                escapeAdminHtml(row.model || '—') +
+                '</td><td style="padding:4px; text-align:right;">' +
+                escapeAdminHtml(row.inputTokens != null ? row.inputTokens : 0) +
+                '</td><td style="padding:4px; text-align:right;">' +
+                escapeAdminHtml(row.outputTokens != null ? row.outputTokens : 0) +
+                '</td><td style="padding:4px; text-align:right;">' +
+                escapeAdminHtml(formatAdminUsageUsd(row.estimatedCostUsd, row.estimatedCostUsd != null)) +
+                '</td></tr>';
+            }
+            html += '</tbody></table>';
+          }
+          html += '</div>';
+          root.innerHTML = html;
+        }
+
+        async function refreshAdminUsageReport() {
+          const msgEl = document.getElementById('admin-usage-msg');
+          const reportEl = document.getElementById('admin-usage-report');
+          const startEl = document.getElementById('admin-usage-start-date');
+          const endEl = document.getElementById('admin-usage-end-date');
+          const hhEl = document.getElementById('admin-usage-household-select');
+          const wsSettingEl = document.getElementById('admin-usage-websearch-setting');
+          const wsUsedEl = document.getElementById('admin-usage-websearch-used');
+          if (!reportEl || !startEl || !endEl || !hhEl || !wsSettingEl || !wsUsedEl) return;
+          if (msgEl) msgEl.textContent = 'Loading usage…';
+          try {
+            const qs = new URLSearchParams();
+            if (startEl.value) qs.set('startDate', startEl.value);
+            if (endEl.value) qs.set('endDate', endEl.value);
+            if (hhEl.value && hhEl.value !== 'all') qs.set('householdId', hhEl.value);
+            if (wsSettingEl.value && wsSettingEl.value !== 'all') qs.set('webSearchEnabled', wsSettingEl.value);
+            if (wsUsedEl.value && wsUsedEl.value !== 'all') qs.set('usedWebSearch', wsUsedEl.value);
+            const r = await fetch('/admin/usage-report?' + qs.toString());
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) {
+              if (msgEl) msgEl.textContent = data.error || 'Failed to load usage.';
+              return;
+            }
+            renderAdminUsageReport(data);
+            if (msgEl) msgEl.textContent = '';
+          } catch (e) {
+            if (msgEl) msgEl.textContent = 'Failed to load usage.';
+          }
+        }
+
         function renderAdminHouseholdDetail(detailData) {
           const hh = detailData && detailData.household;
           if (!hh) return;
@@ -4764,7 +5111,8 @@ app.get('/', (req, res) => {
         async function refreshAdminHouseholdsList() {
           const listEl = document.getElementById('settings-admin-households-list');
           const sel = document.getElementById('admin-anthropic-household-select');
-          if (!listEl && !sel) return;
+          const usageSel = document.getElementById('admin-usage-household-select');
+          if (!listEl && !sel && !usageSel) return;
           try {
             const r = await fetch('/admin/households');
             if (!r.ok) return;
@@ -4772,6 +5120,7 @@ app.get('/', (req, res) => {
             const households = data.households || [];
             cachedAdminHouseholds = households;
             const prevSel = sel && sel.value;
+            const prevUsageSel = usageSel && usageSel.value;
             if (listEl) {
               listEl.innerHTML = '';
               for (const hh of households) {
@@ -4815,7 +5164,41 @@ app.get('/', (req, res) => {
               }
               await loadAdminAnthropicForSelected();
             }
+            if (usageSel) {
+              usageSel.innerHTML = '';
+              const allOpt = document.createElement('option');
+              allOpt.value = 'all';
+              allOpt.textContent = 'All households';
+              usageSel.appendChild(allOpt);
+              for (const hh of households) {
+                const opt = document.createElement('option');
+                opt.value = String(hh.id);
+                opt.textContent = '#' + hh.id + ' — ' + hh.name;
+                usageSel.appendChild(opt);
+              }
+              if (prevUsageSel && (prevUsageSel === 'all' || households.some((h) => String(h.id) === prevUsageSel))) {
+                usageSel.value = prevUsageSel;
+              } else {
+                usageSel.value = 'all';
+              }
+            }
+            await refreshAdminUsageReport();
           } catch (e) {}
+        }
+
+        function initializeAdminUsageFilters() {
+          const startEl = document.getElementById('admin-usage-start-date');
+          const endEl = document.getElementById('admin-usage-end-date');
+          if (!startEl || !endEl) return;
+          if (!endEl.value) {
+            const end = new Date();
+            endEl.value = end.toISOString().slice(0, 10);
+          }
+          if (!startEl.value) {
+            const start = new Date();
+            start.setDate(start.getDate() - 7);
+            startEl.value = start.toISOString().slice(0, 10);
+          }
         }
 
         async function loadAnthropicSection() {
@@ -4905,102 +5288,6 @@ app.get('/', (req, res) => {
           }, 2000);
         });
         resizePromptInput();
-
-        const threadDebugSceneTextarea = document.getElementById('thread-debug-scene-textarea');
-        const threadDebugStatus = document.getElementById('thread-debug-status');
-
-        async function threadDebugLoadScene() {
-          if (!currentChatId) {
-            alert('Open a chat first.');
-            return;
-          }
-          if (threadDebugStatus) threadDebugStatus.textContent = '';
-          try {
-            const r = await fetch('/debug/thread-context?chatId=' + encodeURIComponent(currentChatId));
-            const j = await r.json().catch(() => ({}));
-            if (!r.ok) {
-              alert(j.error || 'Request failed');
-              return;
-            }
-            if (threadDebugSceneTextarea) {
-              threadDebugSceneTextarea.value = JSON.stringify(j.threadScene != null ? j.threadScene : {}, null, 2);
-            }
-            if (threadDebugStatus) threadDebugStatus.textContent = 'Loaded thread scene.';
-          } catch (e) {
-            alert('Request failed');
-          }
-        }
-
-        const threadDebugLoadBtn = document.getElementById('thread-debug-load');
-        const threadDebugSampleBtn = document.getElementById('thread-debug-sample');
-        const threadDebugSaveBtn = document.getElementById('thread-debug-save');
-        if (threadDebugLoadBtn) threadDebugLoadBtn.addEventListener('click', () => void threadDebugLoadScene());
-        if (threadDebugSampleBtn) {
-          threadDebugSampleBtn.addEventListener('click', async () => {
-            if (!currentChatId) {
-              alert('Open a chat first.');
-              return;
-            }
-            if (threadDebugStatus) threadDebugStatus.textContent = '';
-            try {
-              const r = await fetch('/debug/thread-scene-sample', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chatId: currentChatId }),
-              });
-              const j = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                alert(j.error || 'Request failed');
-                return;
-              }
-              if (threadDebugSceneTextarea) {
-                threadDebugSceneTextarea.value = JSON.stringify(j.threadScene != null ? j.threadScene : {}, null, 2);
-              }
-              if (threadDebugStatus) threadDebugStatus.textContent = 'Sample thread scene written.';
-            } catch (e) {
-              alert('Request failed');
-            }
-          });
-        }
-        if (threadDebugSaveBtn) {
-          threadDebugSaveBtn.addEventListener('click', async () => {
-            if (!currentChatId) {
-              alert('Open a chat first.');
-              return;
-            }
-            if (threadDebugStatus) threadDebugStatus.textContent = '';
-            const raw = threadDebugSceneTextarea ? String(threadDebugSceneTextarea.value ?? '').trim() : '';
-            let parsed;
-            try {
-              parsed = raw === '' ? {} : JSON.parse(raw);
-            } catch (e) {
-              alert('Invalid JSON in the box. Fix it before saving.');
-              return;
-            }
-            if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-              alert('Thread scene must be a JSON object (not an array or null).');
-              return;
-            }
-            try {
-              const r = await fetch('/debug/thread-scene-replace', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chatId: currentChatId, threadScene: parsed }),
-              });
-              const j = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                alert(j.error || 'Request failed');
-                return;
-              }
-              if (threadDebugSceneTextarea) {
-                threadDebugSceneTextarea.value = JSON.stringify(j.threadScene != null ? j.threadScene : {}, null, 2);
-              }
-              if (threadDebugStatus) threadDebugStatus.textContent = 'Saved thread scene.';
-            } catch (e) {
-              alert('Request failed');
-            }
-          });
-        }
 
         function renderMarkdown(text) {
           if (typeof marked === 'undefined') return document.createTextNode(text);
@@ -5343,11 +5630,9 @@ app.get('/', (req, res) => {
             currentHouseholdId = data.householdId != null ? Number(data.householdId) : null;
             currentUserId = data.userId != null ? Number(data.userId) : null;
             isCurrentUserOwner = !!data.isOwner;
-            sessionIsGlobalAdmin = data.isGlobalAdmin === true;
             applyGodModeFromMe(data);
             syncMemoriesWrapVisibility();
             rebuildDisplayNameToColorFromMeChatColors(data.chatColors);
-            setThreadDebugPanelVisibility(data.isGlobalAdmin);
             showApp(data.name);
             await loadChatsAndEnsureOne();
             await loadHistory();
@@ -5382,6 +5667,43 @@ app.get('/', (req, res) => {
         if (adminAnthropicHouseholdSelect) {
           adminAnthropicHouseholdSelect.addEventListener('change', () => {
             loadAdminAnthropicForSelected();
+          });
+        }
+        initializeAdminUsageFilters();
+        const adminUsageRefresh = document.getElementById('admin-usage-refresh');
+        if (adminUsageRefresh) {
+          adminUsageRefresh.addEventListener('click', async () => {
+            await refreshAdminUsageReport();
+          });
+        }
+        const adminUsageHouseholdSelect = document.getElementById('admin-usage-household-select');
+        if (adminUsageHouseholdSelect) {
+          adminUsageHouseholdSelect.addEventListener('change', () => {
+            refreshAdminUsageReport();
+          });
+        }
+        const adminUsageStartDate = document.getElementById('admin-usage-start-date');
+        if (adminUsageStartDate) {
+          adminUsageStartDate.addEventListener('change', () => {
+            refreshAdminUsageReport();
+          });
+        }
+        const adminUsageEndDate = document.getElementById('admin-usage-end-date');
+        if (adminUsageEndDate) {
+          adminUsageEndDate.addEventListener('change', () => {
+            refreshAdminUsageReport();
+          });
+        }
+        const adminUsageWebSearchSetting = document.getElementById('admin-usage-websearch-setting');
+        if (adminUsageWebSearchSetting) {
+          adminUsageWebSearchSetting.addEventListener('change', () => {
+            refreshAdminUsageReport();
+          });
+        }
+        const adminUsageWebSearchUsed = document.getElementById('admin-usage-websearch-used');
+        if (adminUsageWebSearchUsed) {
+          adminUsageWebSearchUsed.addEventListener('change', () => {
+            refreshAdminUsageReport();
           });
         }
 
@@ -5870,8 +6192,6 @@ app.get('/', (req, res) => {
                 const meData = await meR.json();
                 rebuildDisplayNameToColorFromMeChatColors(meData.chatColors);
                 applyGodModeFromMe(meData);
-                sessionIsGlobalAdmin = meData.isGlobalAdmin === true;
-                setThreadDebugPanelVisibility(meData.isGlobalAdmin);
               }
             } catch (e) {}
             await loadChatsAndEnsureOne();
@@ -6152,7 +6472,6 @@ app.get('/', (req, res) => {
           currentHouseholdId = null;
           currentUserId = null;
           isCurrentUserOwner = false;
-          sessionIsGlobalAdmin = false;
           lastMePayload = null;
           applyGodModeFromMe({ isImpersonating: false, impersonationReadOnly: false });
           syncMemoriesWrapVisibility();
@@ -7401,7 +7720,7 @@ async function handleCompatChatTurn({
           m.role === 'user' ? `${m.name}: ${m.content}` : stripStoredMessageContentForDisplay(m.content),
       }));
       try {
-        const titleRes = await anthropic.messages.create({
+        const titleRes = await createLoggedAnthropicMessage(anthropic, {
           model: 'claude-sonnet-4-5',
           max_tokens: 30,
           system: 'You generate very short chat titles (3–6 words). Respond with ONLY the title, no quotes or punctuation.',
@@ -7409,6 +7728,14 @@ async function handleCompatChatTurn({
             ...titleMessages,
             { role: 'user', content: 'Suggest a very short title for this chat (3–6 words only).' },
           ],
+        }, {
+          householdId: req.householdId,
+          chatId,
+          smartModeEnabled,
+          callSurface: 'background',
+          callPurpose: 'chat_title_generation',
+          webSearchEnabledAtCall: false,
+          usedWebSearchTool: false,
         });
         const blocks = titleRes.content.filter((b) => b.type === 'text');
         const raw = blocks.map((b) => b.text).join(' ').trim().split('\n')[0].trim();
@@ -7545,7 +7872,7 @@ async function handleCompatChatTurn({
 
   if (shouldNameChat) {
     try {
-      const titleResponse = await anthropic.messages.create({
+      const titleResponse = await createLoggedAnthropicMessage(anthropic, {
         model: 'claude-sonnet-4-5',
         max_tokens: 30,
         system:
@@ -7557,6 +7884,14 @@ async function handleCompatChatTurn({
             content: 'Based on this conversation, generate a very short, descriptive title for this chat (3-6 words only, no quotes).',
           },
         ],
+      }, {
+        householdId: req.householdId,
+        chatId,
+        smartModeEnabled,
+        callSurface: 'background',
+        callPurpose: 'chat_title_generation',
+        webSearchEnabledAtCall: false,
+        usedWebSearchTool: false,
       });
       const titleBlocks = titleResponse.content.filter((b) => b.type === 'text');
       const rawTitle = titleBlocks.map((b) => b.text).join(' ').trim().split('\n')[0].trim();
@@ -7573,6 +7908,8 @@ async function handleCompatChatTurn({
   if (allowLegacyNaturalActionOffers && hasSmartStrongMemoryIntentKeywords(routePrompt) && !plannerSkipMixedMemoryOffer) {
     const proposed = await trySmartAiMemoryProposal(anthropic, routePrompt, memories, threadCtx, {
       isAnthropicSdkAuthOrKeyError,
+      householdId: req.householdId,
+      chatId,
     });
     if (proposed) {
       const mixed = isSmartMixedIntentMemoryMessage(routePrompt) || !!smartModeMixedMemoryHint;
@@ -7786,6 +8123,15 @@ async function handleCompatChatTurn({
 
   streamEnded = true;
   flushDisplayEmit();
+  await finalizeLoggedAnthropicStream(stream, {
+    householdId: req.householdId,
+    chatId,
+    smartModeEnabled,
+    callSurface: 'chat',
+    callPurpose: 'chat_reply',
+    webSearchEnabledAtCall: householdWebSearchEnabled,
+    usedWebSearchTool: useWebSearchTool,
+  });
 
   const cleanedStreamForGroceryOffer = stripKitchenBotHiddenMarkers(streamRawAccum);
   if (smartModeEnabled && !pendingOfferAction && !mixedMemoryProposal && groceryTabOfferTextMatchesForPending(cleanedStreamForGroceryOffer)) {

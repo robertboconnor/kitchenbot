@@ -165,6 +165,28 @@ db.serialize(() => {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS anthropic_usage_ledger (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+      chat_id INTEGER NULL REFERENCES chats(id) ON DELETE SET NULL,
+      smart_mode_enabled INTEGER NOT NULL DEFAULT 0,
+      call_surface TEXT NOT NULL,
+      call_purpose TEXT NOT NULL,
+      model TEXT NOT NULL,
+      request_kind TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_input_tokens INTEGER,
+      cache_read_input_tokens INTEGER,
+      web_search_enabled_at_call INTEGER NOT NULL DEFAULT 0,
+      used_web_search_tool INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_anthropic_usage_created_at ON anthropic_usage_ledger(created_at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_anthropic_usage_household_created ON anthropic_usage_ledger(household_id, created_at)`);
+
   db.run(
     `
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -307,6 +329,36 @@ const MIGRATIONS = [
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `);
+    },
+  },
+  {
+    name: '011_add_anthropic_usage_ledger',
+    async up() {
+      await migrationRun(`
+        CREATE TABLE IF NOT EXISTS anthropic_usage_ledger (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+          chat_id INTEGER NULL REFERENCES chats(id) ON DELETE SET NULL,
+          smart_mode_enabled INTEGER NOT NULL DEFAULT 0,
+          call_surface TEXT NOT NULL,
+          call_purpose TEXT NOT NULL,
+          model TEXT NOT NULL,
+          request_kind TEXT NOT NULL,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_creation_input_tokens INTEGER,
+          cache_read_input_tokens INTEGER,
+          web_search_enabled_at_call INTEGER NOT NULL DEFAULT 0,
+          used_web_search_tool INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      await migrationRun(
+        `CREATE INDEX IF NOT EXISTS idx_anthropic_usage_created_at ON anthropic_usage_ledger(created_at)`
+      );
+      await migrationRun(
+        `CREATE INDEX IF NOT EXISTS idx_anthropic_usage_household_created ON anthropic_usage_ledger(household_id, created_at)`
+      );
     },
   },
 ];
@@ -675,6 +727,152 @@ export function getUserMessageCountsInHousehold(householdId) {
         else resolve((rows || []).map((r) => ({ displayName: r.display_name, count: Number(r.c) })));
       }
     );
+  });
+}
+
+export function insertAnthropicUsageLedgerRow(row) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+      INSERT INTO anthropic_usage_ledger (
+        household_id,
+        chat_id,
+        smart_mode_enabled,
+        call_surface,
+        call_purpose,
+        model,
+        request_kind,
+        input_tokens,
+        output_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
+        web_search_enabled_at_call,
+        used_web_search_tool
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        Number(row.householdId),
+        row.chatId != null ? Number(row.chatId) : null,
+        row.smartModeEnabled ? 1 : 0,
+        String(row.callSurface ?? 'background'),
+        String(row.callPurpose ?? 'unknown'),
+        String(row.model ?? 'unknown'),
+        String(row.requestKind ?? 'create'),
+        Number(row.inputTokens ?? 0),
+        Number(row.outputTokens ?? 0),
+        row.cacheCreationInputTokens != null ? Number(row.cacheCreationInputTokens) : null,
+        row.cacheReadInputTokens != null ? Number(row.cacheReadInputTokens) : null,
+        row.webSearchEnabledAtCall ? 1 : 0,
+        row.usedWebSearchTool ? 1 : 0,
+      ],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.lastID);
+      }
+    );
+  });
+}
+
+export function getAnthropicUsageLedgerRows(filters = {}, limit = 100) {
+  const where = [];
+  const params = [];
+
+  if (filters.startDate) {
+    where.push(`created_at >= ?`);
+    params.push(String(filters.startDate));
+  }
+  if (filters.endDate) {
+    where.push(`created_at < ?`);
+    params.push(String(filters.endDate));
+  }
+  if (filters.householdId != null) {
+    where.push(`household_id = ?`);
+    params.push(Number(filters.householdId));
+  }
+  if (filters.callPurpose) {
+    where.push(`call_purpose = ?`);
+    params.push(String(filters.callPurpose));
+  }
+  if (filters.callSurface) {
+    where.push(`call_surface = ?`);
+    params.push(String(filters.callSurface));
+  }
+  if (filters.webSearchEnabledAtCall === true || filters.webSearchEnabledAtCall === false) {
+    where.push(`web_search_enabled_at_call = ?`);
+    params.push(filters.webSearchEnabledAtCall ? 1 : 0);
+  }
+  if (filters.usedWebSearchTool === true || filters.usedWebSearchTool === false) {
+    where.push(`used_web_search_tool = ?`);
+    params.push(filters.usedWebSearchTool ? 1 : 0);
+  }
+
+  const sql =
+    `
+    SELECT id, created_at, household_id, chat_id, smart_mode_enabled, call_surface, call_purpose, model, request_kind,
+           input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+           web_search_enabled_at_call, used_web_search_tool
+    FROM anthropic_usage_ledger
+    ` +
+    (where.length ? `WHERE ${where.join(' AND ')}` : '') +
+    ` ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`;
+  params.push(Number(limit) > 0 ? Number(limit) : 100);
+
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows || []);
+    });
+  });
+}
+
+export function getAnthropicUsageLedgerAllRows(filters = {}) {
+  const where = [];
+  const params = [];
+
+  if (filters.startDate) {
+    where.push(`created_at >= ?`);
+    params.push(String(filters.startDate));
+  }
+  if (filters.endDate) {
+    where.push(`created_at < ?`);
+    params.push(String(filters.endDate));
+  }
+  if (filters.householdId != null) {
+    where.push(`household_id = ?`);
+    params.push(Number(filters.householdId));
+  }
+  if (filters.callPurpose) {
+    where.push(`call_purpose = ?`);
+    params.push(String(filters.callPurpose));
+  }
+  if (filters.callSurface) {
+    where.push(`call_surface = ?`);
+    params.push(String(filters.callSurface));
+  }
+  if (filters.webSearchEnabledAtCall === true || filters.webSearchEnabledAtCall === false) {
+    where.push(`web_search_enabled_at_call = ?`);
+    params.push(filters.webSearchEnabledAtCall ? 1 : 0);
+  }
+  if (filters.usedWebSearchTool === true || filters.usedWebSearchTool === false) {
+    where.push(`used_web_search_tool = ?`);
+    params.push(filters.usedWebSearchTool ? 1 : 0);
+  }
+
+  const sql =
+    `
+    SELECT id, created_at, household_id, chat_id, smart_mode_enabled, call_surface, call_purpose, model, request_kind,
+           input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+           web_search_enabled_at_call, used_web_search_tool
+    FROM anthropic_usage_ledger
+    ` +
+    (where.length ? `WHERE ${where.join(' AND ')}` : '') +
+    ` ORDER BY datetime(created_at) DESC, id DESC`;
+
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows || []);
+    });
   });
 }
 

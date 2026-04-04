@@ -1,4 +1,5 @@
 import { sanitizePendingAction } from './pending-state.mjs';
+import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 
 function normalizeRememberKey(raw) {
   let s = String(raw ?? '').trim().toLowerCase();
@@ -405,7 +406,7 @@ export async function tryAiMemoryProposal(anthropic, userMessage, memoriesList, 
     .map((m) => `${m.key}: ${m.value}`)
     .join('\n');
   try {
-    const res = await anthropic.messages.create({
+    const res = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 400,
       system: `You help propose household memory key/value pairs. Output ONLY one JSON object (no markdown fences, no commentary) with this shape:
@@ -424,6 +425,14 @@ Rules:
           content: `Existing household memories (keys are unique; reuse when appropriate):\n${existing || '(none)'}\n\nUser message:\n${String(userMessage).slice(0, 4000)}`,
         },
       ],
+    }, {
+      householdId: opts?.householdId,
+      chatId: opts?.chatId,
+      smartModeEnabled: true,
+      callSurface: 'background',
+      callPurpose: 'memory_policy',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const blocks = res.content.filter((b) => b.type === 'text');
     const raw = blocks.map((b) => b.text).join('\n').trim();

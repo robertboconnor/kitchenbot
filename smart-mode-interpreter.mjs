@@ -1,4 +1,5 @@
 import { normalizeRuntimeAction, normalizeRuntimeActionList } from './capability-registry.mjs';
+import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 
 const CONFIDENCE_FLOOR = 0.6;
 const TWO_ACTION_CONFIDENCE_FLOOR = 0.85;
@@ -59,7 +60,7 @@ export function validateSmartRuntimeInterpreterOutput(parsed) {
 
 export async function runSmartModeInterpreter(anthropic, context) {
   const userPayload = typeof context === 'object' && context !== null ? JSON.stringify(context, null, 0) : '{}';
-  const res = await anthropic.messages.create({
+  const res = await createLoggedAnthropicMessage(anthropic, {
     model: 'claude-sonnet-4-5',
     max_tokens: 1024,
     system: `You are a strict Smart Mode interpreter for a household chat app. Output ONLY one JSON object.
@@ -131,6 +132,14 @@ Rules:
         content: `Context (JSON):\n${userPayload}`,
       },
     ],
+  }, {
+    householdId: context?.householdId,
+    chatId: context?.chatId,
+    smartModeEnabled: true,
+    callSurface: 'background',
+    callPurpose: 'smart_interpreter',
+    webSearchEnabledAtCall: false,
+    usedWebSearchTool: false,
   });
 
   const blocks = res.content.filter((b) => b.type === 'text');

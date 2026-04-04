@@ -1,4 +1,5 @@
 import { getChatThreadContext, updateWeeklyPlanDraft } from './db.mjs';
+import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 
 function parseJsonObjectFromModelText(raw) {
   let s = String(raw ?? '').trim();
@@ -96,7 +97,15 @@ function countSlotChanges(beforeMeals, afterMeals) {
   return { changedSlots: changed, preservedSlots: preserved };
 }
 
-async function resolveWeeklyPlanPatchWithModel({ anthropic, prompt, priorDraft, rawPatch, deps = {} }) {
+async function resolveWeeklyPlanPatchWithModel({
+  anthropic,
+  prompt,
+  priorDraft,
+  rawPatch,
+  householdId = null,
+  chatId = null,
+  deps = {},
+}) {
   if (!anthropic) return sanitizeCollaborativeWeeklyPatch(rawPatch);
   const weeklyPlanDraftCompact = typeof deps.formatWeeklyPlanDraftForPrompt === 'function'
     ? deps.formatWeeklyPlanDraftForPrompt(priorDraft ?? {})
@@ -107,7 +116,7 @@ async function resolveWeeklyPlanPatchWithModel({ anthropic, prompt, priorDraft, 
     userMessage: String(prompt ?? '').trim(),
     hintedPatch: rawPatch ?? {},
   };
-  const res = await anthropic.messages.create({
+  const res = await createLoggedAnthropicMessage(anthropic, {
     model: 'claude-sonnet-4-5',
     max_tokens: 700,
     system: `You resolve weekly dinner plan updates for a household planner. Output ONLY one JSON object.
@@ -138,6 +147,14 @@ Rules:
         content: `Context JSON:\n${JSON.stringify(payload)}`,
       },
     ],
+  }, {
+    householdId,
+    chatId,
+    smartModeEnabled: true,
+    callSurface: 'background',
+    callPurpose: 'weekly_plan_auto_update',
+    webSearchEnabledAtCall: false,
+    usedWebSearchTool: false,
   });
   const blocks = res.content.filter((b) => b.type === 'text');
   const raw = blocks.map((b) => b.text).join('\n').trim();
@@ -159,6 +176,8 @@ export async function executeWeeklyPlanPatch(runtimeAction, context) {
       prompt,
       priorDraft,
       rawPatch,
+      householdId: req.householdId,
+      chatId,
       deps,
     }).catch(() => null)) || sanitizeCollaborativeWeeklyPatch(rawPatch);
 

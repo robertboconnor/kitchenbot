@@ -25,6 +25,7 @@ import {
   runtimeActionToPendingAction,
 } from './capability-registry.mjs';
 import { weeklyPlanDraftHasMeaningfulContent, isWeeklyPlanningLikeUserTurn } from './interaction-engine.mjs';
+import { createLoggedAnthropicMessage, finalizeLoggedAnthropicStream } from './anthropic-usage.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -60,7 +61,7 @@ async function generateSmartPendingExplanation({
       threadGrocerySummary: safeTrim(threadCtx.threadGrocerySummary) || '(none)',
       fallback,
     };
-    const response = await anthropic.messages.create({
+    const response = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 120,
       system: `You write one short KitchenBot follow-up before an app action happens.
@@ -79,6 +80,14 @@ The fallback line is safe but should only be copied if needed.`,
           content: `Context JSON:\n${JSON.stringify(payload)}`,
         },
       ],
+    }, {
+      householdId: req.householdId,
+      chatId,
+      smartModeEnabled: true,
+      callSurface: 'background',
+      callPurpose: 'smart_pending_explanation',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const text = response.content
       .filter((block) => block.type === 'text')
@@ -130,7 +139,7 @@ async function generateSmartOutcomeExplanation({
       householdMemoriesCompact: compactMemories || '(none)',
       serverAppendsWeeklyPlanBlock: appendWeeklyPlanVisible === true,
     };
-    const response = await anthropic.messages.create({
+    const response = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 260,
       system: `You write KitchenBot's final reply after the server has already completed app-side actions.
@@ -154,6 +163,14 @@ When the current weekly plan helps explain the change, you may briefly mention t
           content: `Context JSON:\n${JSON.stringify(payload)}`,
         },
       ],
+    }, {
+      householdId: req.householdId,
+      chatId,
+      smartModeEnabled: true,
+      callSurface: 'background',
+      callPurpose: 'smart_outcome_explanation',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const text = response.content
       .filter((block) => block.type === 'text')
@@ -378,7 +395,7 @@ export async function runSmartConversationReply(params) {
 
   if (shouldNameChat) {
     try {
-      const titleResponse = await anthropic.messages.create({
+      const titleResponse = await createLoggedAnthropicMessage(anthropic, {
         model: 'claude-sonnet-4-5',
         max_tokens: 30,
         system:
@@ -390,6 +407,14 @@ export async function runSmartConversationReply(params) {
             content: 'Based on this conversation, generate a very short, descriptive title for this chat (3-6 words only, no quotes).',
           },
         ],
+      }, {
+        householdId: req.householdId,
+        chatId,
+        smartModeEnabled: true,
+        callSurface: 'background',
+        callPurpose: 'chat_title_generation',
+        webSearchEnabledAtCall: false,
+        usedWebSearchTool: false,
       });
       const titleBlocks = titleResponse.content.filter((b) => b.type === 'text');
       const rawTitle = titleBlocks.map((b) => b.text).join(' ').trim().split('\n')[0].trim();
@@ -407,6 +432,8 @@ export async function runSmartConversationReply(params) {
   if (allowLegacyMixedMemoryProposal && smartModeEnabled && deps.hasStrongMemoryIntentKeywords(routePrompt) && !plannerSkipMixedMemoryOffer) {
     const proposed = await deps.tryAiMemoryProposal(anthropic, routePrompt, memories, threadCtx, {
       isAnthropicSdkAuthOrKeyError: deps.isAnthropicSdkAuthOrKeyError,
+      householdId: req.householdId,
+      chatId,
     });
     if (proposed) {
       const mixed = deps.isMixedIntentMemoryMessage(routePrompt) || !!smartModeMixedMemoryHint;
@@ -582,6 +609,15 @@ ${memoryText}`,
 
   streamEnded = true;
   flushDisplayEmit();
+  await finalizeLoggedAnthropicStream(stream, {
+    householdId: req.householdId,
+    chatId,
+    smartModeEnabled: true,
+    callSurface: 'chat',
+    callPurpose: 'chat_reply',
+    webSearchEnabledAtCall: householdWebSearchEnabled,
+    usedWebSearchTool: useWebSearchTool,
+  });
 
   const cleanedStreamForGroceryOffer = deps.stripKitchenBotHiddenMarkers(streamRawAccum);
   if (!pendingOfferAction && !mixedMemoryProposal && groceryTabOfferTextMatchesForPending(cleanedStreamForGroceryOffer)) {

@@ -1,4 +1,5 @@
 import { renderSmartHelpReply } from './capability-registry.mjs';
+import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 
 export async function executeChatRename(runtimeAction, context) {
   const { req, chatId, anthropic, deps = {} } = context;
@@ -23,7 +24,7 @@ export async function executeChatRename(runtimeAction, context) {
   }));
   let title = 'New chat';
   try {
-    const titleRes = await anthropic.messages.create({
+    const titleRes = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 30,
       system: 'You generate very short chat titles (3–6 words). Respond with ONLY the title, no quotes or punctuation.',
@@ -31,6 +32,14 @@ export async function executeChatRename(runtimeAction, context) {
         ...titleMessages,
         { role: 'user', content: 'Suggest a very short title for this chat (3–6 words only).' },
       ],
+    }, {
+      householdId: req.householdId,
+      chatId,
+      smartModeEnabled: true,
+      callSurface: 'command',
+      callPurpose: 'chat_title_generation',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const blocks = titleRes.content.filter((b) => b.type === 'text');
     const raw = blocks.map((b) => b.text).join(' ').trim().split('\n')[0].trim();

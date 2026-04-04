@@ -6,6 +6,7 @@ import {
   upsertChatThreadContext,
   updateChatThreadScene,
 } from './db.mjs';
+import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 
 async function safeUpdateThreadScene(chatId, householdId, patch) {
   return updateChatThreadScene(chatId, householdId, patch).catch((e) => {
@@ -47,7 +48,7 @@ export async function runWeeklyPlanGroceryDraftOfferResponse(params) {
 
   let listSection = '';
   try {
-    const groceryResponse = await anthropic.messages.create({
+    const groceryResponse = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 400,
       system: `You suggest ingredients to buy for a weekly dinner plan. Output ONLY lines in this format (no other text):
@@ -65,6 +66,14 @@ ${weeklyPlanDraftCompact}`,
           content: `User said: ${String(prompt).trim()}\n\nBuild a shopping list for this weekly plan.`,
         },
       ],
+    }, {
+      householdId: req.householdId,
+      chatId,
+      smartModeEnabled: true,
+      callSurface: 'background',
+      callPurpose: 'grocery_draft_generation',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const textBlocks = groceryResponse.content.filter((block) => block.type === 'text');
     const fullText = textBlocks.map((b) => b.text).join('\n');
@@ -89,6 +98,8 @@ ${weeklyPlanDraftCompact}`,
         prompt,
         weeklyPlanDraftCompact,
         itemCount: normalizedItems.length,
+        householdId: req.householdId,
+        chatId,
       });
       const artifact = deps.formatSmartGroceryPreviewArtifact?.(normalizedItems);
       const followUp =
@@ -97,6 +108,8 @@ ${weeklyPlanDraftCompact}`,
           prompt,
           weeklyPlanDraftCompact,
           itemCount: normalizedItems.length,
+          householdId: req.householdId,
+          chatId,
         })) || "If you'd like, I can put this into your Grocery List tab next.";
       listSection = [lead, artifact, followUp].filter(Boolean).join('\n\n');
     } else {
@@ -186,6 +199,8 @@ export async function executeGroceryGenerateAndCommit(runtimeAction, context) {
         prompt,
         weeklyPlanDraftCompact,
         choiceMode: 'replace_or_append',
+        householdId: req.householdId,
+        chatId,
       })) ||
       "I found items already on your Grocery List tab. I can either replace that list with this week's ingredients or add these on top. Which do you want?";
     let replyForStore = deps.combinePlannerDisambiguationWithRememberAck(disambigPrefix, question);
@@ -227,7 +242,7 @@ export async function executeGroceryGenerateAndCommit(runtimeAction, context) {
         : deps.stripStoredMessageContentForDisplay(message.content),
   }));
 
-  const groceryResponse = await anthropic.messages.create({
+  const groceryResponse = await createLoggedAnthropicMessage(anthropic, {
     model: 'claude-sonnet-4-5',
     max_tokens: 400,
     system: `You are a household assistant that generates grocery lists.
@@ -254,6 +269,14 @@ Where:
           weeklyPlanDraftCompact,
       },
     ],
+  }, {
+    householdId: req.householdId,
+    chatId,
+    smartModeEnabled: !!smartModeEnabled,
+    callSurface: plannerMode ? 'command' : 'command',
+    callPurpose: 'grocery_draft_generation',
+    webSearchEnabledAtCall: false,
+    usedWebSearchTool: false,
   });
 
   const textBlocks = groceryResponse.content.filter((block) => block.type === 'text');
@@ -289,6 +312,8 @@ Where:
         prompt,
         weeklyPlanDraftCompact,
         choiceMode: 'append_or_prune',
+        householdId: req.householdId,
+        chatId,
       })) ||
       'I can keep the older Grocery List tab items too, or I can remove the ones that no longer fit this version of the plan. Which do you want?';
     let replyForStore = deps.combinePlannerDisambiguationWithRememberAck(disambigPrefix, question);
@@ -364,7 +389,7 @@ Where:
   let mealPlanToStore = priorMealPlanSummary;
   let threadGroceryToStore = priorThreadGrocerySummary;
   try {
-    const summaryResponse = await anthropic.messages.create({
+    const summaryResponse = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 700,
       system: `You maintain one concise, factual meal-plan summary for a single chat thread. Output plain text only (no markdown). At most a few short paragraphs total.
@@ -379,6 +404,14 @@ Rules:
           content: `${commandOutcomeBlock}\n\nPrevious meal-plan summary for this thread (may be empty):\n${priorMealPlanSummary.trim() || '(none)'}\n\nHousehold memory:\n${memoryText || '(none)'}\n\nRecent conversation:\n${conversationSnippet}\n\nWrite the updated replacement summary for this thread.`,
         },
       ],
+    }, {
+      householdId: req.householdId,
+      chatId,
+      smartModeEnabled: !!smartModeEnabled,
+      callSurface: 'background',
+      callPurpose: 'grocery_draft_generation',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const summaryBlocks = summaryResponse.content.filter((b) => b.type === 'text');
     const newMealPlanSummary = summaryBlocks.map((b) => b.text).join('\n').trim();
@@ -388,7 +421,7 @@ Rules:
   }
 
   try {
-    const groceryCumulativeResponse = await anthropic.messages.create({
+    const groceryCumulativeResponse = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 900,
       system: `You maintain one cumulative plain-text summary of what this chat thread has decided to buy across Grocery List refreshes. Output plain text only (no markdown). Be concise.`,
@@ -398,6 +431,14 @@ Rules:
           content: `${commandOutcomeBlock}\n\nPrevious cumulative thread grocery summary (may be empty):\n${priorThreadGrocerySummary.trim() || '(none)'}\n\nMeal plan context for this thread (may be empty):\n${mealPlanToStore.trim() || '(none)'}\n\nItems from this run (section | product | amount):\n${itemsThisRunText}\n\nHousehold memory (context only):\n${memoryText || '(none)'}\n\nRecent conversation:\n${conversationSnippet}\n\nWrite the full replacement cumulative thread grocery summary for what this thread intends to buy so far.`,
         },
       ],
+    }, {
+      householdId: req.householdId,
+      chatId,
+      smartModeEnabled: !!smartModeEnabled,
+      callSurface: 'background',
+      callPurpose: 'grocery_draft_generation',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const gBlocks = groceryCumulativeResponse.content.filter((b) => b.type === 'text');
     const newThreadGrocery = gBlocks.map((b) => b.text).join('\n').trim();

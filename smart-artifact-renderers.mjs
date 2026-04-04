@@ -100,10 +100,10 @@ export function formatSmartGroceryPreviewArtifact(items) {
   return lines.join('\n').trim();
 }
 
-async function generateTextWithFallback({ anthropic, system, payload, fallback }) {
+async function generateTextWithFallback({ anthropic, system, payload, fallback, usageContext = null }) {
   if (!anthropic) return fallback;
   try {
-    const response = await anthropic.messages.create({
+    const response = await createLoggedAnthropicMessage(anthropic, {
       model: 'claude-sonnet-4-5',
       max_tokens: 140,
       system,
@@ -113,6 +113,14 @@ async function generateTextWithFallback({ anthropic, system, payload, fallback }
           content: `Context JSON:\n${JSON.stringify(payload)}`,
         },
       ],
+    }, {
+      householdId: usageContext?.householdId,
+      chatId: usageContext?.chatId,
+      smartModeEnabled: usageContext?.smartModeEnabled !== false,
+      callSurface: 'background',
+      callPurpose: 'smart_artifact_phrase',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
     });
     const text = response.content
       .filter((block) => block.type === 'text')
@@ -126,7 +134,14 @@ async function generateTextWithFallback({ anthropic, system, payload, fallback }
   }
 }
 
-export async function generateSmartGroceryPreviewLead({ anthropic, prompt, weeklyPlanDraftCompact, itemCount }) {
+export async function generateSmartGroceryPreviewLead({
+  anthropic,
+  prompt,
+  weeklyPlanDraftCompact,
+  itemCount,
+  householdId = null,
+  chatId = null,
+}) {
   const fallback =
     "I pulled together a shopping list from the dinners we planned. Here's a preview before I change your Grocery List tab.";
   return generateTextWithFallback({
@@ -144,6 +159,7 @@ Do not ask for confirmation in this line.`,
       weeklyPlanDraftCompact: safeTrim(weeklyPlanDraftCompact),
       itemCount: Number(itemCount) || 0,
     },
+    usageContext: { householdId, chatId, smartModeEnabled: true },
   });
 }
 
@@ -152,6 +168,8 @@ export async function generateSmartGroceryPreviewCommitReply({
   prompt,
   weeklyPlanDraftCompact,
   itemCount,
+  householdId = null,
+  chatId = null,
 }) {
   const fallback =
     "If you'd like, I can put this into your Grocery List tab next.";
@@ -171,6 +189,7 @@ Do not mention replace/append choices yet.`,
       weeklyPlanDraftCompact: safeTrim(weeklyPlanDraftCompact),
       itemCount: Number(itemCount) || 0,
     },
+    usageContext: { householdId, chatId, smartModeEnabled: true },
   });
 }
 
@@ -179,6 +198,8 @@ export async function generateSmartGroceryModeChoiceReply({
   prompt,
   weeklyPlanDraftCompact,
   choiceMode,
+  householdId = null,
+  chatId = null,
 }) {
   const fallback =
     choiceMode === 'append_or_prune'
@@ -199,5 +220,7 @@ End with a direct question.`,
       weeklyPlanDraftCompact: safeTrim(weeklyPlanDraftCompact),
       choiceMode: safeTrim(choiceMode),
     },
+    usageContext: { householdId, chatId, smartModeEnabled: true },
   });
 }
+import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
