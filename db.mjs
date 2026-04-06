@@ -187,6 +187,24 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_anthropic_usage_created_at ON anthropic_usage_ledger(created_at)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_anthropic_usage_household_created ON anthropic_usage_ledger(household_id, created_at)`);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS smart_durable_memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+      memory_type TEXT NOT NULL,
+      label TEXT NOT NULL,
+      normalized_label TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      attributes_json TEXT NOT NULL DEFAULT '{}',
+      source_kind TEXT NOT NULL DEFAULT 'manual',
+      source_chat_id INTEGER NULL REFERENCES chats(id) ON DELETE SET NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(household_id, memory_type, normalized_label)
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_smart_durable_memories_household ON smart_durable_memories(household_id, updated_at)`);
+
   db.run(
     `
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -358,6 +376,30 @@ const MIGRATIONS = [
       );
       await migrationRun(
         `CREATE INDEX IF NOT EXISTS idx_anthropic_usage_household_created ON anthropic_usage_ledger(household_id, created_at)`
+      );
+    },
+  },
+  {
+    name: '012_add_smart_durable_memories',
+    async up() {
+      await migrationRun(`
+        CREATE TABLE IF NOT EXISTS smart_durable_memories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+          memory_type TEXT NOT NULL,
+          label TEXT NOT NULL,
+          normalized_label TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          attributes_json TEXT NOT NULL DEFAULT '{}',
+          source_kind TEXT NOT NULL DEFAULT 'manual',
+          source_chat_id INTEGER NULL REFERENCES chats(id) ON DELETE SET NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(household_id, memory_type, normalized_label)
+        )
+      `);
+      await migrationRun(
+        `CREATE INDEX IF NOT EXISTS idx_smart_durable_memories_household ON smart_durable_memories(household_id, updated_at)`
       );
     },
   },
@@ -1615,12 +1657,42 @@ export function getChatRuntimeState(chatId, householdId) {
       (err, row) => {
         if (err) reject(err);
         else if (!row) {
-          resolve({ mode: 'smart', pending: {}, checkpoint: {} });
+          resolve({ mode: 'smart', pending: {}, checkpoint: {}, continuation: {}, proposedNextAction: {} });
         } else {
+          const rawCheckpoint = parseChatRuntimeStateJson(row.checkpoint_json);
+          const proposedNextAction =
+            rawCheckpoint &&
+            typeof rawCheckpoint === 'object' &&
+            !Array.isArray(rawCheckpoint) &&
+            rawCheckpoint.proposedNextAction &&
+            typeof rawCheckpoint.proposedNextAction === 'object' &&
+            !Array.isArray(rawCheckpoint.proposedNextAction)
+              ? rawCheckpoint.proposedNextAction
+              : {};
+          const continuation =
+            rawCheckpoint &&
+            typeof rawCheckpoint === 'object' &&
+            !Array.isArray(rawCheckpoint) &&
+            rawCheckpoint.continuation &&
+            typeof rawCheckpoint.continuation === 'object' &&
+            !Array.isArray(rawCheckpoint.continuation)
+              ? rawCheckpoint.continuation
+              : {};
+          const checkpoint =
+            rawCheckpoint &&
+            typeof rawCheckpoint === 'object' &&
+            !Array.isArray(rawCheckpoint) &&
+            rawCheckpoint.legacy &&
+            typeof rawCheckpoint.legacy === 'object' &&
+            !Array.isArray(rawCheckpoint.legacy)
+              ? rawCheckpoint.legacy
+              : rawCheckpoint;
           resolve({
             mode: String(row.mode ?? 'smart') || 'smart',
             pending: parseChatRuntimeStateJson(row.pending_json),
-            checkpoint: parseChatRuntimeStateJson(row.checkpoint_json),
+            checkpoint,
+            continuation,
+            proposedNextAction,
           });
         }
       }
@@ -1633,13 +1705,29 @@ export function setChatRuntimeState(chatId, householdId, state = {}) {
   let pendingJson = '{}';
   let checkpointJson = '{}';
   try {
+    const checkpoint =
+      state.checkpoint && typeof state.checkpoint === 'object' && !Array.isArray(state.checkpoint)
+        ? state.checkpoint
+        : {};
+    const continuation =
+      state.continuation && typeof state.continuation === 'object' && !Array.isArray(state.continuation)
+        ? state.continuation
+        : null;
+    const proposedNextAction =
+      state.proposedNextAction && typeof state.proposedNextAction === 'object' && !Array.isArray(state.proposedNextAction)
+        ? state.proposedNextAction
+        : null;
     pendingJson = JSON.stringify(
       state.pending && typeof state.pending === 'object' && !Array.isArray(state.pending) ? state.pending : {}
     );
     checkpointJson = JSON.stringify(
-      state.checkpoint && typeof state.checkpoint === 'object' && !Array.isArray(state.checkpoint)
-        ? state.checkpoint
-        : {}
+      continuation || proposedNextAction
+        ? {
+            ...(continuation ? { continuation } : {}),
+            ...(proposedNextAction ? { proposedNextAction } : {}),
+            legacy: checkpoint,
+          }
+        : checkpoint
     );
   } catch {
     return Promise.reject(new Error('runtime state must be JSON-serializable'));
@@ -1666,7 +1754,13 @@ export function setChatRuntimeState(chatId, householdId, state = {}) {
 }
 
 export function clearChatRuntimeState(chatId, householdId) {
-  return setChatRuntimeState(chatId, householdId, { mode: 'smart', pending: {}, checkpoint: {} });
+  return setChatRuntimeState(chatId, householdId, {
+    mode: 'smart',
+    pending: {},
+    checkpoint: {},
+    continuation: {},
+    proposedNextAction: {},
+  });
 }
 
 export function addMessage(chatId, householdId, role, name, content) {
@@ -1821,6 +1915,154 @@ export function getMemories(householdId) {
       (err, rows) => {
         if (err) reject(err);
         else resolve(rows);
+      }
+    );
+  });
+}
+
+function parseSmartDurableMemoryAttributes(raw) {
+  try {
+    const parsed = JSON.parse(String(raw ?? '{}'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function listSmartDurableMemories(householdId) {
+  return new Promise((resolve, reject) => {
+    db.all(
+      `
+      SELECT id, household_id, memory_type, label, normalized_label, summary, attributes_json, source_kind, source_chat_id, created_at, updated_at
+      FROM smart_durable_memories
+      WHERE household_id = ?
+      ORDER BY datetime(updated_at) DESC, label COLLATE NOCASE ASC
+      `,
+      [householdId],
+      (err, rows) => {
+        if (err) reject(err);
+        else resolve((rows || []).map((row) => ({
+          id: row.id,
+          householdId: row.household_id,
+          memoryType: row.memory_type,
+          label: row.label,
+          normalizedLabel: row.normalized_label,
+          summary: row.summary,
+          attributes: parseSmartDurableMemoryAttributes(row.attributes_json),
+          sourceKind: row.source_kind,
+          sourceChatId: row.source_chat_id,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        })));
+      }
+    );
+  });
+}
+
+export function getSmartDurableMemoryByTypeAndLabel(householdId, memoryType, normalizedLabel) {
+  return new Promise((resolve, reject) => {
+    db.get(
+      `
+      SELECT id, household_id, memory_type, label, normalized_label, summary, attributes_json, source_kind, source_chat_id, created_at, updated_at
+      FROM smart_durable_memories
+      WHERE household_id = ? AND memory_type = ? AND normalized_label = ?
+      LIMIT 1
+      `,
+      [householdId, memoryType, normalizedLabel],
+      (err, row) => {
+        if (err) reject(err);
+        else if (!row) resolve(null);
+        else resolve({
+          id: row.id,
+          householdId: row.household_id,
+          memoryType: row.memory_type,
+          label: row.label,
+          normalizedLabel: row.normalized_label,
+          summary: row.summary,
+          attributes: parseSmartDurableMemoryAttributes(row.attributes_json),
+          sourceKind: row.source_kind,
+          sourceChatId: row.source_chat_id,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        });
+      }
+    );
+  });
+}
+
+export function saveSmartDurableMemory(householdId, record, opts = {}) {
+  const attributesJson = JSON.stringify(record.attributes || {});
+  const sourceKind = String(opts.sourceKind ?? 'manual').trim() || 'manual';
+  const sourceChatId =
+    opts.sourceChatId != null && Number.isFinite(Number(opts.sourceChatId)) ? Number(opts.sourceChatId) : null;
+  const id = opts.id != null && Number.isFinite(Number(opts.id)) ? Number(opts.id) : null;
+  return new Promise((resolve, reject) => {
+    if (id) {
+      db.run(
+        `
+        UPDATE smart_durable_memories
+        SET memory_type = ?, label = ?, normalized_label = ?, summary = ?, attributes_json = ?, source_kind = ?, source_chat_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE household_id = ? AND id = ?
+        `,
+        [
+          record.memoryType,
+          record.label,
+          record.normalizedLabel,
+          record.summary,
+          attributesJson,
+          sourceKind,
+          sourceChatId,
+          householdId,
+          id,
+        ],
+        function (err) {
+          if (err) reject(err);
+          else resolve({ id, changes: this.changes });
+        }
+      );
+      return;
+    }
+
+    db.run(
+      `
+      INSERT INTO smart_durable_memories (
+        household_id, memory_type, label, normalized_label, summary, attributes_json, source_kind, source_chat_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(household_id, memory_type, normalized_label)
+      DO UPDATE SET
+        label = excluded.label,
+        summary = excluded.summary,
+        attributes_json = excluded.attributes_json,
+        source_kind = excluded.source_kind,
+        source_chat_id = excluded.source_chat_id,
+        updated_at = CURRENT_TIMESTAMP
+      `,
+      [
+        householdId,
+        record.memoryType,
+        record.label,
+        record.normalizedLabel,
+        record.summary,
+        attributesJson,
+        sourceKind,
+        sourceChatId,
+      ],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ id: this.lastID || null, changes: this.changes });
+      }
+    );
+  });
+}
+
+export function deleteSmartDurableMemory(householdId, id) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `DELETE FROM smart_durable_memories WHERE household_id = ? AND id = ?`,
+      [householdId, id],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.changes);
       }
     );
   });

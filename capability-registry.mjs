@@ -1,6 +1,7 @@
-import { sanitizePendingAction } from './pending-state.mjs';
-
 const CAPABILITY_ALIASES = new Map([
+  ['grocery.preview', 'grocery.preview'],
+  ['grocery.list.preview', 'grocery.preview'],
+  ['grocerylist.preview', 'grocery.preview'],
   ['grocery.generate', 'grocery.generate_and_commit'],
   ['grocery.build', 'grocery.generate_and_commit'],
   ['grocery.create', 'grocery.generate_and_commit'],
@@ -19,40 +20,39 @@ function canonicalizeCapability(raw) {
 
 function sanitizeRuntimeActionInput(capability, input) {
   const src = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  if (capability === 'grocery.preview') {
+    return {};
+  }
   if (capability === 'memory.save') {
-    const pending = sanitizePendingAction({
-      command: '!remember',
-      args: { key: src.key, value: src.value },
-    });
-    return pending ? { key: pending.args.key, value: pending.args.value } : null;
+    const key = String(src.key ?? '').trim();
+    const value = String(src.value ?? '').trim();
+    if (!key || !value) return null;
+    return { key, value };
   }
   if (capability === 'grocery.generate_and_commit') {
-    const pendingPayload = { command: '!grocerylist' };
-    if (src.mode != null && src.mode !== '') pendingPayload.mode = src.mode;
-    if (src.source != null && src.source !== '') pendingPayload.source = src.source;
-    const pending = sanitizePendingAction(pendingPayload);
-    if (!pending) return null;
     const out = {};
-    if (pending.mode) out.mode = pending.mode;
-    if (pending.source) out.source = pending.source;
+    if (src.mode != null && src.mode !== '') {
+      const mode = String(src.mode).trim().toLowerCase();
+      if (!['append', 'replace', 'prune'].includes(mode)) return null;
+      out.mode = mode;
+    }
+    if (src.source != null && src.source !== '') {
+      const source = String(src.source).trim();
+      if (!source) return null;
+      out.source = source;
+    }
     return out;
   }
   if (capability === 'weekly_plan.patch') {
-    const pending = sanitizePendingAction({
-      command: 'weekly_plan_draft_patch',
-      patch: src.patch,
-    });
-    return pending ? { patch: pending.patch } : null;
+    const patch = src.patch && typeof src.patch === 'object' && !Array.isArray(src.patch) ? src.patch : null;
+    return patch ? { patch } : null;
   }
   if (capability === 'chat.rename') {
-    const pending = sanitizePendingAction({
-      command: '!rename',
-      mode: src.mode,
-      args: src.args,
-    });
-    if (!pending) return null;
-    const out = { mode: pending.mode || 'auto' };
-    if (pending.args?.title) out.args = { title: pending.args.title };
+    const mode = String(src.mode ?? 'auto').trim().toLowerCase();
+    if (!['auto', 'manual', 'set'].includes(mode)) return null;
+    const out = { mode };
+    const title = String(src.args?.title ?? '').trim();
+    if (title) out.args = { title };
     return out;
   }
   if (capability === 'help.show') {
@@ -62,15 +62,21 @@ function sanitizeRuntimeActionInput(capability, input) {
 }
 
 export const CAPABILITY_REGISTRY = Object.freeze({
+  'grocery.preview': {
+    capability: 'grocery.preview',
+    confirmationPolicy: 'execute',
+    interpreterDescription: 'Generate a grocery list preview in chat from the current meal-planning context without updating the Grocery List tab.',
+    humanLabel: 'grocery preview',
+  },
   'memory.save': {
     capability: 'memory.save',
-    confirmationPolicy: 'confirm_or_execute',
+    confirmationPolicy: 'execute',
     interpreterDescription: 'Save or update a durable household memory key/value pair.',
     humanLabel: 'memory save',
   },
   'grocery.generate_and_commit': {
     capability: 'grocery.generate_and_commit',
-    confirmationPolicy: 'confirm_or_execute',
+    confirmationPolicy: 'execute',
     interpreterDescription: 'Generate or commit grocery list changes for this chat.',
     humanLabel: 'grocery list update',
   },
@@ -94,16 +100,11 @@ export const CAPABILITY_REGISTRY = Object.freeze({
   },
 });
 
-const COMMAND_TO_CAPABILITY = new Map([
-  ['!remember', 'memory.save'],
-  ['!grocerylist', 'grocery.generate_and_commit'],
-  ['weekly_plan_draft_patch', 'weekly_plan.patch'],
-  ['!rename', 'chat.rename'],
-  ['!help', 'help.show'],
-]);
-
-export function listCapabilitiesForInterpreter() {
-  return Object.values(CAPABILITY_REGISTRY).map((entry) => ({
+export function listCapabilitiesForInterpreter(opts = {}) {
+  const includeWeeklyPlanPatch = opts.includeWeeklyPlanPatch !== false;
+  return Object.values(CAPABILITY_REGISTRY)
+    .filter((entry) => includeWeeklyPlanPatch || entry.capability !== 'weekly_plan.patch')
+    .map((entry) => ({
     capability: entry.capability,
     confirmationPolicy: entry.confirmationPolicy,
     description: entry.interpreterDescription,
@@ -128,76 +129,6 @@ export function normalizeRuntimeActionList(actions) {
     out.push(normalized);
   }
   return out;
-}
-
-export function runtimeActionToPendingAction(action) {
-  const normalized = normalizeRuntimeAction(action);
-  if (!normalized) return null;
-  if (normalized.capability === 'memory.save') {
-    return sanitizePendingAction({
-      command: '!remember',
-      args: { key: normalized.input.key, value: normalized.input.value },
-    });
-  }
-  if (normalized.capability === 'grocery.generate_and_commit') {
-    return sanitizePendingAction({
-      command: '!grocerylist',
-      mode: normalized.input.mode,
-      source: normalized.input.source,
-    });
-  }
-  if (normalized.capability === 'weekly_plan.patch') {
-    return sanitizePendingAction({
-      command: 'weekly_plan_draft_patch',
-      patch: normalized.input.patch,
-    });
-  }
-  if (normalized.capability === 'chat.rename') {
-    return sanitizePendingAction({
-      command: '!rename',
-      mode: normalized.input.mode,
-      args: normalized.input.args,
-    });
-  }
-  if (normalized.capability === 'help.show') {
-    return sanitizePendingAction({ command: '!help' });
-  }
-  return null;
-}
-
-export function pendingActionToRuntimeAction(action) {
-  const pending = sanitizePendingAction(action);
-  if (!pending) return null;
-  const capability = COMMAND_TO_CAPABILITY.get(String(pending.command ?? ''));
-  if (!capability) return null;
-  if (capability === 'memory.save') {
-    return normalizeRuntimeAction({
-      capability,
-      input: { key: pending.args.key, value: pending.args.value },
-    });
-  }
-  if (capability === 'grocery.generate_and_commit') {
-    return normalizeRuntimeAction({
-      capability,
-      input: { mode: pending.mode, source: pending.source },
-    });
-  }
-  if (capability === 'weekly_plan.patch') {
-    return normalizeRuntimeAction({
-      capability,
-      input: { patch: pending.patch },
-    });
-  }
-  if (capability === 'chat.rename') {
-    return normalizeRuntimeAction({
-      capability,
-      input: { mode: pending.mode, args: pending.args },
-    });
-  }
-  if (capability === 'help.show') {
-    return normalizeRuntimeAction({ capability, input: {} });
-  }
-  return null;
 }
 
 export function classifyRuntimeAction(action) {
@@ -233,54 +164,6 @@ function pickStableVariant(seed, options) {
   return variants[stableVariantIndex(seed, variants.length)];
 }
 
-export function renderSmartPendingReply(action, memoriesByKey = null) {
-  const normalized = normalizeRuntimeAction(action) || pendingActionToRuntimeAction(action);
-  if (!normalized) return 'I can do that. Want me to go ahead?';
-
-  if (normalized.capability === 'grocery.generate_and_commit') {
-    if (normalized.input?.mode === 'replace') {
-      return "If you'd like, I can replace what's currently on your Grocery List tab with this list.";
-    }
-    if (normalized.input?.mode === 'prune') {
-      return 'If you want, I can update the Grocery List tab and remove the items that no longer fit this plan.';
-    }
-    return 'If you want, I can add these to your Grocery List tab.';
-  }
-
-  if (normalized.capability === 'memory.save') {
-    const key = String(normalized.input?.key ?? '').trim();
-    const value = String(normalized.input?.value ?? '').trim();
-    const memMap = memoriesByKey instanceof Map ? memoriesByKey : null;
-    if (memMap && key && memMap.has(key)) {
-      const existing = String(memMap.get(key) ?? '').trim();
-      if (existing && existing !== value) {
-        return `I can update the saved ${key.replace(/_/g, ' ')} note to include “${truncateHumanSnippet(value, 120)}.” Want me to go ahead?`;
-      }
-    }
-    if (key && value) {
-      return `I can save that in household memory as ${key.replace(/_/g, ' ')}: “${truncateHumanSnippet(value, 120)}.” Want me to go ahead?`;
-    }
-    return 'I can save that in household memory. Want me to go ahead?';
-  }
-
-  if (normalized.capability === 'chat.rename') {
-    if (normalized.input?.mode === 'manual' && normalized.input?.args?.title) {
-      return `I can rename this chat to “${truncateHumanSnippet(normalized.input.args.title, 120)}.” Want me to go ahead?`;
-    }
-    return 'I can rename this chat based on the conversation. Want me to go ahead?';
-  }
-
-  if (normalized.capability === 'help.show') {
-    return 'I can show a quick overview of what I can help with. Want me to open that?';
-  }
-
-  if (normalized.capability === 'weekly_plan.patch') {
-    return 'I can update your weekly dinner plan for this chat. Want me to go ahead?';
-  }
-
-  return 'I can do that. Want me to go ahead?';
-}
-
 export function renderSmartHelpReply() {
   return [
     'Here’s what I can help with in Smart Mode:',
@@ -308,14 +191,14 @@ export function renderSmartExecutionOutcome(outcome, opts = {}) {
   if (outcome.capability === 'memory.save') {
     if (outcome.status === 'saved' && outcome.key && outcome.storedValue) {
       return pickStableVariant(seed, [
-        `I saved that in household memory as ${String(outcome.key).replace(/_/g, ' ')}: “${truncateHumanSnippet(outcome.storedValue, 120)}.”`,
-        `I added that to household memory under ${String(outcome.key).replace(/_/g, ' ')}: “${truncateHumanSnippet(outcome.storedValue, 120)}.”`,
+        `I saved that for later as ${String(outcome.key).replace(/_/g, ' ')}: “${truncateHumanSnippet(outcome.storedValue, 120)}.”`,
+        `I added that to saved memory under ${String(outcome.key).replace(/_/g, ' ')}: “${truncateHumanSnippet(outcome.storedValue, 120)}.”`,
       ]);
     }
     if (outcome.status === 'updated' && outcome.key) {
       return pickStableVariant(seed, [
-        `I updated the saved ${String(outcome.key).replace(/_/g, ' ')} note.`,
-        `I updated that household memory entry for ${String(outcome.key).replace(/_/g, ' ')}.`,
+        `I updated the saved ${String(outcome.key).replace(/_/g, ' ')} memory.`,
+        `I updated that saved memory entry for ${String(outcome.key).replace(/_/g, ' ')}.`,
       ]);
     }
     if (outcome.status === 'unchanged') {
@@ -328,7 +211,7 @@ export function renderSmartExecutionOutcome(outcome, opts = {}) {
       return null;
     }
     if (outcome.status === 'invalid') {
-      return outcome.error || 'I could not save that to household memory.';
+      return outcome.error || 'I could not save that to memory.';
     }
   }
 
@@ -407,6 +290,14 @@ export function renderSmartExecutionOutcome(outcome, opts = {}) {
 
   if (outcome.capability === 'help.show' && outcome.status === 'shown') {
     return renderSmartHelpReply();
+  }
+
+  if (typeof outcome.reply === 'string' && outcome.reply.trim()) {
+    return outcome.reply.trim();
+  }
+
+  if (typeof outcome.error === 'string' && outcome.error.trim()) {
+    return outcome.error.trim();
   }
 
   return null;

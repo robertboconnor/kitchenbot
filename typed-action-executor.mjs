@@ -1,15 +1,14 @@
 import {
   classifyRuntimeAction,
   normalizeRuntimeAction,
-  pendingActionToRuntimeAction,
 } from './capability-registry.mjs';
 import { executeChatRename, executeHelpShow } from './chat-executor.mjs';
-import { executeGroceryGenerateAndCommit } from './grocery-executor.mjs';
+import { executeGroceryGenerateAndCommit, executeGroceryPreview } from './grocery-executor.mjs';
 import { executeMemorySave } from './memory-executor.mjs';
 import { executeWeeklyPlanPatch } from './weekly-plan-executor.mjs';
 
 export async function dispatchTypedAction(action, context) {
-  const normalizedAction = normalizeRuntimeAction(action) || pendingActionToRuntimeAction(action);
+  const normalizedAction = normalizeRuntimeAction(action);
   const classified = normalizedAction ? classifyRuntimeAction(normalizedAction) : null;
   if (!classified) {
     console.error('dispatchTypedAction: unknown typed action', {
@@ -26,6 +25,8 @@ export async function dispatchTypedAction(action, context) {
   }
 
   switch (classified.capability) {
+    case 'grocery.preview':
+      return executeGroceryPreview(classified.action, context);
     case 'memory.save':
       return executeMemorySave(classified.action, context);
     case 'grocery.generate_and_commit':

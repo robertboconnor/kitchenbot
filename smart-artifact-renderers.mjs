@@ -1,3 +1,6 @@
+import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
+import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
+
 function safeTrim(text) {
   return String(text ?? '').trim();
 }
@@ -64,11 +67,7 @@ export function formatSmartWeeklyPlanArtifact(draft) {
 }
 
 export function withSmartPlannerWeeklyPlanArtifact(plannerWeeklyPatchAck, draft, replyText) {
-  if (!plannerWeeklyPatchAck) return replyText;
-  const artifact = formatSmartWeeklyPlanArtifact(draft);
-  if (!artifact) return replyText;
-  const base = safeTrim(replyText);
-  return base ? `${base}\n\n${artifact}` : artifact;
+  return replyText;
 }
 
 export function formatSmartGroceryPreviewArtifact(items) {
@@ -103,8 +102,9 @@ export function formatSmartGroceryPreviewArtifact(items) {
 async function generateTextWithFallback({ anthropic, system, payload, fallback, usageContext = null }) {
   if (!anthropic) return fallback;
   try {
+    const callPurpose = 'smart_artifact_phrase';
     const response = await createLoggedAnthropicMessage(anthropic, {
-      model: 'claude-sonnet-4-5',
+      model: resolveAnthropicModelForCallPurpose(callPurpose),
       max_tokens: 140,
       system,
       messages: [
@@ -118,7 +118,7 @@ async function generateTextWithFallback({ anthropic, system, payload, fallback, 
       chatId: usageContext?.chatId,
       smartModeEnabled: usageContext?.smartModeEnabled !== false,
       callSurface: 'background',
-      callPurpose: 'smart_artifact_phrase',
+      callPurpose,
       webSearchEnabledAtCall: false,
       usedWebSearchTool: false,
     });
@@ -137,13 +137,13 @@ async function generateTextWithFallback({ anthropic, system, payload, fallback, 
 export async function generateSmartGroceryPreviewLead({
   anthropic,
   prompt,
-  weeklyPlanDraftCompact,
+  contextSummary,
   itemCount,
   householdId = null,
   chatId = null,
 }) {
   const fallback =
-    "I pulled together a shopping list from the dinners we planned. Here's a preview before I change your Grocery List tab.";
+    "I pulled together a shopping list from this conversation. Here's a preview before I change your Grocery List tab.";
   return generateTextWithFallback({
     anthropic,
     fallback,
@@ -156,7 +156,7 @@ Do mention that this is a preview and that the Grocery List tab has not been cha
 Do not ask for confirmation in this line.`,
     payload: {
       userMessage: safeTrim(prompt),
-      weeklyPlanDraftCompact: safeTrim(weeklyPlanDraftCompact),
+      contextSummary: safeTrim(contextSummary),
       itemCount: Number(itemCount) || 0,
     },
     usageContext: { householdId, chatId, smartModeEnabled: true },
@@ -166,7 +166,7 @@ Do not ask for confirmation in this line.`,
 export async function generateSmartGroceryPreviewCommitReply({
   anthropic,
   prompt,
-  weeklyPlanDraftCompact,
+  contextSummary,
   itemCount,
   householdId = null,
   chatId = null,
@@ -186,7 +186,7 @@ Make it clear that the preview is ready and you can put it into the Grocery List
 Do not mention replace/append choices yet.`,
     payload: {
       userMessage: safeTrim(prompt),
-      weeklyPlanDraftCompact: safeTrim(weeklyPlanDraftCompact),
+      contextSummary: safeTrim(contextSummary),
       itemCount: Number(itemCount) || 0,
     },
     usageContext: { householdId, chatId, smartModeEnabled: true },
@@ -196,7 +196,7 @@ Do not mention replace/append choices yet.`,
 export async function generateSmartGroceryModeChoiceReply({
   anthropic,
   prompt,
-  weeklyPlanDraftCompact,
+  contextSummary,
   choiceMode,
   householdId = null,
   chatId = null,
@@ -217,10 +217,9 @@ Explain the two choices in natural language.
 End with a direct question.`,
     payload: {
       userMessage: safeTrim(prompt),
-      weeklyPlanDraftCompact: safeTrim(weeklyPlanDraftCompact),
+      contextSummary: safeTrim(contextSummary),
       choiceMode: safeTrim(choiceMode),
     },
     usageContext: { householdId, chatId, smartModeEnabled: true },
   });
 }
-import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';

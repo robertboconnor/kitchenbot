@@ -4,7 +4,23 @@ const MODEL_PRICING_USD_PER_MILLION = {
   'claude-sonnet-4-5': { input: 3, output: 15, cacheCreation: 3.75, cacheRead: 0.3 },
   'claude-3-7-sonnet-latest': { input: 3, output: 15, cacheCreation: 3.75, cacheRead: 0.3 },
   'claude-3-5-sonnet-latest': { input: 3, output: 15, cacheCreation: 3.75, cacheRead: 0.3 },
+  'claude-3-5-haiku-latest': { input: 0.8, output: 4, cacheCreation: 1, cacheRead: 0.08 },
+  'claude-haiku-4-5-20251001': { input: 1, output: 5, cacheCreation: 1.25, cacheRead: 0.1 },
 };
+
+function normalizeAnthropicModelForPricing(rawModel) {
+  const model = String(rawModel ?? '').trim();
+  if (!model) return '';
+  if (MODEL_PRICING_USD_PER_MILLION[model]) return model;
+
+  if (/^claude-sonnet-4-5-\d{8}$/.test(model)) return 'claude-sonnet-4-5';
+  if (/^claude-3-7-sonnet-\d{8}$/.test(model)) return 'claude-3-7-sonnet-latest';
+  if (/^claude-3-5-sonnet-\d{8}$/.test(model)) return 'claude-3-5-sonnet-latest';
+  if (/^claude-3-5-haiku-\d{8}$/.test(model)) return 'claude-3-5-haiku-latest';
+  if (/^claude-haiku-4-5-\d{8}$/.test(model)) return 'claude-haiku-4-5-20251001';
+
+  return '';
+}
 
 function asNumberOrNull(value) {
   const n = Number(value);
@@ -37,7 +53,8 @@ export function extractAnthropicUsageFields(response) {
 }
 
 export function estimateAnthropicLedgerCostUsd(row) {
-  const pricing = MODEL_PRICING_USD_PER_MILLION[String(row?.model ?? '').trim()];
+  const normalizedModel = normalizeAnthropicModelForPricing(row?.model);
+  const pricing = MODEL_PRICING_USD_PER_MILLION[normalizedModel];
   if (!pricing) return null;
   const inputTokens = Number(row?.input_tokens ?? row?.inputTokens ?? 0) || 0;
   const outputTokens = Number(row?.output_tokens ?? row?.outputTokens ?? 0) || 0;

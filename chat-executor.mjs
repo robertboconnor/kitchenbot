@@ -1,5 +1,6 @@
 import { renderSmartHelpReply } from './capability-registry.mjs';
 import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
+import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
 
 export async function executeChatRename(runtimeAction, context) {
   const { req, chatId, anthropic, deps = {} } = context;
@@ -24,8 +25,9 @@ export async function executeChatRename(runtimeAction, context) {
   }));
   let title = 'New chat';
   try {
+    const callPurpose = 'chat_title_generation';
     const titleRes = await createLoggedAnthropicMessage(anthropic, {
-      model: 'claude-sonnet-4-5',
+      model: resolveAnthropicModelForCallPurpose(callPurpose),
       max_tokens: 30,
       system: 'You generate very short chat titles (3–6 words). Respond with ONLY the title, no quotes or punctuation.',
       messages: [
@@ -36,8 +38,8 @@ export async function executeChatRename(runtimeAction, context) {
       householdId: req.householdId,
       chatId,
       smartModeEnabled: true,
-      callSurface: 'command',
-      callPurpose: 'chat_title_generation',
+      callSurface: 'background',
+      callPurpose,
       webSearchEnabledAtCall: false,
       usedWebSearchTool: false,
     });

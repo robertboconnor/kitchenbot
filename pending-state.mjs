@@ -761,6 +761,7 @@ export {
   routePromptFromSanitizedPendingAction,
   appendPendingMarkerToAssistantContent,
   parsePendingMarkerFromAssistantContent,
+  stripKitchenBotHiddenMarkers,
   buildPendingActionReply,
   isShortAffirmativeConfirm,
   isNaturalLanguageGroceryPendingConfirmation,

@@ -59,7 +59,5 @@ export async function handleLegacyChatTurn(params) {
     memoriesByKey,
     anthropic,
     householdWebSearchEnabled,
-    smartModeEnabled: false,
-    runtimeStateMode: 'legacy',
   });
 }

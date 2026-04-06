@@ -1,5 +1,6 @@
 import { getChatThreadContext, updateWeeklyPlanDraft } from './db.mjs';
 import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
+import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
 
 function parseJsonObjectFromModelText(raw) {
   let s = String(raw ?? '').trim();
@@ -116,8 +117,9 @@ async function resolveWeeklyPlanPatchWithModel({
     userMessage: String(prompt ?? '').trim(),
     hintedPatch: rawPatch ?? {},
   };
+  const callPurpose = 'weekly_plan_auto_update';
   const res = await createLoggedAnthropicMessage(anthropic, {
-    model: 'claude-sonnet-4-5',
+    model: resolveAnthropicModelForCallPurpose(callPurpose),
     max_tokens: 700,
     system: `You resolve weekly dinner plan updates for a household planner. Output ONLY one JSON object.
 
@@ -152,7 +154,7 @@ Rules:
     chatId,
     smartModeEnabled: true,
     callSurface: 'background',
-    callPurpose: 'weekly_plan_auto_update',
+    callPurpose,
     webSearchEnabledAtCall: false,
     usedWebSearchTool: false,
   });

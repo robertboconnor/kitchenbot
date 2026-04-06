@@ -1,23 +1,21 @@
-import { getChatThreadContext, getMemories, updateChatThreadScene, upsertMemory } from './db.mjs';
+import {
+  getMemories,
+  getSmartDurableMemoryByTypeAndLabel,
+  listSmartDurableMemories,
+  saveSmartDurableMemory,
+  upsertMemory,
+} from './db.mjs';
 import {
   mergeMemoryProposalWithExisting,
   normalizeRememberKeyForStorage,
   normalizeRememberValueForStorage,
 } from './smart-memory-policy.mjs';
-
-const THREAD_SCENE_REMEMBER_PREVIEW_MAX = 120;
-
-function threadSceneRememberValuePreview(value) {
-  const s = String(value ?? '');
-  if (s.length <= THREAD_SCENE_REMEMBER_PREVIEW_MAX) return s;
-  return s.slice(0, THREAD_SCENE_REMEMBER_PREVIEW_MAX - 1) + '…';
-}
-
-async function safeUpdateThreadScene(chatId, householdId, patch) {
-  return updateChatThreadScene(chatId, householdId, patch).catch((e) => {
-    console.error('safeUpdateThreadScene failed:', e?.message || e);
-  });
-}
+import {
+  buildSmartDurableMemoryRecordForStorage,
+  formatSmartDurableMemoriesForPrompt,
+  inferSmartDurableMemoryRecord,
+  mergeSmartDurableMemoryForUpsert,
+} from './smart-durable-memory.mjs';
 
 function buildLegacyRememberReply(outcome) {
   if (!outcome || typeof outcome !== 'object') return 'I could not save that to memory.';
@@ -34,7 +32,17 @@ function buildLegacyRememberReply(outcome) {
   return 'I could not save that to memory.';
 }
 
-function buildPlannerRememberAckFragment(normKey, displayValue) {
+function buildMemoryOutcomeReply(outcome) {
+  if (!outcome || typeof outcome !== 'object') return 'I could not save that to memory.';
+  if (outcome.status === 'invalid') return outcome.error || 'I could not save that to memory.';
+  if (outcome.status === 'saved') return `I saved that to memory as ${outcome.key}.`;
+  if (outcome.status === 'updated') return `I updated the saved memory for ${outcome.key}.`;
+  if (outcome.status === 'unchanged') return `I already had that saved for ${outcome.key}.`;
+  if (outcome.status === 'skipped') return 'I did not save that to memory.';
+  return 'I could not save that to memory.';
+}
+
+function buildLegacyRememberAckFragment(normKey, displayValue) {
   const v = String(displayValue ?? '').trim();
   const nv = v.length > 120 ? v.slice(0, 119) + '…' : v;
   const nk = String(normKey ?? '').trim();
@@ -52,10 +60,18 @@ export async function executeMemorySave(runtimeAction, context) {
     prompt,
     memories = [],
     anthropic,
-    plannerMode = false,
+    legacyCommandMode = false,
+    skipIncrement = false,
+    userMessageAlreadyPersisted = false,
+    runtimeManagedResponse = false,
     smartModeEnabled = false,
     deps = {},
   } = context;
+  const legacyCommand = !!legacyCommandMode;
+
+  if (!skipIncrement) {
+    await deps.incrementUserMessageCountForSender?.(req);
+  }
 
   const keyRaw = runtimeAction?.input?.key;
   const valueRaw = runtimeAction?.input?.value;
@@ -72,7 +88,73 @@ export async function executeMemorySave(runtimeAction, context) {
 
   const existing = Array.isArray(memories) ? memories.find((r) => r.key === normKey) : null;
   let outcome;
-  if (!existing) {
+  if (smartModeEnabled) {
+    const shaped = await inferSmartDurableMemoryRecord({
+      anthropic,
+      householdId: req.householdId,
+      chatId,
+      key: normKey,
+      value: newValue,
+    });
+    const record = buildSmartDurableMemoryRecordForStorage(shaped);
+    if (!record) {
+      outcome = {
+        capability: 'memory.save',
+        status: 'invalid',
+        key: normKey,
+        error: 'I could not shape that into Smart durable memory.',
+      };
+    } else {
+      const priorStructured = await getSmartDurableMemoryByTypeAndLabel(
+        req.householdId,
+        record.memoryType,
+        record.normalizedLabel
+      );
+      if (!priorStructured) {
+        await saveSmartDurableMemory(req.householdId, record, {
+          sourceKind: 'smart_action',
+          sourceChatId: chatId,
+        });
+        outcome = {
+          capability: 'memory.save',
+          status: 'saved',
+          key: normKey,
+          storedValue: record.summary,
+          previousValue: null,
+          memoryType: record.memoryType,
+          label: record.label,
+        };
+      } else {
+        const mergedStructured = mergeSmartDurableMemoryForUpsert(priorStructured, record);
+        if ((mergedStructured.summary || '').trim() === String(priorStructured.summary ?? '').trim()) {
+          outcome = {
+            capability: 'memory.save',
+            status: 'unchanged',
+            key: normKey,
+            storedValue: String(priorStructured.summary ?? ''),
+            previousValue: String(priorStructured.summary ?? ''),
+            memoryType: mergedStructured.memoryType,
+            label: mergedStructured.label,
+          };
+        } else {
+          await saveSmartDurableMemory(req.householdId, mergedStructured, {
+            id: priorStructured.id,
+            sourceKind: 'smart_action',
+            sourceChatId: chatId,
+          });
+          outcome = {
+            capability: 'memory.save',
+            status: 'updated',
+            key: normKey,
+            storedValue: mergedStructured.summary,
+            previousValue: String(priorStructured.summary ?? ''),
+            memoryType: mergedStructured.memoryType,
+            label: mergedStructured.label,
+          };
+        }
+      }
+    }
+  } else if (!existing) {
     await upsertMemory(req.householdId, normKey, newValue);
     outcome = {
       capability: 'memory.save',
@@ -105,49 +187,13 @@ export async function executeMemorySave(runtimeAction, context) {
     }
   }
 
-  if ((outcome.status === 'saved' || outcome.status === 'updated') && smartModeEnabled) {
-    await safeUpdateThreadScene(chatId, req.householdId, {
-      lastAction: 'remember',
-      lastRememberKey: normKey,
-      lastRememberValuePreview: threadSceneRememberValuePreview(outcome.storedValue),
-      lastActionAt: Date.now(),
-      openLoop: null,
-    });
+  outcome.reply = buildMemoryOutcomeReply(outcome);
 
-    try {
-      const ctxScene = await getChatThreadContext(chatId, req.householdId);
-      const memoriesRefreshed = await getMemories(req.householdId);
-      const memCompact = memoriesRefreshed
-        .filter((m) => m.key !== 'assistant_name')
-        .map((m) => `${m.key}: ${m.value}`)
-        .join('\n');
-      const conv = await deps.getMessages?.(chatId, req.householdId);
-      const conversationForContext = Array.isArray(conv)
-        ? conv.filter((m) => m.role !== 'user' || !String(m.content || '').trim().startsWith('!'))
-        : [];
-      const recentForUpdater =
-        conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
-      void deps.runThreadSceneAutoUpdaterAfterNormalChat?.(anthropic, {
-        smartModeEnabled: true,
-        chatId,
-        householdId: req.householdId,
-        priorThreadScene: ctxScene.threadScene,
-        routePrompt: prompt,
-        finalAssistantReply: buildLegacyRememberReply(outcome),
-        threadMealPlanSummary: ctxScene.mealPlanSummary,
-        threadGrocerySummary: ctxScene.threadGrocerySummary,
-        householdMemoriesCompact: memCompact,
-        recentConversationForContext: recentForUpdater,
-        trustedActionSummary: `remember saved key ${normKey}`,
-      });
-    } catch (e) {
-      console.error('thread scene auto-update (remember) setup failed:', e?.message || e);
+  if (!runtimeManagedResponse) {
+    if (!userMessageAlreadyPersisted) {
+      await deps.addMessage?.(chatId, req.householdId, 'user', name, prompt);
     }
-  }
-
-  if (!plannerMode) {
-    await deps.addMessage?.(chatId, req.householdId, 'user', name, prompt);
-    await deps.addMessage?.(chatId, req.householdId, 'assistant', 'KitchenBot', buildLegacyRememberReply(outcome));
+    await deps.addMessage?.(chatId, req.householdId, 'assistant', 'KitchenBot', smartModeEnabled ? outcome.reply : buildLegacyRememberReply(outcome));
     deps.broadcastToChat?.(chatId, {
       type: 'chat_updated',
       householdId: req.householdId,
@@ -156,8 +202,8 @@ export async function executeMemorySave(runtimeAction, context) {
     });
   }
 
-  if ((outcome.status === 'saved' || outcome.status === 'updated') && plannerMode) {
-    outcome.plannerAckFragment = buildPlannerRememberAckFragment(normKey, outcome.storedValue);
+  if ((outcome.status === 'saved' || outcome.status === 'updated') && legacyCommand) {
+    outcome.legacyAckFragment = buildLegacyRememberAckFragment(normKey, outcome.storedValue);
   }
 
   return outcome;
@@ -173,7 +219,7 @@ export async function runRememberSharedCommandEffects(params) {
     memories,
     anthropic,
     routePrompt,
-    plannerMode = false,
+    legacyCommandMode = false,
     smartModeEnabled = false,
     deps = {},
   } = params;
@@ -185,7 +231,7 @@ export async function runRememberSharedCommandEffects(params) {
       status: 'invalid',
       error: memoryParsed.error,
     };
-    if (!plannerMode) {
+    if (!legacyCommandMode) {
       await deps.addMessage?.(chatId, req.householdId, 'user', name, commandUserTextForPersistence);
       await deps.addMessage?.(chatId, req.householdId, 'assistant', 'KitchenBot', memoryParsed.error);
       deps.broadcastToChat?.(chatId, {
@@ -205,7 +251,7 @@ export async function runRememberSharedCommandEffects(params) {
         prompt: commandUserTextForPersistence,
         memories,
         anthropic,
-        plannerMode,
+        legacyCommandMode,
         smartModeEnabled,
         deps,
       }
@@ -214,7 +260,7 @@ export async function runRememberSharedCommandEffects(params) {
 
   return {
     reply: buildLegacyRememberReply(outcome),
-    plannerRememberAck: outcome?.plannerAckFragment || null,
+    legacyRememberAck: outcome?.legacyAckFragment || null,
     outcome,
   };
 }

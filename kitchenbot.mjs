@@ -11,6 +11,7 @@ import {
   clearMessages,
   upsertMemory,
   deleteMemory,
+  deleteSmartDurableMemory,
   deleteLegacySeedMemories,
   addGroceryItems,
   getGroceryItems,
@@ -53,8 +54,11 @@ import {
   verifyPin,
   getHouseholdMessageStats,
   getUserMessageCountsInHousehold,
+  getSmartDurableMemoryByTypeAndLabel,
   getChatThreadContext,
   upsertChatThreadContext,
+  listSmartDurableMemories,
+  saveSmartDurableMemory,
   updateChatThreadScene,
   replaceChatThreadScene,
   updateWeeklyPlanDraft,
@@ -69,16 +73,16 @@ import {
   isPendingActionConfirmation,
   groceryTabOfferTextMatchesForPending,
 } from './pending-state.mjs';
-import { decideCommandRoute, weeklyPlanDraftHasMeaningfulContent, isWeeklyPlanningLikeUserTurn } from './interaction-engine.mjs';
+import { decideCommandRoute, weeklyPlanDraftHasMeaningfulContent } from './interaction-engine.mjs';
 import { runSmartModeInterpreter as invokeSmartModeInterpreterModel } from './smart-mode-interpreter.mjs';
 import { handleSmartModeChatTurn } from './smart-chat-runtime.mjs';
 import { handleLegacyChatTurn } from './legacy-chat-runtime.mjs';
-import { runSmartTypedPlan } from './smart-plan-executor.mjs';
+import { executeSmartActions } from './smart-action-executor.mjs';
 import { runGrocerySharedCommandEffects as runGrocerySharedExecutorEffects, runWeeklyPlanGroceryDraftOfferResponse as runWeeklyPlanGroceryDraftOfferExecutorResponse } from './grocery-executor.mjs';
+import { interpretGrocerySkillFollowUp } from './grocery-smart-skill.mjs';
 import { runRememberSharedCommandEffects as runRememberSharedExecutorEffects } from './memory-executor.mjs';
 import {
   listCapabilitiesForInterpreter,
-  renderSmartPendingReply,
 } from './capability-registry.mjs';
 import {
   formatSmartGroceryPreviewArtifact,
@@ -89,18 +93,24 @@ import {
   withSmartPlannerWeeklyPlanArtifact,
 } from './smart-artifact-renderers.mjs';
 import {
-  buildMixedMemoryOfferLine as buildSmartMixedMemoryOfferLine,
-  hasStrongMemoryIntentKeywords as hasSmartStrongMemoryIntentKeywords,
   isDurableAutoMemoryCandidate as isSmartDurableAutoMemoryCandidate,
-  isMixedIntentMemoryMessage as isSmartMixedIntentMemoryMessage,
   shouldApplyDurableAutoMemoryGuard as shouldApplySmartDurableAutoMemoryGuard,
-  tryAiMemoryProposal as trySmartAiMemoryProposal,
 } from './smart-memory-policy.mjs';
+import {
+  buildSmartDurableMemoryRecordForStorage,
+  buildPersonSummaryFromNotes,
+  getSmartDurableMemoryPromptContext,
+  isMealGroceryPersonalizationTurn,
+  mergeSmartDurableMemoryForUpsert,
+  normalizeSmartDurablePersonNotes,
+  normalizeSmartDurableMemoryType,
+} from './smart-durable-memory.mjs';
 import {
   createLoggedAnthropicMessage,
   finalizeLoggedAnthropicStream,
   estimateAnthropicLedgerCostUsd,
 } from './anthropic-usage.mjs';
+import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
 import 'dotenv/config';
 import os from 'os';
 import http from 'http';
@@ -389,6 +399,9 @@ async function buildSmartModeInterpreterContext(input) {
     chatId,
     householdId,
     memoriesByKey,
+    allowedCapabilities,
+    includeWeeklyPlanArtifactContext = false,
+    runtimeProposedNextAction,
     recoveredPending,
     bodyExecutePending,
     stripStoredMessageContentForDisplay,
@@ -408,11 +421,14 @@ async function buildSmartModeInterpreterContext(input) {
     ? truncateSmartModeContext(stripStoredMessageContentForDisplay(String(lastAssistantMsg.content ?? '')), 800)
     : null;
 
-  const memoryLines = [...memoriesByKey.entries()]
-    .filter(([k]) => k !== 'assistant_name')
-    .map(([k, v]) => `${k}: ${truncateSmartModeContext(String(v), 220)}`)
-    .join('\n');
-  const householdMemoriesCompact = memoryLines.length ? truncateSmartModeContext(memoryLines, 8000) : '(none)';
+  const smartMemoryPromptContext = await getSmartDurableMemoryPromptContext(
+    householdId,
+    {
+      prompt,
+    },
+    { limit: 6 }
+  );
+  const householdMemoriesCompact = smartMemoryPromptContext.promptText || '(none)';
 
   let recoveredPendingSummary = null;
   if (recoveredPending && typeof recoveredPending === 'object') {
@@ -430,50 +446,103 @@ async function buildSmartModeInterpreterContext(input) {
       ? { command: s.command, mode: s.mode ?? null, key: s.args?.key ?? null }
       : '[unparsed]';
   }
-
-  const threadScene =
-    threadCtx.threadScene && typeof threadCtx.threadScene === 'object' && !Array.isArray(threadCtx.threadScene)
-      ? threadCtx.threadScene
-      : {};
-  const threadSceneCompact =
-    Object.keys(threadScene).length === 0
-      ? '(empty)'
-      : truncateSmartModeContext(JSON.stringify(threadScene), 800);
-  const weeklyPlanDraftCompact = formatWeeklyPlanDraftForPrompt(threadCtx.weeklyPlanDraft ?? {});
-  const weeklyPlanMealsIndexed = Array.isArray(threadCtx.weeklyPlanDraft?.meals)
-    ? threadCtx.weeklyPlanDraft.meals
-        .map((meal, index) => `${index + 1}. ${String(meal ?? '').trim()}`)
-        .filter((line) => !/^\d+\.\s*$/.test(line))
-        .join('\n')
-    : '';
+  const weeklyPlanDraftCompact = includeWeeklyPlanArtifactContext && weeklyPlanDraftHasMeaningfulContent(threadCtx.weeklyPlanDraft ?? {})
+    ? truncateSmartModeContext(formatWeeklyPlanDraftForPrompt(threadCtx.weeklyPlanDraft ?? {}), 1800)
+    : '(not injected)';
+  const weeklyPlanMealsIndexed =
+    includeWeeklyPlanArtifactContext && Array.isArray(threadCtx.weeklyPlanDraft?.meals)
+      ? threadCtx.weeklyPlanDraft.meals
+          .map((meal, index) => `${index + 1}. ${String(meal ?? '').trim()}`)
+          .filter((line) => !/^\d+\.\s*$/.test(line))
+          .join('\n')
+      : '';
+  const activeProposedNextActionSummary =
+    runtimeProposedNextAction && typeof runtimeProposedNextAction === 'object' && !Array.isArray(runtimeProposedNextAction)
+      ? {
+          active: true,
+          type: String(runtimeProposedNextAction.type ?? '').trim() || null,
+          actionCapability: String(runtimeProposedNextAction.action?.capability ?? '').trim() || null,
+          choices: Array.isArray(runtimeProposedNextAction.choices)
+            ? runtimeProposedNextAction.choices
+                .map((choice) => ({
+                  id: String(choice?.id ?? '').trim(),
+                  label: String(choice?.label ?? '').trim(),
+                }))
+                .filter((choice) => choice.id && choice.label)
+                .slice(0, 5)
+            : null,
+          question:
+            typeof runtimeProposedNextAction.question === 'string' && runtimeProposedNextAction.question.trim()
+              ? truncateSmartModeContext(runtimeProposedNextAction.question.trim(), 240)
+              : null,
+          visibleReplySummary:
+            typeof runtimeProposedNextAction.visibleReplySummary === 'string' &&
+            runtimeProposedNextAction.visibleReplySummary.trim()
+              ? truncateSmartModeContext(runtimeProposedNextAction.visibleReplySummary.trim(), 300)
+              : null,
+        }
+      : null;
 
   return {
     smartModeEnabled: !!ctxSmartMode,
-    allowedCapabilities: listCapabilitiesForInterpreter(),
+    allowedCapabilities: Array.isArray(allowedCapabilities) ? allowedCapabilities : listCapabilitiesForInterpreter(),
     currentUserMessage: truncateSmartModeContext(prompt, 4000),
     previousUserMessageInThread,
     lastAssistantVisible,
-    weeklyPlanExists: weeklyPlanDraftHasMeaningfulContent(threadCtx.weeklyPlanDraft ?? {}),
-    threadHasGroceryIntent: String(threadCtx.threadGrocerySummary ?? '').trim().length > 0,
-    threadGrocerySummary: truncateSmartModeContext(threadCtx.threadGrocerySummary, 1200),
-    threadMealPlanSummary: truncateSmartModeContext(threadCtx.mealPlanSummary, 1200),
+    weeklyPlanExists: includeWeeklyPlanArtifactContext && weeklyPlanDraftHasMeaningfulContent(threadCtx.weeklyPlanDraft ?? {}),
     weeklyPlanDraftCompact,
     weeklyPlanMealsIndexed: weeklyPlanMealsIndexed || '(none)',
-    threadSceneCompact,
     householdMemoriesCompact,
+    hasActiveProposedNextAction: !!activeProposedNextActionSummary,
+    activeProposedNextActionSummary,
     recoveredPendingSummary,
     bodyExecutePendingSummary,
   };
 }
 
-const THREAD_SCENE_AUTO_FIELD_MAX = { mission: 500, openLoop: 500, activeMeal: 300 };
+const THREAD_SCENE_AUTO_FIELD_MAX = {
+  mission: 320,
+  openLoop: 220,
+  activeFoodContext: 220,
+  planningHorizon: 80,
+  conversationMode: 60,
+};
+
+function projectThreadSceneForSmartPrompt(threadScene) {
+  const o = threadScene && typeof threadScene === 'object' && !Array.isArray(threadScene) ? threadScene : {};
+  const projected = {
+    mission: typeof o.mission === 'string' ? o.mission.trim() : '',
+    openLoop: typeof o.openLoop === 'string' ? o.openLoop.trim() : '',
+    activeFoodContext:
+      typeof o.activeFoodContext === 'string'
+        ? o.activeFoodContext.trim()
+        : typeof o.activeMeal === 'string'
+          ? o.activeMeal.trim()
+          : '',
+    planningHorizon: typeof o.planningHorizon === 'string' ? o.planningHorizon.trim() : '',
+    conversationMode: typeof o.conversationMode === 'string' ? o.conversationMode.trim() : '',
+  };
+  for (const [key, max] of Object.entries(THREAD_SCENE_AUTO_FIELD_MAX)) {
+    projected[key] = String(projected[key] ?? '').slice(0, max);
+  }
+  return Object.fromEntries(Object.entries(projected).filter(([, value]) => String(value ?? '').trim() !== ''));
+}
+
+function formatThreadSceneForSmartPrompt(threadScene, maxChars = 1000) {
+  const projected = projectThreadSceneForSmartPrompt(threadScene);
+  return Object.keys(projected).length === 0
+    ? '(empty)'
+    : truncateSmartModeContext(JSON.stringify(projected), maxChars);
+}
 
 function pickPriorThreadSceneForAutoUpdater(threadScene) {
-  const o = threadScene && typeof threadScene === 'object' && !Array.isArray(threadScene) ? threadScene : {};
+  const projected = projectThreadSceneForSmartPrompt(threadScene);
   return {
-    mission: typeof o.mission === 'string' ? o.mission : '',
-    openLoop: typeof o.openLoop === 'string' ? o.openLoop : '',
-    activeMeal: typeof o.activeMeal === 'string' ? o.activeMeal : '',
+    mission: typeof projected.mission === 'string' ? projected.mission : '',
+    openLoop: typeof projected.openLoop === 'string' ? projected.openLoop : '',
+    activeFoodContext: typeof projected.activeFoodContext === 'string' ? projected.activeFoodContext : '',
+    planningHorizon: typeof projected.planningHorizon === 'string' ? projected.planningHorizon : '',
+    conversationMode: typeof projected.conversationMode === 'string' ? projected.conversationMode : '',
   };
 }
 
@@ -497,19 +566,20 @@ function buildRecentConversationSnippetForSceneUpdater(recentConversation, maxCh
 
 function validateThreadSceneAutoPatch(parsed) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const ALLOWED = new Set(['mission', 'openLoop', 'activeMeal']);
+  const ALLOWED = new Set(['mission', 'openLoop', 'activeFoodContext', 'planningHorizon', 'conversationMode', 'activeMeal']);
   const out = {};
   for (const key of Object.keys(parsed)) {
     if (!ALLOWED.has(key)) continue;
+    const normalizedKey = key === 'activeMeal' ? 'activeFoodContext' : key;
     const v = parsed[key];
     if (v === null || v === undefined) {
-      out[key] = '';
+      out[normalizedKey] = '';
     } else if (typeof v === 'string') {
-      out[key] = v.trim().slice(0, THREAD_SCENE_AUTO_FIELD_MAX[key]);
+      out[normalizedKey] = v.trim().slice(0, THREAD_SCENE_AUTO_FIELD_MAX[normalizedKey]);
     } else if (typeof v === 'number' && Number.isFinite(v)) {
-      out[key] = String(v).slice(0, THREAD_SCENE_AUTO_FIELD_MAX[key]);
+      out[normalizedKey] = String(v).slice(0, THREAD_SCENE_AUTO_FIELD_MAX[normalizedKey]);
     } else if (typeof v === 'boolean') {
-      out[key] = v ? 'true' : '';
+      out[normalizedKey] = v ? 'true' : '';
     } else {
       return null;
     }
@@ -528,7 +598,7 @@ function threadScenePivotAbandonHint(combinedText) {
 }
 
 /**
- * Best-effort LLM merge of mission / openLoop / activeMeal only (never lastAction or other server keys).
+ * Best-effort LLM merge of compact Smart thread memory only (never lastAction or other server keys).
  * Swallows all errors; does not block the HTTP response when invoked without await.
  * @param {object} params — must include smartModeEnabled; no-ops when false (Smart Mode off).
  */
@@ -550,9 +620,9 @@ async function runThreadSceneAutoUpdaterAfterNormalChat(anthropic, params) {
     const priorFocus = pickPriorThreadSceneForAutoUpdater(priorThreadScene);
     const snippet = buildRecentConversationSnippetForSceneUpdater(recentConversationForContext);
     const payload = {
-      priorMissionOpenLoopActiveMeal: priorFocus,
-      threadMealPlanSummary: truncateSmartModeContext(String(threadMealPlanSummary ?? ''), 2000),
-      threadGrocerySummary: truncateSmartModeContext(String(threadGrocerySummary ?? ''), 2000),
+      priorThreadScene: priorFocus,
+      threadMealPlanSummary: truncateSmartModeContext(String(threadMealPlanSummary ?? ''), 900),
+      threadGrocerySummary: truncateSmartModeContext(String(threadGrocerySummary ?? ''), 900),
       householdMemoriesCompact: truncateSmartModeContext(String(householdMemoriesCompact ?? ''), 4000),
       currentUserMessage: truncateSmartModeContext(String(routePrompt ?? ''), 4000),
       finalAssistantReply: truncateSmartModeContext(String(finalAssistantReply ?? ''), 6000),
@@ -564,25 +634,31 @@ async function runThreadSceneAutoUpdaterAfterNormalChat(anthropic, params) {
     };
     const system = `You output ONLY one JSON object (no markdown, no code fences, no commentary).
 
-Allowed keys ONLY: "mission", "openLoop", "activeMeal". Each value must be a string or null.
+Allowed keys ONLY: "mission", "openLoop", "activeFoodContext", "planningHorizon", "conversationMode". Each value must be a string or null.
 - Short, practical strings; ground them in the supplied inputs only. Do not invent specifics.
-- Do NOT output arrays, nested objects, or any keys other than mission, openLoop, activeMeal.
+- Do NOT output arrays, nested objects, or any keys other than mission, openLoop, activeFoodContext, planningHorizon, conversationMode.
 - Do NOT output or guess lastAction, grocery counts, remember keys, or other server metadata.
+- The goal is a compact, current throughline for this chat, not a running scrapbook of every topic the user ever mentioned.
+- When the chat pivots, overwrite stale context with the newer throughline instead of carrying everything forward.
 
 Clearing rules (be conservative):
-- Finishing a subtask (e.g. a command succeeded) usually does NOT erase the thread’s overall mission. Do NOT clear all three fields just because a command completed.
+- Finishing a subtask (e.g. a command succeeded) usually does NOT erase the thread’s overall mission. Do NOT clear the whole compact thread scene just because a command completed.
 - A successful command often resolves one open loop; you may clear or update openLoop when that step is clearly done. Do not assume the whole thread goal vanished.
 - Preserve mission unless the user clearly pivots, abandons the topic, or the broader goal is clearly complete. When uncertain, keep prior mission.
-- Preserve activeMeal when it still fits prior scene, meal/grocery summaries, or recent context; clear only with affirmative evidence it no longer applies.
-- Only clear a field when you have affirmative evidence it no longer applies; when uncertain, preserve prior values (re-output prior strings from priorMissionOpenLoopActiveMeal when needed).
+- Preserve activeFoodContext when it still fits prior scene, meal/grocery summaries, or recent context; clear only with affirmative evidence it no longer applies.
+- Preserve planningHorizon and conversationMode when they still fit; clear them when the thread clearly pivots away.
+- Only clear a field when you have affirmative evidence it no longer applies; when uncertain, preserve prior values (re-output prior strings from priorThreadScene when needed).
 
 Field meanings:
 - mission: the thread’s overall goal or theme, or "" only when clearly none / abandoned.
 - openLoop: the next unresolved step or question, or "" when resolved or N/A.
-- activeMeal: current meal/dish focus if clearly implied, or "".`;
+- activeFoodContext: current dish / ingredient / meal / event food focus if clearly implied, or "".
+- planningHorizon: compact timing scope like "tonight", "tomorrow", "this week", "holiday", or "".
+- conversationMode: one short label like "planning", "shopping", "cooking", "hosting", "advice", or "".`;
 
+    const callPurpose = 'thread_scene_auto_update';
     const res = await createLoggedAnthropicMessage(anthropic, {
-      model: 'claude-sonnet-4-5',
+      model: resolveAnthropicModelForCallPurpose(callPurpose),
       max_tokens: 512,
       system,
       messages: [
@@ -596,7 +672,7 @@ Field meanings:
       chatId,
       smartModeEnabled: !!params.smartModeEnabled,
       callSurface: 'background',
-      callPurpose: 'thread_scene_auto_update',
+      callPurpose,
       webSearchEnabledAtCall: false,
       usedWebSearchTool: false,
     });
@@ -605,6 +681,7 @@ Field meanings:
     const parsed = parseJsonObjectFromModelText(raw);
     const patch = validateThreadSceneAutoPatch(parsed);
     if (!patch) return;
+    patch.activeMeal = '';
 
     const trusted =
       trustedActionSummary != null && String(trustedActionSummary).trim() !== '';
@@ -626,19 +703,25 @@ Field meanings:
     const merged = {
       mission: Object.prototype.hasOwnProperty.call(patch, 'mission') ? patch.mission : priorFocus.mission,
       openLoop: Object.prototype.hasOwnProperty.call(patch, 'openLoop') ? patch.openLoop : priorFocus.openLoop,
-      activeMeal: Object.prototype.hasOwnProperty.call(patch, 'activeMeal')
-        ? patch.activeMeal
-        : priorFocus.activeMeal,
+      activeFoodContext: Object.prototype.hasOwnProperty.call(patch, 'activeFoodContext')
+        ? patch.activeFoodContext
+        : priorFocus.activeFoodContext,
+      planningHorizon: Object.prototype.hasOwnProperty.call(patch, 'planningHorizon')
+        ? patch.planningHorizon
+        : priorFocus.planningHorizon,
+      conversationMode: Object.prototype.hasOwnProperty.call(patch, 'conversationMode')
+        ? patch.conversationMode
+        : priorFocus.conversationMode,
     };
-    const hadPriorContent = ['mission', 'openLoop', 'activeMeal'].some(
+    const hadPriorContent = ['mission', 'openLoop', 'activeFoodContext', 'planningHorizon', 'conversationMode'].some(
       (k) => String(priorFocus[k] ?? '').trim() !== ''
     );
-    const mergedAllEmpty = ['mission', 'openLoop', 'activeMeal'].every(
+    const mergedAllEmpty = ['mission', 'openLoop', 'activeFoodContext', 'planningHorizon', 'conversationMode'].every(
       (k) => String(merged[k] ?? '').trim() === ''
     );
     if (trusted && hadPriorContent && mergedAllEmpty) {
       console.warn(
-        'Thread scene auto-update: rejected patch that would clear mission, openLoop, and activeMeal after command success'
+        'Thread scene auto-update: rejected patch that would clear the compact thread scene after command success'
       );
       return;
     }
@@ -671,80 +754,6 @@ function validateWeeklyPlanDraftModelOutput(parsed) {
   }
   if (Object.keys(patch).length === 0) return null;
   return { noUpdate: false, patch };
-}
-
-/**
- * Best-effort weekly plan merge after normal chat (Smart Mode only). Swallows errors; never blocks response.
- */
-async function runWeeklyPlanDraftAutoUpdaterAfterNormalChat(anthropic, params) {
-  if (!params.smartModeEnabled) return;
-  if (params.skipBecausePlannerPatched) return;
-  try {
-    const {
-      chatId,
-      householdId,
-      priorWeeklyPlanDraft,
-      routePrompt,
-      finalAssistantReply,
-      threadMealPlanSummary,
-      threadGrocerySummary,
-    } = params;
-    const system = `You output ONLY one JSON object (no markdown, no code fences, no commentary).
-
-Fields:
-- "no_update": boolean — required. Set true when this turn does NOT clearly discuss weekly dinner planning (meals for the week, choosing options for multiple nights, a rough weekly menu, or similar). When true, do not include any other keys.
-
-When no_update is false, include only these optional keys (merge into the chat's weekly dinner plan for this chat):
-- "label": short string (title or week label)
-- "meals": full replacement array of short dinner titles
-- "mealEdits": array of targeted updates. Each item must be one of:
-  {"op":"set","slot":1-based integer,"meal":"short dinner title"}
-  {"op":"replace_match","match":"prior meal text","meal":"short dinner title"}
-  {"op":"append","meal":"short dinner title"}
-  {"op":"remove","slot":1-based integer}
-- "notes": short string
-- "status": "empty" only — use it only when the user clearly abandoned weekly planning for now
-
-Rules:
-- Preserve other dinners unless the user clearly replaces the whole weekly plan.
-- If the user refines one dinner, prefer mealEdits over replacing the whole meals array.
-- Expand vague placeholders into plausible dinner concepts when the user gives enough context.
-- Be conservative: recipe lookups, single-meal questions with no weekly-plan context, or unrelated topics → no_update true.`;
-
-    const res = await createLoggedAnthropicMessage(anthropic, {
-      model: 'claude-sonnet-4-5',
-      max_tokens: 400,
-      system,
-      messages: [
-        {
-          role: 'user',
-          content: `Infer the weekly dinner plan for this chat from this turn only.\n\nContext JSON:\n${JSON.stringify({
-            priorWeeklyPlanDraft: priorWeeklyPlanDraft ?? {},
-            threadMealPlanSummary: truncateSmartModeContext(String(threadMealPlanSummary ?? ''), 1500),
-            threadGrocerySummary: truncateSmartModeContext(String(threadGrocerySummary ?? ''), 1500),
-            currentUserMessage: truncateSmartModeContext(String(routePrompt ?? ''), 3000),
-            finalAssistantReply: truncateSmartModeContext(String(finalAssistantReply ?? ''), 5000),
-          })}`,
-        },
-      ],
-    }, {
-      householdId,
-      chatId,
-      smartModeEnabled: !!params.smartModeEnabled,
-      callSurface: 'background',
-      callPurpose: 'weekly_plan_auto_update',
-      webSearchEnabledAtCall: false,
-      usedWebSearchTool: false,
-    });
-    const blocks = res.content.filter((b) => b.type === 'text');
-    const raw = blocks.map((b) => b.text).join('\n').trim();
-    const parsed = parseJsonObjectFromModelText(raw);
-    const validated = validateWeeklyPlanDraftModelOutput(parsed);
-    if (!validated || validated.noUpdate) return;
-    await updateWeeklyPlanDraft(chatId, householdId, validated.patch);
-  } catch (e) {
-    console.error('Weekly plan draft auto-update failed:', e?.message || e);
-  }
 }
 
 /** Heuristic: attach Anthropic web search only when the user message likely needs live web context. */
@@ -1631,18 +1640,24 @@ function tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft) {
  */
 function detectCommandIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(), intentOpts = {}) {
   const raw = String(prompt ?? '').trim();
-  if (!raw) return { pendingAction: null };
-  if (raw.startsWith('!')) return { pendingAction: null };
+  if (!raw) return { pendingAction: null, action: null };
+  if (raw.startsWith('!')) return { pendingAction: null, action: null };
 
   const followUpFirst = tryFollowUpPreferencePendingFromMemories(raw, memoriesByKey);
   if (followUpFirst) {
-    return { pendingAction: followUpFirst };
+    return {
+      pendingAction: followUpFirst,
+      action: { capability: 'memory.save', input: { key: followUpFirst.args.key, value: followUpFirst.args.value } },
+    };
   }
 
   const hasGroceryDraft = !!intentOpts.hasGroceryDraft;
   const groceryFollow = tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft);
   if (groceryFollow) {
-    return { pendingAction: groceryFollow };
+    return {
+      pendingAction: groceryFollow,
+      action: { capability: 'grocery.generate_and_commit', input: {} },
+    };
   }
 
   const lower = raw.toLowerCase();
@@ -1680,7 +1695,10 @@ function detectCommandIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(
   const groceryNlBlockedByDraftOrMeal =
     !smartMode && (groceryDraftSuppression || hasMealIdeationLanguage);
   if (!groceryNlBlockedByDraftOrMeal && strongGroceryAppAction) {
-    return { pendingAction: { command: '!grocerylist' } };
+    return {
+      pendingAction: { command: '!grocerylist' },
+      action: { capability: 'grocery.generate_and_commit', input: {} },
+    };
   }
 
   const s = lower.trim();
@@ -1693,18 +1711,21 @@ function detectCommandIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(
     /\blist\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
     /\bwhat\s+commands?\b/.test(s);
   if (wantsHelpMenu) {
-    return { pendingAction: { command: '!help' } };
+    return { pendingAction: { command: '!help' }, action: { capability: 'help.show', input: {} } };
   }
 
   const renameManual = raw.match(/\brename(?:\s+this)?\s+chat\s+to\s+["“]?(.+?)["”]?\s*$/i);
   if (renameManual) {
     const title = String(renameManual[1] ?? '').trim().slice(0, 200);
     if (title) {
-      return { pendingAction: { command: '!rename', mode: 'manual', args: { title } } };
+      return {
+        pendingAction: { command: '!rename', mode: 'manual', args: { title } },
+        action: { capability: 'chat.rename', input: { mode: 'manual', args: { title } } },
+      };
     }
   }
   if (/\brename(?:\s+this)?\s+chat\b/i.test(raw)) {
-    return { pendingAction: { command: '!rename', mode: 'auto' } };
+    return { pendingAction: { command: '!rename', mode: 'auto' }, action: { capability: 'chat.rename', input: { mode: 'auto' } } };
   }
 
   const rememberMatch = raw.match(/\bremember\b\s+([a-zA-Z0-9 _-]{1,60})\s*(?:=|:|\bis\b)\s*(.+)$/i);
@@ -1712,24 +1733,102 @@ function detectCommandIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(
     const key = normalizeRememberKey(rememberMatch[1]);
     const value = String(rememberMatch[2] ?? '').trim();
     if (key && value) {
-      return { pendingAction: { command: '!remember', args: { key, value } } };
+      return {
+        pendingAction: { command: '!remember', args: { key, value } },
+        action: { capability: 'memory.save', input: { key, value } },
+      };
     }
   }
 
   const nlRemember = tryExtractNaturalLanguageRememberPayload(raw);
   if (nlRemember && 'mixed' in nlRemember && nlRemember.mixed) {
-    return { pendingAction: null };
+    return { pendingAction: null, action: null };
   }
   if (nlRemember && 'payload' in nlRemember) {
     const inferred = inferRememberKeyAndValueFromPayload(nlRemember.payload, memoriesByKey);
     if (inferred?.key && inferred?.value) {
       return {
         pendingAction: { command: '!remember', args: { key: inferred.key, value: inferred.value } },
+        action: { capability: 'memory.save', input: { key: inferred.key, value: inferred.value } },
       };
     }
   }
+  return { pendingAction: null, action: null };
+}
 
-  return { pendingAction: null };
+function detectSmartActionIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(), intentOpts = {}) {
+  const raw = String(prompt ?? '').trim();
+  if (!raw || raw.startsWith('!')) return null;
+
+  const followUpFirst = tryFollowUpPreferencePendingFromMemories(raw, memoriesByKey);
+  if (followUpFirst) {
+    return { capability: 'memory.save', input: { key: followUpFirst.args.key, value: followUpFirst.args.value } };
+  }
+
+  const hasGroceryDraft = !!intentOpts.hasGroceryDraft;
+  const groceryFollow = tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft);
+  if (groceryFollow) {
+    return { capability: 'grocery.generate_and_commit', input: {} };
+  }
+
+  const lower = raw.toLowerCase();
+  const strongGroceryAppAction =
+    /\brun\s+!grocerylist\b/.test(lower) ||
+    /\b(?:add|put|push)\s+(?:this|these|those|it|them)\s+(?:to|on|into)\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower) ||
+    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
+    /\bupdate\s+(?:the\s+)?(?:grocery\s+list|grocery\s+list\s+tab)\b/.test(lower) ||
+    /\bcan\s+you\s+(?:add|update)\s+(?:this|these|those|it|them)?\s*(?:to|on)?\s*(?:the\s+)?(?:grocery\s+list(?:\s+for\s+me)?|grocery\s+list\s+tab)\b/.test(lower) ||
+    /\bcan\s+you\s+update\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
+    /\bput\s+(?:this|these|those|it|them)\s+on\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower);
+  if (strongGroceryAppAction) {
+    return { capability: 'grocery.generate_and_commit', input: {} };
+  }
+
+  const s = lower.trim();
+  const wantsHelpMenu =
+    /^help\s*[!?.]*$/.test(s) ||
+    /^what can you do\s*[!?.]*$/.test(s) ||
+    /\bhelp menu\b/.test(s) ||
+    /\bshow help\b/.test(s) ||
+    /\bshow\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
+    /\blist\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
+    /\bwhat\s+commands?\b/.test(s);
+  if (wantsHelpMenu) {
+    return { capability: 'help.show', input: {} };
+  }
+
+  const renameManual = raw.match(/\brename(?:\s+this)?\s+chat\s+to\s+["“]?(.+?)["”]?\s*$/i);
+  if (renameManual) {
+    const title = String(renameManual[1] ?? '').trim().slice(0, 200);
+    if (title) {
+      return { capability: 'chat.rename', input: { mode: 'manual', args: { title } } };
+    }
+  }
+  if (/\brename(?:\s+this)?\s+chat\b/i.test(raw)) {
+    return { capability: 'chat.rename', input: { mode: 'auto' } };
+  }
+
+  const rememberMatch = raw.match(/\bremember\b\s+([a-zA-Z0-9 _-]{1,60})\s*(?:=|:|\bis\b)\s*(.+)$/i);
+  if (rememberMatch) {
+    const key = normalizeRememberKey(rememberMatch[1]);
+    const value = String(rememberMatch[2] ?? '').trim();
+    if (key && value) {
+      return { capability: 'memory.save', input: { key, value } };
+    }
+  }
+
+  const nlRemember = tryExtractNaturalLanguageRememberPayload(raw);
+  if (nlRemember && 'mixed' in nlRemember && nlRemember.mixed) {
+    return null;
+  }
+  if (nlRemember && 'payload' in nlRemember) {
+    const inferred = inferRememberKeyAndValueFromPayload(nlRemember.payload, memoriesByKey);
+    if (inferred?.key && inferred?.value) {
+      return { capability: 'memory.save', input: { key: inferred.key, value: inferred.value } };
+    }
+  }
+
+  return null;
 }
 
 function buildLegacyCommandGuidanceReply(pendingAction) {
@@ -2785,15 +2884,16 @@ app.get('/', (req, res) => {
         }
 
         #settings-panel h2 {
-          margin: 0 0 8px;
-          font-size: 18px;
+          margin: 0;
+          font-size: 22px;
+          letter-spacing: -0.02em;
         }
 
         .settings-subtab-btn {
-          padding: 8px 14px;
-          border-radius: 8px;
-          border: 1px solid var(--border-subtle);
-          background: #fff;
+          padding: 9px 16px;
+          border-radius: 999px;
+          border: 1px solid rgba(148, 163, 184, 0.45);
+          background: rgba(255, 255, 255, 0.86);
           cursor: pointer;
           font-size: 14px;
         }
@@ -2801,28 +2901,299 @@ app.get('/', (req, res) => {
         .settings-subtab-btn.settings-subtab-active {
           border-color: var(--accent-strong);
           font-weight: 600;
+          box-shadow: 0 8px 18px rgba(255, 122, 162, 0.18);
+          background: rgba(255, 245, 248, 0.95);
         }
 
-        #settings-panel h3 {
-          margin: 12px 0 6px;
+        .settings-page-intro {
+          margin: 2px 0 0;
           font-size: 14px;
           color: var(--text-soft);
+          max-width: 680px;
+          line-height: 1.5;
+        }
+
+        .settings-card-grid,
+        .settings-admin-grid {
+          display: grid;
+          gap: 14px;
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        }
+
+        .settings-admin-grid--wide {
+          grid-column: 1 / -1;
+        }
+
+        .settings-card {
+          background: rgba(255, 255, 255, 0.94);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          border-radius: 18px;
+          padding: 16px 18px;
+          box-shadow: 0 12px 30px rgba(148, 163, 184, 0.12);
+        }
+
+        .settings-card h3,
+        .settings-card h4 {
+          margin: 0;
+          font-size: 16px;
+          color: var(--text-main);
+        }
+
+        .settings-card-header {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          align-items: flex-start;
+          margin-bottom: 10px;
+        }
+
+        .settings-card-subtitle {
+          margin: 4px 0 0;
+          font-size: 13px;
+          color: var(--text-soft);
+          line-height: 1.45;
+        }
+
+        .settings-pill-note {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          background: rgba(107, 155, 209, 0.12);
+          color: var(--accent-blue);
+          font-size: 12px;
+          font-weight: 600;
+          white-space: nowrap;
+        }
+
+        .settings-meta-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+          gap: 10px;
+          margin-bottom: 12px;
+        }
+
+        .settings-meta-item {
+          padding: 10px 12px;
+          border-radius: 14px;
+          background: rgba(248, 250, 252, 0.95);
+          border: 1px solid rgba(226, 232, 240, 0.95);
+        }
+
+        .settings-meta-item .label {
+          display: block;
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--text-soft);
+          margin-bottom: 4px;
+        }
+
+        .settings-meta-item .value {
+          font-size: 15px;
+          color: var(--text-main);
+          font-weight: 600;
+          word-break: break-word;
+        }
+
+        .settings-section-note {
+          margin: 0 0 10px;
+          font-size: 13px;
+          color: var(--text-soft);
+          line-height: 1.45;
+        }
+
+        .settings-inline-banner {
+          margin: 0 0 10px;
+          padding: 12px 14px;
+          border-radius: 14px;
+          border: 1px solid rgba(148, 163, 184, 0.2);
+          background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(244,247,251,0.98));
+        }
+
+        .settings-split-grid {
+          display: grid;
+          gap: 12px;
+          grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.95fr);
         }
 
         #settings-panel input[type='text'],
         #settings-panel input[type='password'],
         #settings-panel select {
-          padding: 6px 10px;
-          border-radius: 8px;
+          padding: 9px 12px;
+          border-radius: 12px;
           border: 1px solid var(--border-subtle);
           font-size: 14px;
+          background: rgba(255, 255, 255, 0.95);
+        }
+
+        #settings-panel label {
+          font-size: 12px;
+          color: var(--text-soft);
+        }
+
+        #settings-panel button {
+          align-self: auto;
+        }
+
+        .settings-form-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          align-items: flex-end;
+        }
+
+        .settings-form-field {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          min-width: 140px;
+          flex: 1;
+        }
+
+        .settings-actions-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          align-items: center;
+        }
+
+        .settings-divider {
+          height: 1px;
+          background: linear-gradient(90deg, rgba(148,163,184,0.08), rgba(148,163,184,0.32), rgba(148,163,184,0.08));
+          margin: 14px 0;
+        }
+
+        .settings-memory-viewer {
+          padding: 12px;
+          border-radius: 14px;
+          background: rgba(248, 250, 252, 0.72);
+          border: 1px solid rgba(226, 232, 240, 0.92);
+          min-height: 84px;
+        }
+
+        .settings-memory-editor {
+          padding: 12px;
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.86);
+          border: 1px dashed rgba(148, 163, 184, 0.42);
+        }
+
+        .settings-admin-selectors {
+          display:flex;
+          flex-wrap:wrap;
+          gap:10px;
+          align-items:flex-end;
+        }
+
+        .settings-admin-detail-card {
+          padding: 14px;
+          border-radius: 16px;
+          background: rgba(248, 250, 252, 0.82);
+          border: 1px solid rgba(226, 232, 240, 0.92);
+        }
+
+        .admin-report-empty {
+          color: var(--text-soft);
+          font-size: 13px;
+        }
+
+        .admin-report-title {
+          font-size: 16px;
+          font-weight: 700;
+          color: var(--text-main);
+          margin-bottom: 10px;
+        }
+
+        .admin-report-stats {
+          display:grid;
+          gap:10px;
+          grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+          margin-bottom: 14px;
+        }
+
+        .admin-report-stat {
+          padding: 12px;
+          border-radius: 14px;
+          background: rgba(248, 250, 252, 0.95);
+          border: 1px solid rgba(226, 232, 240, 0.95);
+        }
+
+        .admin-report-stat .label {
+          display:block;
+          font-size:11px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--text-soft);
+          margin-bottom: 4px;
+        }
+
+        .admin-report-stat .value {
+          font-size: 18px;
+          font-weight: 700;
+          color: var(--text-main);
+        }
+
+        .admin-report-grid {
+          display:grid;
+          gap:12px;
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        }
+
+        .admin-report-section {
+          padding: 12px;
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.92);
+          border: 1px solid rgba(226, 232, 240, 0.92);
+        }
+
+        .admin-report-section h5 {
+          margin: 0 0 8px;
+          font-size: 13px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--text-soft);
+        }
+
+        .admin-report-table-wrap {
+          overflow-x: auto;
+        }
+
+        .admin-report-table {
+          width:100%;
+          border-collapse: collapse;
+          font-size: 12px;
+        }
+
+        .admin-report-table th,
+        .admin-report-table td {
+          padding: 6px 4px;
+          border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+        }
+
+        .admin-report-table th {
+          color: var(--text-soft);
+          font-weight: 600;
+          text-align:left;
+        }
+
+        .admin-report-table td.num,
+        .admin-report-table th.num {
+          text-align:right;
+        }
+
+        #settings-panel h3 {
+          margin: 0;
+          font-size: 16px;
+          color: var(--text-main);
         }
 
         #settings-add-form {
           display: flex;
           flex-wrap: wrap;
-          gap: 8px;
-          align-items: center;
+          gap: 10px;
+          align-items: flex-end;
         }
 
         .settings-user-row {
@@ -2890,6 +3261,212 @@ app.get('/', (req, res) => {
           line-height: 1.35;
           min-height: 1.35em;
           max-width: 280px;
+        }
+
+        .settings-memory-list {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .settings-memory-group {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .settings-memory-group-title {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          margin: 0;
+          font-size: 13px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--text-soft);
+        }
+
+        .settings-memory-group-title .count {
+          font-size: 11px;
+          font-weight: 700;
+          color: var(--accent-blue);
+        }
+
+        .settings-memory-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          align-items: flex-start;
+          justify-content: space-between;
+          padding: 12px;
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.94);
+          border: 1px solid rgba(226, 232, 240, 0.95);
+        }
+
+        .settings-memory-row-main {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .settings-memory-row-title {
+          display: block;
+          margin-bottom: 4px;
+          font-size: 14px;
+          font-weight: 700;
+          color: var(--text-main);
+          word-break: break-word;
+        }
+
+        .settings-memory-row-body {
+          font-size: 13px;
+          color: var(--text-main);
+          line-height: 1.45;
+          word-break: break-word;
+        }
+
+        .settings-memory-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          align-items: center;
+        }
+
+        .settings-memory-chip {
+          display: inline-flex;
+          align-items: center;
+          padding: 4px 8px;
+          border-radius: 999px;
+          background: rgba(107, 155, 209, 0.1);
+          color: var(--accent-blue);
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.03em;
+          text-transform: uppercase;
+        }
+
+        .settings-memory-empty {
+          padding: 12px;
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.78);
+          border: 1px dashed rgba(148, 163, 184, 0.45);
+          color: var(--text-soft);
+          font-size: 13px;
+        }
+
+        .settings-memory-note-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          margin-top: 10px;
+        }
+
+        .settings-memory-note-item {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          align-items: flex-start;
+          justify-content: space-between;
+          padding: 10px 12px;
+          border-radius: 12px;
+          background: rgba(248, 250, 252, 0.82);
+          border: 1px solid rgba(226, 232, 240, 0.95);
+        }
+
+        .settings-memory-note-item .settings-memory-row-body {
+          min-width: 200px;
+        }
+
+        .settings-admin-household-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .settings-admin-household-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          justify-content: space-between;
+          padding: 12px 14px;
+          border-radius: 14px;
+          background: rgba(248, 250, 252, 0.78);
+          border: 1px solid rgba(226, 232, 240, 0.95);
+        }
+
+        .settings-admin-household-row-main {
+          flex: 1;
+          min-width: 220px;
+        }
+
+        .settings-admin-household-name {
+          display: block;
+          margin-bottom: 4px;
+          font-size: 14px;
+          font-weight: 700;
+          color: var(--text-main);
+        }
+
+        .settings-admin-household-meta {
+          font-size: 13px;
+          color: var(--text-soft);
+          line-height: 1.45;
+          word-break: break-word;
+        }
+
+        .settings-admin-household-tags {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          align-items: flex-start;
+          justify-content: flex-end;
+        }
+
+        .settings-admin-tag {
+          display: inline-flex;
+          align-items: center;
+          padding: 4px 8px;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.03em;
+          text-transform: uppercase;
+          background: rgba(226, 232, 240, 0.9);
+          color: var(--text-soft);
+        }
+
+        .settings-admin-tag.settings-admin-tag--on {
+          background: rgba(255, 122, 162, 0.12);
+          color: var(--accent-strong);
+        }
+
+        .settings-admin-usage-summary {
+          padding: 12px;
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.92);
+          border: 1px solid rgba(226, 232, 240, 0.95);
+        }
+
+        .settings-admin-usage-summary h5 {
+          margin: 0 0 8px;
+          font-size: 13px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--text-soft);
+        }
+
+        .settings-admin-usage-summary ul {
+          margin: 8px 0 0;
+          padding-left: 18px;
+          color: var(--text-main);
+          font-size: 13px;
+        }
+
+        .settings-admin-inline-message {
+          margin: 8px 0 0;
+          font-size: 13px;
+          color: var(--accent-strong);
         }
 
         #my-settings-msg {
@@ -3308,6 +3885,22 @@ app.get('/', (req, res) => {
             gap: 10px;
           }
 
+          .settings-card-grid,
+          .settings-admin-grid,
+          .settings-split-grid,
+          .admin-report-grid,
+          .admin-report-stats {
+            grid-template-columns: 1fr;
+          }
+
+          .settings-card {
+            padding: 14px;
+          }
+
+          .settings-meta-grid {
+            grid-template-columns: 1fr;
+          }
+
           .settings-user-name {
             margin-bottom: 2px;
           }
@@ -3325,6 +3918,31 @@ app.get('/', (req, res) => {
           .settings-user-inline-controls input,
           .settings-user-inline-controls button {
             width: 100%;
+          }
+
+          .settings-form-row,
+          .settings-actions-row,
+          .settings-admin-selectors,
+          .settings-memory-row,
+          .settings-memory-note-item,
+          .settings-admin-household-row {
+            flex-direction: column;
+            align-items: stretch;
+          }
+
+          .settings-form-field {
+            width: 100%;
+            max-width: none !important;
+          }
+
+          .settings-actions-row button,
+          .settings-admin-selectors button {
+            width: 100%;
+          }
+
+          .settings-memory-actions,
+          .settings-admin-household-tags {
+            justify-content: flex-start;
           }
 
           .settings-user-pref-toggle {
@@ -3502,175 +4120,324 @@ app.get('/', (req, res) => {
 
           <div id="settings-view-my" class="settings-subview">
             <h3 style="margin-top: 0;">Your household</h3>
-            <p style="margin: 0 0 12px; font-size: 13px; color: var(--text-soft); max-width: 520px;">
+            <p class="settings-page-intro">
               Everything here applies to the household you are logged into (your session household).
             </p>
-            <p style="margin: 0;"><strong>Name:</strong> <span id="my-settings-hh-name"></span></p>
-            <p style="margin: 0;"><strong>Key:</strong> <code id="my-settings-hh-key"></code></p>
-            <div style="margin: 14px 0 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-subtle); max-width: 520px;">
-              <p style="margin: 0 0 8px; font-size: 13px; color: var(--text-soft); line-height: 1.45;">
-                Open a read-only walkthrough as the sample user in the shared demo household.
-              </p>
-              <button type="button" id="settings-demo-view-btn" style="padding: 6px 12px; border-radius: 8px; font-size: 14px;">
-                See how to use this
-              </button>
-              <span id="settings-demo-view-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
-            </div>
-            <h3>Anthropic API</h3>
-            <div id="settings-anthropic-block" style="margin-bottom: 12px;">
-              <p id="settings-anthropic-status" style="margin: 0 0 8px; font-size: 14px;"></p>
-              <div id="settings-anthropic-owner-key-section" style="display: none; margin-top: 10px;">
-                <p id="settings-anthropic-key-disclaimer" style="margin: 0 0 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-subtle); border-left: 3px solid var(--accent-strong); font-size: 13px; color: var(--text-soft); line-height: 1.45; max-width: 520px;">
-                  This is a hobby app and is inherently insecure. You should set spend limits and monitor usage in your Anthropic account when using your own API key.
-                </p>
-                <label for="settings-anthropic-owner-key" style="font-size: 13px; color: var(--text-soft);">Household Anthropic API key</label>
-                <input id="settings-anthropic-owner-key" type="password" placeholder="sk-ant-…" autocomplete="off" style="width: 100%; max-width: 420px; margin-top: 4px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border-subtle);" />
-                <button type="button" id="settings-anthropic-owner-key-save" style="margin-top: 8px;">Save key</button>
-                <span id="settings-anthropic-owner-key-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
-              </div>
-            </div>
-            <h3>Users</h3>
-            <div id="my-settings-users-list"></div>
-            <h3>Add user</h3>
-            <div id="settings-add-form">
-              <input id="settings-new-display" type="text" placeholder="Display name" autocomplete="off" />
-              <select id="settings-new-role" aria-label="Role">
-                <option value="member">member</option>
-                <option value="owner">owner</option>
-              </select>
-              <input id="settings-new-pin" type="password" placeholder="PIN" autocomplete="new-password" />
-              <button type="button" id="settings-add-submit">Add user</button>
-            </div>
-            <div id="my-settings-memories-wrap">
-              <h3>Household memories</h3>
-              <p style="margin: 0 0 8px; font-size: 13px; color: var(--text-soft); max-width: 520px;">
-                These entries are included in chat context for everyone in this household.
-              </p>
-              <div id="my-settings-memories-list" style="margin-bottom: 12px; font-size: 13px;"></div>
-              <div id="my-settings-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
-              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 8px;">
-                <div>
-                  <label for="my-settings-memory-key" style="font-size: 12px; color: var(--text-soft); display: block;">Key</label>
-                  <input id="my-settings-memory-key" type="text" autocomplete="off" placeholder="e.g. dietary_notes" style="width: 180px;" />
+            <div class="settings-card-grid">
+              <section class="settings-card">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Household</h3>
+                    <p class="settings-card-subtitle">Core identity and a quick demo walkthrough for sharing how KitchenBot works.</p>
+                  </div>
+                  <span class="settings-pill-note">Session household</span>
                 </div>
-                <div style="flex: 1; min-width: 160px;">
-                  <label for="my-settings-memory-value" style="font-size: 12px; color: var(--text-soft); display: block;">Value</label>
-                  <input id="my-settings-memory-value" type="text" autocomplete="off" placeholder="Value" style="width: 100%; max-width: 360px;" />
+                <div class="settings-meta-grid">
+                  <div class="settings-meta-item">
+                    <span class="label">Household name</span>
+                    <span class="value" id="my-settings-hh-name"></span>
+                  </div>
+                  <div class="settings-meta-item">
+                    <span class="label">Household key</span>
+                    <span class="value"><code id="my-settings-hh-key"></code></span>
+                  </div>
                 </div>
-                <button type="button" id="my-settings-memory-save">Save</button>
-                <button type="button" id="my-settings-memory-cancel-edit" style="display: none;">Cancel</button>
-              </div>
+                <div class="settings-inline-banner">
+                  <p class="settings-section-note" style="margin-bottom: 8px;">
+                    Open a read-only walkthrough as the sample user in the shared demo household.
+                  </p>
+                  <div class="settings-actions-row">
+                    <button type="button" id="settings-demo-view-btn">See how to use this</button>
+                    <span id="settings-demo-view-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
+                  </div>
+                </div>
+              </section>
+              <section class="settings-card settings-admin-grid--wide">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Users</h3>
+                    <p class="settings-card-subtitle">Manage who can access this household and adjust their role, PIN, chat color, and compliments setting.</p>
+                  </div>
+                </div>
+                <div id="my-settings-users-list"></div>
+                <div class="settings-divider"></div>
+                <h4 style="margin:0 0 8px;">Add user</h4>
+                <div id="settings-add-form">
+                  <input id="settings-new-display" type="text" placeholder="Display name" autocomplete="off" />
+                  <select id="settings-new-role" aria-label="Role">
+                    <option value="member">member</option>
+                    <option value="owner">owner</option>
+                  </select>
+                  <input id="settings-new-pin" type="password" placeholder="PIN" autocomplete="new-password" />
+                  <button type="button" id="settings-add-submit">Add user</button>
+                </div>
+              </section>
+
+              <section class="settings-card settings-admin-grid--wide">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Memory</h3>
+                    <p class="settings-card-subtitle">Legacy household memory applies to every chat. Smart durable memory is richer, user-editable, and only used when Smart Mode is on.</p>
+                  </div>
+                </div>
+                <div class="settings-split-grid">
+                  <div id="my-settings-memories-wrap">
+                    <h4 style="margin:0 0 6px;">Household memories</h4>
+                    <p class="settings-section-note">
+                      These entries are included in chat context for everyone in this household.
+                    </p>
+                    <div class="settings-memory-viewer">
+                      <div id="my-settings-memories-list" style="font-size: 13px;"></div>
+                    </div>
+                    <div id="my-settings-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin: 8px 0 0;"></div>
+                    <div class="settings-memory-editor" style="margin-top: 12px;">
+                      <div class="settings-form-row" style="margin-bottom:8px;">
+                        <div class="settings-form-field" style="max-width: 220px;">
+                          <label for="my-settings-memory-key">Key</label>
+                          <input id="my-settings-memory-key" type="text" autocomplete="off" placeholder="e.g. dietary_notes" />
+                        </div>
+                        <div class="settings-form-field">
+                          <label for="my-settings-memory-value">Value</label>
+                          <input id="my-settings-memory-value" type="text" autocomplete="off" placeholder="Value" />
+                        </div>
+                      </div>
+                      <div class="settings-actions-row">
+                        <button type="button" id="my-settings-memory-save">Save</button>
+                        <button type="button" id="my-settings-memory-cancel-edit" style="display: none;">Cancel</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="my-settings-smart-memories-wrap" style="display: none;">
+                    <h4 style="margin:0 0 6px;">Smart durable memory</h4>
+                    <p class="settings-section-note">
+                      KitchenBot uses this to remember people and household preferences across Smart Mode chats.
+                    </p>
+                    <div class="settings-memory-viewer">
+                      <div id="my-settings-smart-memories-list" style="font-size: 13px;"></div>
+                    </div>
+                    <div id="my-settings-smart-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin: 8px 0 0;"></div>
+                    <div class="settings-memory-editor" style="margin-top: 12px;">
+                      <div class="settings-form-row" style="margin-bottom:8px;">
+                        <div class="settings-form-field" style="max-width: 180px;">
+                          <label for="my-settings-smart-memory-type">Save under</label>
+                          <select id="my-settings-smart-memory-type">
+                            <option value="person">person</option>
+                            <option value="household_note">household_note</option>
+                          </select>
+                        </div>
+                        <div class="settings-form-field" style="max-width: 220px;">
+                          <label for="my-settings-smart-memory-label">Person or label</label>
+                          <input id="my-settings-smart-memory-label" type="text" autocomplete="off" placeholder="e.g. Elle or concise recipes" />
+                        </div>
+                        <div class="settings-form-field">
+                          <label for="my-settings-smart-memory-summary">Preference or note</label>
+                          <input id="my-settings-smart-memory-summary" type="text" autocomplete="off" placeholder="What KitchenBot should remember" />
+                        </div>
+                      </div>
+                      <div class="settings-actions-row">
+                        <button type="button" id="my-settings-smart-memory-save">Save</button>
+                        <button type="button" id="my-settings-smart-memory-cancel-edit" style="display: none;">Cancel</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="settings-card">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Anthropic API</h3>
+                    <p class="settings-card-subtitle">Control whether this household uses the shared server key or an owner-provided Anthropic key.</p>
+                  </div>
+                </div>
+                <div id="settings-anthropic-block">
+                  <p id="settings-anthropic-status" style="margin: 0 0 8px; font-size: 14px;"></p>
+                  <div id="settings-anthropic-owner-key-section" style="display: none; margin-top: 10px;">
+                    <p id="settings-anthropic-key-disclaimer" class="settings-inline-banner" style="font-size: 13px; color: var(--text-soft); line-height: 1.45;">
+                      This is a hobby app and is inherently insecure. You should set spend limits and monitor usage in your Anthropic account when using your own API key.
+                    </p>
+                    <div class="settings-form-field" style="max-width: 420px;">
+                      <label for="settings-anthropic-owner-key">Household Anthropic API key</label>
+                      <input id="settings-anthropic-owner-key" type="password" placeholder="sk-ant-…" autocomplete="off" />
+                    </div>
+                    <div class="settings-actions-row" style="margin-top: 8px;">
+                      <button type="button" id="settings-anthropic-owner-key-save">Save key</button>
+                      <span id="settings-anthropic-owner-key-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
+                    </div>
+                  </div>
+                </div>
+              </section>
             </div>
             <div id="my-settings-msg"></div>
           </div>
 
           <div id="settings-view-admin" class="settings-subview" style="display: none;">
             <h3 style="margin-top: 0;">Global admin</h3>
-            <p style="margin: 0 0 12px; font-size: 13px; color: var(--text-soft); max-width: 560px;">
+            <p class="settings-page-intro">
               Actions below apply to the household you select — not necessarily the household you are logged into.
             </p>
-            <div id="admin-editing-banner" style="margin-bottom: 12px; padding: 10px 12px; border: 2px solid var(--accent-strong); border-radius: 8px; font-size: 14px; font-weight: 600; background: rgba(255, 122, 162, 0.08);"></div>
-            <h4 style="margin: 0 0 8px; font-size: 15px;">All households</h4>
-            <div id="settings-admin-households-list" style="font-size: 13px; margin-bottom: 12px;"></div>
-            <label for="admin-anthropic-household-select" style="font-size: 13px;">Selected household</label><br />
-            <select id="admin-anthropic-household-select" style="margin: 4px 0 12px; max-width: min(100%, 420px); padding: 6px;"></select>
-            <div id="settings-admin-household-detail" style="margin-bottom: 16px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 13px;">
-              <div><strong>Name:</strong> <span id="admin-detail-name"></span></div>
-              <div style="margin-top: 4px;"><strong>Key:</strong> <code id="admin-detail-key"></code></div>
-              <div id="admin-detail-usage" style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-subtle);"></div>
-              <div style="margin-top: 8px;"><strong>Users (this household only)</strong></div>
-              <table style="width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 13px;">
-                <thead><tr><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">Display name</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">Role</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">PIN (global admin)</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding: 4px;">View as</th></tr></thead>
-                <tbody id="admin-detail-users-body"></tbody>
-              </table>
-              <p id="admin-pin-global-msg" style="margin: 8px 0 0; font-size: 13px; color: var(--accent-strong);"></p>
-              <p id="admin-anthropic-selected-status" style="margin: 10px 0 0; font-size: 13px;"></p>
+            <div class="settings-admin-grid">
+              <section class="settings-card settings-admin-grid--wide">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Households</h3>
+                    <p class="settings-card-subtitle">Pick the household you want to inspect, then adjust configuration or review usage for that specific household.</p>
+                  </div>
+                </div>
+                <div id="admin-editing-banner" class="settings-inline-banner" style="margin-bottom: 12px;"></div>
+                <h4 style="margin: 0 0 8px;">All households</h4>
+                <div id="settings-admin-households-list" style="font-size: 13px; margin-bottom: 12px;"></div>
+                <div class="settings-admin-selectors">
+                  <div class="settings-form-field" style="max-width: 420px;">
+                    <label for="admin-anthropic-household-select">Selected household</label>
+                    <select id="admin-anthropic-household-select"></select>
+                  </div>
+                </div>
+                <div id="settings-admin-household-detail" class="settings-admin-detail-card" style="margin-top: 12px; font-size: 13px;">
+                  <div class="settings-meta-grid">
+                    <div class="settings-meta-item">
+                      <span class="label">Selected household</span>
+                      <span class="value" id="admin-detail-name"></span>
+                    </div>
+                    <div class="settings-meta-item">
+                      <span class="label">Household key</span>
+                      <span class="value"><code id="admin-detail-key"></code></span>
+                    </div>
+                  </div>
+                  <div id="admin-detail-usage" style="margin-top: 10px;"></div>
+                  <div class="settings-divider"></div>
+                  <div style="margin-top: 8px;"><strong>Users (this household only)</strong></div>
+                  <div class="admin-report-table-wrap" style="margin-top: 4px;">
+                    <table class="admin-report-table" style="font-size: 13px;">
+                      <thead><tr><th>Display name</th><th>Role</th><th>PIN (global admin)</th><th>View as</th></tr></thead>
+                      <tbody id="admin-detail-users-body"></tbody>
+                    </table>
+                  </div>
+                  <p id="admin-pin-global-msg" style="margin: 8px 0 0; font-size: 13px; color: var(--accent-strong);"></p>
+                  <p id="admin-anthropic-selected-status" style="margin: 10px 0 0; font-size: 13px;"></p>
+                </div>
+              </section>
+
+              <section class="settings-card settings-admin-grid--wide">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Anthropic usage</h3>
+                    <p class="settings-card-subtitle">Review token, cost, and web-search usage with filters that make the underlying call ledger easier to scan.</p>
+                  </div>
+                </div>
+                <div class="settings-admin-selectors" style="margin-bottom: 10px;">
+                  <div class="settings-form-field" style="max-width: 170px;">
+                    <label for="admin-usage-start-date">Start date</label>
+                    <input id="admin-usage-start-date" type="date" />
+                  </div>
+                  <div class="settings-form-field" style="max-width: 170px;">
+                    <label for="admin-usage-end-date">End date</label>
+                    <input id="admin-usage-end-date" type="date" />
+                  </div>
+                  <div class="settings-form-field" style="max-width: 200px;">
+                    <label for="admin-usage-household-select">Household</label>
+                    <select id="admin-usage-household-select"></select>
+                  </div>
+                  <div class="settings-form-field" style="max-width: 180px;">
+                    <label for="admin-usage-websearch-setting">Web search setting</label>
+                    <select id="admin-usage-websearch-setting">
+                      <option value="all">All</option>
+                      <option value="enabled">Enabled</option>
+                      <option value="disabled">Disabled</option>
+                    </select>
+                  </div>
+                  <div class="settings-form-field" style="max-width: 180px;">
+                    <label for="admin-usage-websearch-used">Web search used</label>
+                    <select id="admin-usage-websearch-used">
+                      <option value="all">All</option>
+                      <option value="used">Used</option>
+                      <option value="not_used">Not used</option>
+                    </select>
+                  </div>
+                  <button type="button" id="admin-usage-refresh">Refresh usage</button>
+                </div>
+                <div id="admin-usage-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
+                <div id="admin-usage-report" class="settings-admin-detail-card" style="font-size: 13px;"></div>
+              </section>
+
+              <section class="settings-card">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Anthropic mode</h3>
+                    <p class="settings-card-subtitle">Switch whether the selected household uses the shared server key or an owner-provided key.</p>
+                  </div>
+                </div>
+                <div id="admin-anthropic-edit-controls">
+                  <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                      <input type="radio" name="admin-anthropic-mode" id="admin-anthropic-mode-shared" value="shared" />
+                      <span>Shared — server key (Rob&apos;s)</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                      <input type="radio" name="admin-anthropic-mode" id="admin-anthropic-mode-household" value="household" />
+                      <span>Household — owner supplies key</span>
+                    </label>
+                  </div>
+                  <p id="admin-anthropic-shared-help" style="margin: 8px 0 0; font-size: 13px; color: var(--text-soft); display: none;">Selected household uses the server shared key.</p>
+                  <div class="settings-actions-row" style="margin-top: 10px;">
+                    <button type="button" id="admin-anthropic-mode-save">Save mode</button>
+                    <span id="admin-anthropic-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="settings-card">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Household feature flags</h3>
+                    <p class="settings-card-subtitle">Adjust the two household-specific capability toggles that affect live model behavior.</p>
+                  </div>
+                </div>
+                <div class="settings-inline-banner" style="margin-bottom: 12px;">
+                  <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px;">
+                    For the <strong>selected</strong> household only: when enabled, KitchenBot may attach Anthropic&apos;s web search tool on messages that look like they need live web context.
+                  </p>
+                  <label style="display: flex; align-items: flex-start; gap: 8px;">
+                    <input type="checkbox" id="admin-web-search-enabled" style="margin-top: 3px;" />
+                    <span>Enable web search for this household</span>
+                  </label>
+                  <div class="settings-actions-row" style="margin-top: 8px;">
+                    <button type="button" id="admin-web-search-save">Save web search setting</button>
+                    <span id="admin-web-search-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
+                  </div>
+                </div>
+                <div class="settings-inline-banner">
+                  <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px;">
+                    For the <strong>selected</strong> household only: Smart Mode enables the more agentic KitchenBot behavior while preserving the same underlying app permissions.
+                  </p>
+                  <label style="display: flex; align-items: flex-start; gap: 8px;">
+                    <input type="checkbox" id="admin-smart-mode-enabled" style="margin-top: 3px;" />
+                    <span>Enable Smart Mode for this household</span>
+                  </label>
+                  <div class="settings-actions-row" style="margin-top: 8px;">
+                    <button type="button" id="admin-smart-mode-save">Save Smart Mode</button>
+                    <span id="admin-smart-mode-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="settings-card">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Create household</h3>
+                    <p class="settings-card-subtitle">Provision a new household with an initial owner. Share the household key and PIN separately.</p>
+                  </div>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 8px; max-width: 420px;">
+                  <input id="admin-new-hh-name" type="text" placeholder="Household name" autocomplete="organization" />
+                  <input id="admin-new-hh-key" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="Household key (e.g. smith-home)" />
+                  <input id="admin-new-owner-name" type="text" placeholder="Owner display name" autocomplete="name" />
+                  <input id="admin-new-owner-pin" type="password" placeholder="Owner PIN" autocomplete="new-password" />
+                  <button type="button" id="admin-new-hh-submit">Create household</button>
+                </div>
+                <p id="admin-new-hh-msg" style="font-size: 13px; margin-top: 8px;"></p>
+              </section>
             </div>
-            <h4 style="margin: 16px 0 8px; font-size: 15px;">Anthropic usage</h4>
-            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin-bottom:8px;">
-              <div>
-                <label for="admin-usage-start-date" style="font-size: 12px; color: var(--text-soft); display:block;">Start date</label>
-                <input id="admin-usage-start-date" type="date" />
-              </div>
-              <div>
-                <label for="admin-usage-end-date" style="font-size: 12px; color: var(--text-soft); display:block;">End date</label>
-                <input id="admin-usage-end-date" type="date" />
-              </div>
-              <div>
-                <label for="admin-usage-household-select" style="font-size: 12px; color: var(--text-soft); display:block;">Household</label>
-                <select id="admin-usage-household-select"></select>
-              </div>
-              <div>
-                <label for="admin-usage-websearch-setting" style="font-size: 12px; color: var(--text-soft); display:block;">Web search setting</label>
-                <select id="admin-usage-websearch-setting">
-                  <option value="all">All</option>
-                  <option value="enabled">Enabled</option>
-                  <option value="disabled">Disabled</option>
-                </select>
-              </div>
-              <div>
-                <label for="admin-usage-websearch-used" style="font-size: 12px; color: var(--text-soft); display:block;">Web search used</label>
-                <select id="admin-usage-websearch-used">
-                  <option value="all">All</option>
-                  <option value="used">Used</option>
-                  <option value="not_used">Not used</option>
-                </select>
-              </div>
-              <button type="button" id="admin-usage-refresh">Refresh usage</button>
-            </div>
-            <div id="admin-usage-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
-            <div id="admin-usage-report" style="margin-bottom: 16px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 13px;"></div>
-            <h4 style="margin: 16px 0 8px; font-size: 15px;">Anthropic mode</h4>
-            <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px;">Switch who provides the API key for the <strong>selected</strong> household. Owners set their own key under My household when mode is household.</p>
-            <div id="admin-anthropic-edit-controls">
-              <div style="display: flex; flex-direction: column; gap: 8px;">
-                <label style="display: flex; align-items: center; gap: 8px;">
-                  <input type="radio" name="admin-anthropic-mode" id="admin-anthropic-mode-shared" value="shared" />
-                  <span>Shared — server key (Rob&apos;s)</span>
-                </label>
-                <label style="display: flex; align-items: center; gap: 8px;">
-                  <input type="radio" name="admin-anthropic-mode" id="admin-anthropic-mode-household" value="household" />
-                  <span>Household — owner supplies key</span>
-                </label>
-              </div>
-              <p id="admin-anthropic-shared-help" style="margin: 8px 0 0; font-size: 13px; color: var(--text-soft); display: none;">Selected household uses the server shared key.</p>
-              <button type="button" id="admin-anthropic-mode-save" style="margin-top: 8px;">Save mode</button>
-              <span id="admin-anthropic-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
-            </div>
-            <h4 style="margin: 16px 0 8px; font-size: 15px;">Anthropic web search</h4>
-            <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px; max-width: 560px;">
-              For the <strong>selected</strong> household only: when enabled, KitchenBot may attach Anthropic&apos;s web search tool on messages that look like they need live web context (URLs, current/latest info, or references to a named external source). Ordinary recipe chat stays on regular requests without web search.
-            </p>
-            <label style="display: flex; align-items: flex-start; gap: 8px; max-width: 520px;">
-              <input type="checkbox" id="admin-web-search-enabled" style="margin-top: 3px;" />
-              <span>Enable web search for this household</span>
-            </label>
-            <div style="margin-top: 8px;">
-              <button type="button" id="admin-web-search-save">Save web search setting</button>
-              <span id="admin-web-search-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
-            </div>
-            <h4 style="margin: 16px 0 8px; font-size: 15px;">Smart Mode</h4>
-            <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px; max-width: 560px;">
-              For the <strong>selected</strong> household only: when enabled, KitchenBot may treat more natural-language phrasings as <em>pending offers</em> (e.g. adding a grocery list) that still require your confirmation—same execution rules as when Smart Mode is off.
-            </p>
-            <label style="display: flex; align-items: flex-start; gap: 8px; max-width: 520px;">
-              <input type="checkbox" id="admin-smart-mode-enabled" style="margin-top: 3px;" />
-              <span>Enable Smart Mode for this household</span>
-            </label>
-            <div style="margin-top: 8px;">
-              <button type="button" id="admin-smart-mode-save">Save Smart Mode</button>
-              <span id="admin-smart-mode-msg" style="margin-left: 8px; font-size: 13px; color: var(--accent-strong);"></span>
-            </div>
-            <h4 style="margin: 20px 0 8px; font-size: 15px;">Create household</h4>
-            <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px;">Creates a new household with only the owner user. Share the household key and owner PIN separately.</p>
-            <div style="display: flex; flex-direction: column; gap: 6px; max-width: 420px;">
-              <input id="admin-new-hh-name" type="text" placeholder="Household name" autocomplete="organization" />
-              <input id="admin-new-hh-key" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="Household key (e.g. smith-home)" />
-              <input id="admin-new-owner-name" type="text" placeholder="Owner display name" autocomplete="name" />
-              <input id="admin-new-owner-pin" type="password" placeholder="Owner PIN" autocomplete="new-password" />
-              <button type="button" id="admin-new-hh-submit">Create household</button>
-            </div>
-            <p id="admin-new-hh-msg" style="font-size: 13px; margin-top: 8px;"></p>
           </div>
         </div>
 
@@ -3735,6 +4502,8 @@ app.get('/', (req, res) => {
         let isCurrentUserOwner = false;
         let godModeReadOnly = false;
         let editingMemoryKey = null;
+        let editingSmartMemoryId = null;
+        let editingSmartMemoryNoteIndex = null;
         /** Normalized display name (trim + lower) -> chat color key */
         let displayNameToColor = {};
         const CHAT_COLOR_OPTIONS = [
@@ -3778,6 +4547,7 @@ app.get('/', (req, res) => {
         let lastDeletedTimeout = null;
         let lastMePayload = null;
         const pendingActionByChatId = new Map();
+        const serverManagedActionByChatId = new Map();
         /** Last persisted message count from /history per chat (DB rows only). */
         const lastPersistedMessageCountByChatId = new Map();
         /**
@@ -4091,12 +4861,14 @@ app.get('/', (req, res) => {
           const gas = document.getElementById('settings-anthropic-owner-key-save');
           const sas = document.getElementById('settings-add-submit');
           const memSave = document.getElementById('my-settings-memory-save');
+          const smartMemSave = document.getElementById('my-settings-smart-memory-save');
           const adminModeSave = document.getElementById('admin-anthropic-mode-save');
           const adminNewHh = document.getElementById('admin-new-hh-submit');
           const demoViewBtn = document.getElementById('settings-demo-view-btn');
           if (gas) gas.disabled = ro;
           if (sas) sas.disabled = ro;
           if (memSave) memSave.disabled = ro;
+          if (smartMemSave) smartMemSave.disabled = ro;
           if (demoViewBtn) demoViewBtn.disabled = ro;
           if (adminModeSave) adminModeSave.disabled = ro;
           if (adminNewHh) adminNewHh.disabled = ro;
@@ -4299,8 +5071,18 @@ app.get('/', (req, res) => {
           if (w) w.style.display = isCurrentUserOwner ? '' : 'none';
         }
 
+        function syncSmartMemoriesWrapVisibility(smartModeEnabled) {
+          const w = document.getElementById('my-settings-smart-memories-wrap');
+          if (w) w.style.display = isCurrentUserOwner && smartModeEnabled ? '' : 'none';
+        }
+
         function clearMemoryUiMessage() {
           const el = document.getElementById('my-settings-memories-msg');
+          if (el) el.textContent = '';
+        }
+
+        function clearSmartMemoryUiMessage() {
+          const el = document.getElementById('my-settings-smart-memories-msg');
           if (el) el.textContent = '';
         }
 
@@ -4314,6 +5096,19 @@ app.get('/', (req, res) => {
             keyIn.readOnly = false;
           }
           if (valIn) valIn.value = '';
+          if (cancelBtn) cancelBtn.style.display = 'none';
+        }
+
+        function resetSmartMemoryEditForm() {
+          editingSmartMemoryId = null;
+          editingSmartMemoryNoteIndex = null;
+          const typeIn = document.getElementById('my-settings-smart-memory-type');
+          const labelIn = document.getElementById('my-settings-smart-memory-label');
+          const summaryIn = document.getElementById('my-settings-smart-memory-summary');
+          const cancelBtn = document.getElementById('my-settings-smart-memory-cancel-edit');
+          if (typeIn) typeIn.value = 'person';
+          if (labelIn) labelIn.value = '';
+          if (summaryIn) summaryIn.value = '';
           if (cancelBtn) cancelBtn.style.display = 'none';
         }
 
@@ -4345,24 +5140,32 @@ app.get('/', (req, res) => {
             }
             const data = await r.json();
             listEl.innerHTML = '';
-            for (const m of data.memories || []) {
-              if (m.key === 'assistant_name') continue;
+            listEl.className = 'settings-memory-list';
+            const visibleMemories = (data.memories || []).filter((m) => m.key !== 'assistant_name');
+            if (!visibleMemories.length) {
+              const empty = document.createElement('div');
+              empty.className = 'settings-memory-empty';
+              empty.textContent = 'No legacy household memories saved yet.';
+              listEl.appendChild(empty);
+              if (memMsg) memMsg.textContent = '';
+              return;
+            }
+            for (const m of visibleMemories) {
               const row = document.createElement('div');
-              row.style.cssText =
-                'display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border-subtle);';
+              row.className = 'settings-memory-row';
               const kv = document.createElement('div');
-              kv.style.flex = '1';
-              kv.style.minWidth = '0';
+              kv.className = 'settings-memory-row-main';
               const strong = document.createElement('strong');
-              strong.style.fontSize = '13px';
+              strong.className = 'settings-memory-row-title';
               strong.textContent = stripMemoryDisplayWrappers(m.key);
               kv.appendChild(strong);
-              kv.appendChild(document.createTextNode(': '));
               const span = document.createElement('span');
-              span.style.wordBreak = 'break-word';
+              span.className = 'settings-memory-row-body';
               span.textContent = stripMemoryDisplayWrappers(m.value);
               kv.appendChild(span);
               row.appendChild(kv);
+              const actions = document.createElement('div');
+              actions.className = 'settings-memory-actions';
               const editBtn = document.createElement('button');
               editBtn.type = 'button';
               editBtn.textContent = 'Edit';
@@ -4398,10 +5201,214 @@ app.get('/', (req, res) => {
                   await loadHouseholdMemoriesEditor();
                 }
               });
-              row.appendChild(editBtn);
-              row.appendChild(delBtn);
+              actions.appendChild(editBtn);
+              actions.appendChild(delBtn);
+              row.appendChild(actions);
               listEl.appendChild(row);
             }
+            if (memMsg) memMsg.textContent = '';
+          } catch (e) {
+            listEl.innerHTML = '';
+            if (memMsg) memMsg.textContent = 'Load failed.';
+          }
+        }
+
+        async function loadSmartDurableMemoriesEditor() {
+          const listEl = document.getElementById('my-settings-smart-memories-list');
+          const memMsg = document.getElementById('my-settings-smart-memories-msg');
+          if (!listEl || !isCurrentUserOwner) return;
+          try {
+            const r = await fetch('/settings/household/smart-memories');
+            if (!r.ok) {
+              listEl.innerHTML = '';
+              if (memMsg) memMsg.textContent = 'Could not load Smart durable memories.';
+              return;
+            }
+            const data = await r.json();
+            listEl.innerHTML = '';
+            listEl.className = 'settings-memory-list';
+            const all = Array.isArray(data.smartMemories) ? data.smartMemories : [];
+            const people = all.filter((m) => m.memoryType === 'person');
+            const householdNotes = all.filter((m) => m.memoryType !== 'person');
+
+            function buildSection(title, emptyText) {
+              const section = document.createElement('div');
+              section.className = 'settings-memory-group';
+              const heading = document.createElement('div');
+              heading.className = 'settings-memory-group-title';
+              heading.textContent = title;
+              section.appendChild(heading);
+              if (!emptyText) return section;
+              const empty = document.createElement('div');
+              empty.className = 'settings-memory-empty';
+              empty.textContent = emptyText;
+              section.appendChild(empty);
+              return section;
+            }
+
+            const peopleSection = buildSection('People', people.length ? '' : 'No people saved yet.');
+            if (people.length) {
+              const count = document.createElement('span');
+              count.className = 'count';
+              count.textContent = people.length + ' saved';
+              peopleSection.firstChild.appendChild(count);
+            }
+            for (const m of people) {
+              const card = document.createElement('div');
+              card.className = 'settings-memory-row';
+              const top = document.createElement('div');
+              top.className = 'settings-memory-row-main';
+              const label = document.createElement('strong');
+              label.className = 'settings-memory-row-title';
+              label.textContent = String(m.label || '');
+              const chip = document.createElement('span');
+              chip.className = 'settings-memory-chip';
+              chip.textContent = 'Person';
+              top.appendChild(chip);
+              top.appendChild(label);
+              const notes = Array.isArray(m.attributes && m.attributes.notes) ? m.attributes.notes : [];
+              const summary = document.createElement('div');
+              summary.className = 'settings-memory-row-body';
+              summary.textContent =
+                notes.length === 1 ? '1 saved preference' : notes.length + ' saved preferences';
+              top.appendChild(summary);
+              const actions = document.createElement('div');
+              actions.className = 'settings-memory-actions';
+              const delPersonBtn = document.createElement('button');
+              delPersonBtn.type = 'button';
+              delPersonBtn.textContent = 'Delete person';
+              delPersonBtn.addEventListener('click', async () => {
+                if (!confirm('Delete all Smart memory for "' + m.label + '"?')) return;
+                const dr = await fetch('/settings/household/smart-memories/' + encodeURIComponent(m.id), { method: 'DELETE' });
+                const errBody = await dr.json().catch(() => ({}));
+                if (memMsg) memMsg.textContent = dr.ok ? 'Person deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
+                if (dr.ok) {
+                  resetSmartMemoryEditForm();
+                  await loadSmartDurableMemoriesEditor();
+                }
+              });
+              actions.appendChild(delPersonBtn);
+              card.appendChild(top);
+              card.appendChild(actions);
+              const noteList = document.createElement('div');
+              noteList.className = 'settings-memory-note-list';
+              if (!notes.length) {
+                const empty = document.createElement('div');
+                empty.className = 'settings-memory-empty';
+                empty.textContent = '(No saved notes yet)';
+                noteList.appendChild(empty);
+              }
+              notes.forEach((note, idx) => {
+                const row = document.createElement('div');
+                row.className = 'settings-memory-note-item';
+                const text = document.createElement('div');
+                text.className = 'settings-memory-row-body';
+                text.textContent = note && note.text ? note.text : '';
+                row.appendChild(text);
+                const noteActions = document.createElement('div');
+                noteActions.className = 'settings-memory-actions';
+                const editBtn = document.createElement('button');
+                editBtn.type = 'button';
+                editBtn.textContent = 'Edit';
+                editBtn.addEventListener('click', () => {
+                  editingSmartMemoryId = m.id;
+                  editingSmartMemoryNoteIndex = idx;
+                  const typeIn = document.getElementById('my-settings-smart-memory-type');
+                  const labelIn = document.getElementById('my-settings-smart-memory-label');
+                  const summaryIn = document.getElementById('my-settings-smart-memory-summary');
+                  const cancelBtn = document.getElementById('my-settings-smart-memory-cancel-edit');
+                  if (typeIn) typeIn.value = 'person';
+                  if (labelIn) labelIn.value = m.label || '';
+                  if (summaryIn) summaryIn.value = note && note.text ? note.text : '';
+                  if (cancelBtn) cancelBtn.style.display = '';
+                  clearSmartMemoryUiMessage();
+                });
+                noteActions.appendChild(editBtn);
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.textContent = 'Delete';
+                delBtn.addEventListener('click', async () => {
+                  if (!confirm('Delete this saved note for "' + m.label + '"?')) return;
+                  const dr = await fetch('/settings/household/smart-memories/' + encodeURIComponent(m.id) + '?noteIndex=' + encodeURIComponent(idx), { method: 'DELETE' });
+                  const errBody = await dr.json().catch(() => ({}));
+                  if (memMsg) memMsg.textContent = dr.ok ? 'Saved note deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
+                  if (dr.ok) {
+                    resetSmartMemoryEditForm();
+                    await loadSmartDurableMemoriesEditor();
+                  }
+                });
+                noteActions.appendChild(delBtn);
+                row.appendChild(noteActions);
+                noteList.appendChild(row);
+              });
+              card.appendChild(noteList);
+              peopleSection.appendChild(card);
+            }
+            listEl.appendChild(peopleSection);
+
+            const householdSection = buildSection('Household preferences', householdNotes.length ? '' : 'No household preferences saved yet.');
+            if (householdNotes.length) {
+              const count = document.createElement('span');
+              count.className = 'count';
+              count.textContent = householdNotes.length + ' saved';
+              householdSection.firstChild.appendChild(count);
+            }
+            for (const m of householdNotes) {
+              const row = document.createElement('div');
+              row.className = 'settings-memory-row';
+              const kv = document.createElement('div');
+              kv.className = 'settings-memory-row-main';
+              const chip = document.createElement('span');
+              chip.className = 'settings-memory-chip';
+              chip.textContent = 'Household';
+              kv.appendChild(chip);
+              const strong = document.createElement('strong');
+              strong.className = 'settings-memory-row-title';
+              strong.textContent = String(m.label || '');
+              kv.appendChild(strong);
+              const span = document.createElement('span');
+              span.className = 'settings-memory-row-body';
+              span.textContent = m.summary;
+              kv.appendChild(span);
+              row.appendChild(kv);
+              const actions = document.createElement('div');
+              actions.className = 'settings-memory-actions';
+              const editBtn = document.createElement('button');
+              editBtn.type = 'button';
+              editBtn.textContent = 'Edit';
+              editBtn.addEventListener('click', () => {
+                editingSmartMemoryId = m.id;
+                editingSmartMemoryNoteIndex = null;
+                const typeIn = document.getElementById('my-settings-smart-memory-type');
+                const labelIn = document.getElementById('my-settings-smart-memory-label');
+                const summaryIn = document.getElementById('my-settings-smart-memory-summary');
+                const cancelBtn = document.getElementById('my-settings-smart-memory-cancel-edit');
+                if (typeIn) typeIn.value = 'household_note';
+                if (labelIn) labelIn.value = m.label || '';
+                if (summaryIn) summaryIn.value = m.summary || '';
+                if (cancelBtn) cancelBtn.style.display = '';
+                clearSmartMemoryUiMessage();
+              });
+              actions.appendChild(editBtn);
+              const delBtn = document.createElement('button');
+              delBtn.type = 'button';
+              delBtn.textContent = 'Delete';
+              delBtn.addEventListener('click', async () => {
+                if (!confirm('Delete household preference "' + m.label + '"?')) return;
+                const dr = await fetch('/settings/household/smart-memories/' + encodeURIComponent(m.id), { method: 'DELETE' });
+                const errBody = await dr.json().catch(() => ({}));
+                if (memMsg) memMsg.textContent = dr.ok ? 'Household preference deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
+                if (dr.ok) {
+                  resetSmartMemoryEditForm();
+                  await loadSmartDurableMemoriesEditor();
+                }
+              });
+              actions.appendChild(delBtn);
+              row.appendChild(actions);
+              householdSection.appendChild(row);
+            }
+            listEl.appendChild(householdSection);
+            if (memMsg) memMsg.textContent = '';
           } catch (e) {
             listEl.innerHTML = '';
             if (memMsg) memMsg.textContent = 'Load failed.';
@@ -4421,6 +5428,9 @@ app.get('/', (req, res) => {
               return;
             }
             const data = await r.json();
+            isCurrentUserOwner = !!data.canManageHouseholdSettings;
+            syncMemoriesWrapVisibility();
+            syncSmartMemoriesWrapVisibility(!!(data.household && data.household.smartModeEnabled));
             nameEl.textContent = data.household.name;
             keyEl.textContent = data.household.key;
             rebuildDisplayNameToColorFromSettingsUsers(data.users);
@@ -4721,6 +5731,7 @@ app.get('/', (req, res) => {
             }
             if (msgEl) msgEl.textContent = '';
             await loadHouseholdMemoriesEditor();
+            await loadSmartDurableMemoriesEditor();
           } catch (e) {
             if (msgEl) msgEl.textContent = 'Load failed.';
           }
@@ -4794,36 +5805,36 @@ app.get('/', (req, res) => {
         function renderAdminUsageSection(title, rows, labelKey) {
           if (!Array.isArray(rows) || rows.length === 0) {
             return (
-              '<div style="margin-top:10px;"><strong>' +
+              '<section class="admin-report-section"><h5>' +
               escapeAdminHtml(title) +
-              '</strong><div style="margin-top:4px;color:var(--text-soft);">No rows.</div></div>'
+              '</h5><div class="admin-report-empty">No rows.</div></section>'
             );
           }
           let html =
-            '<div style="margin-top:10px;"><strong>' +
+            '<section class="admin-report-section"><h5>' +
             escapeAdminHtml(title) +
-            '</strong><table style="width:100%; border-collapse:collapse; margin-top:4px; font-size:12px;">' +
-            '<thead><tr><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">' +
+            '</h5><div class="admin-report-table-wrap"><table class="admin-report-table">' +
+            '<thead><tr><th>' +
             escapeAdminHtml(labelKey) +
-            '</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Calls</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">In</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Out</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Est. cost</th></tr></thead><tbody>';
+            '</th><th class="num">Calls</th><th class="num">In</th><th class="num">Out</th><th class="num">Est. cost</th></tr></thead><tbody>';
           for (const row of rows) {
             const label = row.householdName || row.key || '—';
             html +=
-              '<tr><td style="padding:4px 4px 4px 0;">' +
+              '<tr><td>' +
               escapeAdminHtml(label) +
-              '</td><td style="padding:4px; text-align:right;">' +
+              '</td><td class="num">' +
               escapeAdminHtml(row.callCount != null ? row.callCount : 0) +
-              '</td><td style="padding:4px; text-align:right;">' +
+              '</td><td class="num">' +
               escapeAdminHtml(row.inputTokens != null ? row.inputTokens : 0) +
-              '</td><td style="padding:4px; text-align:right;">' +
+              '</td><td class="num">' +
               escapeAdminHtml(row.outputTokens != null ? row.outputTokens : 0) +
-              '</td><td style="padding:4px; text-align:right;">' +
+              '</td><td class="num">' +
               escapeAdminHtml(
                 formatAdminUsageUsd(row.estimatedCostUsd, row.estimatedCostAvailable !== false)
               ) +
               '</td></tr>';
           }
-          html += '</tbody></table></div>';
+          html += '</tbody></table></div></section>';
           return html;
         }
 
@@ -4831,54 +5842,55 @@ app.get('/', (req, res) => {
           const root = document.getElementById('admin-usage-report');
           if (!root) return;
           if (!reportData || !reportData.totals) {
-            root.innerHTML = '<span style="color: var(--text-soft);">No usage data yet.</span>';
+            root.innerHTML = '<span class="admin-report-empty">No usage data yet.</span>';
             return;
           }
           const totals = reportData.totals || {};
-          let html = '<strong>Anthropic call ledger</strong><br />';
-          html += 'Calls: ' + escapeAdminHtml(totals.callCount != null ? totals.callCount : 0) + '<br />';
-          html += 'Input tokens: ' + escapeAdminHtml(totals.inputTokens != null ? totals.inputTokens : 0) + '<br />';
-          html += 'Output tokens: ' + escapeAdminHtml(totals.outputTokens != null ? totals.outputTokens : 0) + '<br />';
-          html +=
-            'Estimated cost: ' +
-            escapeAdminHtml(
-              formatAdminUsageUsd(totals.estimatedCostUsd, totals.estimatedCostAvailable !== false)
-            ) +
-            '<br />';
+          let html = '<div class="admin-report-title">Anthropic call ledger</div>';
+          html += '<div class="admin-report-stats">';
+          html += '<div class="admin-report-stat"><span class="label">Calls</span><span class="value">' + escapeAdminHtml(totals.callCount != null ? totals.callCount : 0) + '</span></div>';
+          html += '<div class="admin-report-stat"><span class="label">Input tokens</span><span class="value">' + escapeAdminHtml(totals.inputTokens != null ? totals.inputTokens : 0) + '</span></div>';
+          html += '<div class="admin-report-stat"><span class="label">Output tokens</span><span class="value">' + escapeAdminHtml(totals.outputTokens != null ? totals.outputTokens : 0) + '</span></div>';
+          html += '<div class="admin-report-stat"><span class="label">Estimated cost</span><span class="value">' +
+            escapeAdminHtml(formatAdminUsageUsd(totals.estimatedCostUsd, totals.estimatedCostAvailable !== false)) +
+            '</span></div>';
+          html += '</div>';
+          html += '<div class="admin-report-grid">';
           html += renderAdminUsageSection('By bucket', reportData.byBucket || [], 'Bucket');
           html += renderAdminUsageSection('By household', reportData.byHousehold || [], 'Household');
           html += renderAdminUsageSection('By purpose', reportData.byPurpose || [], 'Purpose');
           html += renderAdminUsageSection('By web search setting', reportData.byWebSearchEnabled || [], 'Setting');
           html += renderAdminUsageSection('By actual web search usage', reportData.byWebSearchUsage || [], 'Usage');
+          html += '</div>';
           const recentRows = Array.isArray(reportData.recentRows) ? reportData.recentRows : [];
-          html += '<div style="margin-top:10px;"><strong>Recent calls</strong>';
+          html += '<section class="admin-report-section" style="margin-top:12px;"><h5>Recent calls</h5>';
           if (recentRows.length === 0) {
-            html += '<div style="margin-top:4px;color:var(--text-soft);">No rows.</div>';
+            html += '<div class="admin-report-empty">No rows.</div>';
           } else {
             html +=
-              '<table style="width:100%; border-collapse:collapse; margin-top:4px; font-size:12px;">' +
-              '<thead><tr><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">Time</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">Household</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">Purpose</th><th style="text-align:left; border-bottom:1px solid var(--border-subtle); padding:4px;">Model</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">In</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Out</th><th style="text-align:right; border-bottom:1px solid var(--border-subtle); padding:4px;">Cost</th></tr></thead><tbody>';
+              '<div class="admin-report-table-wrap"><table class="admin-report-table">' +
+              '<thead><tr><th>Time</th><th>Household</th><th>Purpose</th><th>Model</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th></tr></thead><tbody>';
             for (const row of recentRows) {
               html +=
-                '<tr><td style="padding:4px 4px 4px 0;">' +
+                '<tr><td>' +
                 escapeAdminHtml(row.createdAt || '—') +
-                '</td><td style="padding:4px;">' +
+                '</td><td>' +
                 escapeAdminHtml(row.householdName || row.householdId || '—') +
-                '</td><td style="padding:4px;">' +
+                '</td><td>' +
                 escapeAdminHtml(row.callPurpose || '—') +
-                '</td><td style="padding:4px;">' +
+                '</td><td>' +
                 escapeAdminHtml(row.model || '—') +
-                '</td><td style="padding:4px; text-align:right;">' +
+                '</td><td class="num">' +
                 escapeAdminHtml(row.inputTokens != null ? row.inputTokens : 0) +
-                '</td><td style="padding:4px; text-align:right;">' +
+                '</td><td class="num">' +
                 escapeAdminHtml(row.outputTokens != null ? row.outputTokens : 0) +
-                '</td><td style="padding:4px; text-align:right;">' +
+                '</td><td class="num">' +
                 escapeAdminHtml(formatAdminUsageUsd(row.estimatedCostUsd, row.estimatedCostUsd != null)) +
                 '</td></tr>';
             }
-            html += '</tbody></table>';
+            html += '</tbody></table></div>';
           }
-          html += '</div>';
+          html += '</section>';
           root.innerHTML = html;
         }
 
@@ -4932,20 +5944,20 @@ app.get('/', (req, res) => {
           if (usageEl) {
             if (usage) {
               let html =
-                '<strong>Message usage (stored messages)</strong><br />' +
-                'Total messages (this household): ' +
+                '<div class="settings-admin-usage-summary"><h5>Message usage (stored messages)</h5>' +
+                '<div>Total messages (this household): <strong>' +
                 (usage.totalMessages != null ? usage.totalMessages : 0) +
-                '<br />';
+                '</strong></div>';
               html +=
-                'Latest message: ' +
+                '<div style="margin-top:6px;">Latest message: <strong>' +
                 (usage.latestMessageAt ? String(usage.latestMessageAt) : '—') +
-                '<br />';
-              html += '<strong style="display:inline-block;margin-top:6px;">User messages by name</strong> (role=user rows):';
+                '</strong></div>';
+              html += '<div style="margin-top:10px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-soft);">User messages by name</div>';
               const rows = usage.messagesByUser || [];
               if (rows.length === 0) {
-                html += '<div style="margin-top:4px;color:var(--text-soft);">No user messages yet.</div>';
+                html += '<div class="admin-report-empty" style="margin-top:6px;">No user messages yet.</div>';
               } else {
-                html += '<ul style="margin:4px 0 0;padding-left:18px;">';
+                html += '<ul>';
                 for (const row of rows) {
                   html +=
                     '<li>' +
@@ -4956,6 +5968,7 @@ app.get('/', (req, res) => {
                 }
                 html += '</ul>';
               }
+              html += '</div>';
               usageEl.innerHTML = html;
             } else {
               usageEl.innerHTML = '';
@@ -4966,24 +5979,20 @@ app.get('/', (req, res) => {
             for (const u of hh.users || []) {
               const tr = document.createElement('tr');
               const td1 = document.createElement('td');
-              td1.style.padding = '4px 4px 4px 0';
               td1.textContent = u.displayName;
               const td2 = document.createElement('td');
-              td2.style.padding = '4px';
               td2.textContent = u.role;
               const td3 = document.createElement('td');
-              td3.style.padding = '4px';
               const pinIn = document.createElement('input');
               pinIn.type = 'password';
               pinIn.placeholder = 'new PIN';
               pinIn.autocomplete = 'new-password';
               pinIn.style.maxWidth = '120px';
-              pinIn.style.padding = '4px 6px';
               pinIn.disabled = godModeReadOnly;
               const btn = document.createElement('button');
               btn.type = 'button';
               btn.textContent = 'Set PIN';
-              btn.style.marginLeft = '6px';
+              btn.style.marginLeft = '8px';
               btn.disabled = godModeReadOnly;
               btn.addEventListener('click', async () => {
                 const pin = pinIn.value.trim();
@@ -5010,12 +6019,10 @@ app.get('/', (req, res) => {
               td3.appendChild(pinIn);
               td3.appendChild(btn);
               const td4 = document.createElement('td');
-              td4.style.padding = '4px';
               if (!godModeReadOnly) {
                 const viewAsBtn = document.createElement('button');
                 viewAsBtn.type = 'button';
                 viewAsBtn.textContent = 'View as';
-                viewAsBtn.style.padding = '4px 8px';
                 viewAsBtn.addEventListener('click', async () => {
                   try {
                     const rr = await fetch('/admin/impersonate', {
@@ -5123,29 +6130,47 @@ app.get('/', (req, res) => {
             const prevUsageSel = usageSel && usageSel.value;
             if (listEl) {
               listEl.innerHTML = '';
+              listEl.className = 'settings-admin-household-list';
               for (const hh of households) {
                 const row = document.createElement('div');
-                row.style.marginBottom = '6px';
+                row.className = 'settings-admin-household-row';
+                const main = document.createElement('div');
+                main.className = 'settings-admin-household-row-main';
                 const n =
                   hh.totalMessages != null && Number.isFinite(Number(hh.totalMessages))
                     ? Number(hh.totalMessages)
                     : 0;
                 const msgLabel = n === 1 ? 'msg' : 'msgs';
-                row.textContent =
-                  '#' +
-                  hh.id +
-                  ' · ' +
-                  hh.name +
-                  ' · key ' +
+                const name = document.createElement('strong');
+                name.className = 'settings-admin-household-name';
+                name.textContent = '#' + hh.id + ' — ' + hh.name;
+                const meta = document.createElement('div');
+                meta.className = 'settings-admin-household-meta';
+                meta.textContent =
+                  'Key ' +
                   hh.householdKey +
-                  ' · ' +
+                  ' • ' +
                   n +
                   ' ' +
                   msgLabel +
-                  ' · ' +
-                  hh.anthropicStatusLabel +
-                  (hh.webSearchEnabled ? ' · web search on' : '') +
-                  (hh.smartModeEnabled ? ' · smart on' : '');
+                  ' • ' +
+                  hh.anthropicStatusLabel;
+                main.appendChild(name);
+                main.appendChild(meta);
+                const tags = document.createElement('div');
+                tags.className = 'settings-admin-household-tags';
+                const smartTag = document.createElement('span');
+                smartTag.className =
+                  'settings-admin-tag' + (hh.smartModeEnabled ? ' settings-admin-tag--on' : '');
+                smartTag.textContent = hh.smartModeEnabled ? 'Smart on' : 'Smart off';
+                tags.appendChild(smartTag);
+                const webTag = document.createElement('span');
+                webTag.className =
+                  'settings-admin-tag' + (hh.webSearchEnabled ? ' settings-admin-tag--on' : '');
+                webTag.textContent = hh.webSearchEnabled ? 'Web search on' : 'Web search off';
+                tags.appendChild(webTag);
+                row.appendChild(main);
+                row.appendChild(tags);
                 listEl.appendChild(row);
               }
             }
@@ -5991,6 +7016,61 @@ app.get('/', (req, res) => {
         if (memKeyInputEl) memKeyInputEl.addEventListener('input', onMemoryFieldInput);
         if (memValInputEl) memValInputEl.addEventListener('input', onMemoryFieldInput);
 
+        const smartMemSaveBtn = document.getElementById('my-settings-smart-memory-save');
+        const smartMemCancelBtn = document.getElementById('my-settings-smart-memory-cancel-edit');
+        if (smartMemSaveBtn) {
+          smartMemSaveBtn.addEventListener('click', async () => {
+            clearSmartMemoryUiMessage();
+            const typeIn = document.getElementById('my-settings-smart-memory-type');
+            const labelIn = document.getElementById('my-settings-smart-memory-label');
+            const summaryIn = document.getElementById('my-settings-smart-memory-summary');
+            const memMsg = document.getElementById('my-settings-smart-memories-msg');
+            const memoryType = typeIn && String(typeIn.value).trim();
+            const label = labelIn && String(labelIn.value).trim();
+            const summary = summaryIn && String(summaryIn.value).trim();
+            if (!memoryType || !label || !summary) {
+              if (memMsg) memMsg.textContent = 'Type, label, and summary are required.';
+              return;
+            }
+            try {
+              const r = await fetch('/settings/household/smart-memories', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  id: editingSmartMemoryId,
+                  memoryType,
+                  label,
+                  summary,
+                  noteIndex: editingSmartMemoryNoteIndex,
+                }),
+              });
+              const errBody = await r.json().catch(() => ({}));
+              if (memMsg) {
+                memMsg.textContent = r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
+              }
+              if (r.ok) {
+                resetSmartMemoryEditForm();
+                await loadSmartDurableMemoriesEditor();
+              }
+            } catch (e) {
+              if (memMsg) memMsg.textContent = 'Request failed.';
+            }
+          });
+        }
+        if (smartMemCancelBtn) {
+          smartMemCancelBtn.addEventListener('click', () => {
+            clearSmartMemoryUiMessage();
+            resetSmartMemoryEditForm();
+          });
+        }
+        const smartMemTypeInputEl = document.getElementById('my-settings-smart-memory-type');
+        const smartMemLabelInputEl = document.getElementById('my-settings-smart-memory-label');
+        const smartMemSummaryInputEl = document.getElementById('my-settings-smart-memory-summary');
+        const onSmartMemoryFieldInput = () => clearSmartMemoryUiMessage();
+        if (smartMemTypeInputEl) smartMemTypeInputEl.addEventListener('input', onSmartMemoryFieldInput);
+        if (smartMemLabelInputEl) smartMemLabelInputEl.addEventListener('input', onSmartMemoryFieldInput);
+        if (smartMemSummaryInputEl) smartMemSummaryInputEl.addEventListener('input', onSmartMemoryFieldInput);
+
         menuButton.addEventListener('click', async () => {
           try {
             const resp = await fetch('/chats');
@@ -6269,8 +7349,10 @@ app.get('/', (req, res) => {
           }
 
           const speaker = speakerName.textContent || 'Rob';
+          const serverManagedForChat =
+            currentChatId != null ? serverManagedActionByChatId.get(Number(currentChatId)) === true : false;
           const pendingForChat =
-            currentChatId != null ? pendingActionByChatId.get(Number(currentChatId)) : null;
+            currentChatId != null && !serverManagedForChat ? pendingActionByChatId.get(Number(currentChatId)) : null;
           const pendingHasOptions =
             pendingForChat &&
             Array.isArray(pendingForChat.options) &&
@@ -6369,9 +7451,13 @@ app.get('/', (req, res) => {
               return;
             }
 
-            const pendingActionHeader = response.headers.get('X-KitchenBot-Pending-Action');
+            const serverActionManaged = response.headers.get('X-KitchenBot-Server-Action-Managed') === '1';
+            const pendingActionHeader = serverActionManaged ? null : response.headers.get('X-KitchenBot-Pending-Action');
             if (currentChatId != null) {
-              if (pendingActionHeader) {
+              if (serverActionManaged) {
+                serverManagedActionByChatId.set(Number(currentChatId), true);
+                pendingActionByChatId.delete(Number(currentChatId));
+              } else if (pendingActionHeader) {
                 try {
                   pendingActionByChatId.set(
                     Number(currentChatId),
@@ -6618,18 +7704,22 @@ app.get('/settings/household', requireHousehold, requireAuth, requireOwner, asyn
     if (!currentUser) {
       return res.status(404).json({ error: 'User not found' });
     }
+    const canManageHouseholdSettings =
+      currentUser.role === 'owner' || (await isGlobalAdminUser(req.userId));
     const users = await listHouseholdUsers(req.householdId);
     return res.json({
       household: {
         id: h.id,
         name: h.name,
         key: h.household_key,
+        smartModeEnabled: Number(h.smart_mode_enabled) === 1,
       },
       currentUser: {
         id: currentUser.id,
         displayName: currentUser.display_name,
         role: currentUser.role,
       },
+      canManageHouseholdSettings,
       users: users.map((u) => ({
         id: u.id,
         displayName: u.display_name,
@@ -6708,6 +7798,147 @@ app.delete(
     return res.status(500).json({ error: 'Failed to delete memory' });
   }
 });
+
+app.get('/settings/household/smart-memories', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+  try {
+    const rows = await listSmartDurableMemories(req.householdId);
+    res.json({
+      smartMemories: rows.map((row) => {
+        const memoryType = normalizeSmartDurableMemoryType(row.memoryType);
+        const notes = normalizeSmartDurablePersonNotes(row?.attributes?.notes || []);
+        return {
+          id: row.id,
+          memoryType,
+          label: row.label,
+          summary: memoryType === 'person' ? buildPersonSummaryFromNotes(notes) : row.summary,
+          attributes: memoryType === 'person' ? { ...(row.attributes || {}), notes } : row.attributes,
+          sourceKind: row.sourceKind,
+          updatedAt: row.updatedAt,
+        };
+      }),
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load Smart durable memories' });
+  }
+});
+
+app.post(
+  '/settings/household/smart-memories',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
+    try {
+      const id = req.body.id != null && Number.isFinite(Number(req.body.id)) ? Number(req.body.id) : null;
+      const noteIndex =
+        req.body.noteIndex != null && Number.isFinite(Number(req.body.noteIndex)) ? Number(req.body.noteIndex) : null;
+      if (id && req.body.memoryType === 'person' && noteIndex != null) {
+        const rows = await listSmartDurableMemories(req.householdId);
+        const existing = rows.find((row) => Number(row.id) === id);
+        if (!existing) return res.status(404).json({ error: 'Smart durable memory not found' });
+        const currentNotes = normalizeSmartDurablePersonNotes(existing?.attributes?.notes || []);
+        if (noteIndex < 0 || noteIndex >= currentNotes.length) {
+          return res.status(400).json({ error: 'Invalid saved note index' });
+        }
+        currentNotes[noteIndex] = { text: String(req.body.summary || '').trim() };
+        const record = buildSmartDurableMemoryRecordForStorage({
+          type: 'person',
+          label: req.body.label || existing.label,
+          attributes: { ...(existing.attributes || {}), notes: currentNotes },
+        });
+        if (!record) return res.status(400).json({ error: 'Label and note are required' });
+        await saveSmartDurableMemory(req.householdId, record, {
+          id,
+          sourceKind: 'manual',
+        });
+        return res.json({ ok: true });
+      }
+      const record = buildSmartDurableMemoryRecordForStorage({
+        type: req.body.memoryType,
+        label: req.body.label,
+        summary: req.body.summary,
+        attributes: req.body.attributes,
+      });
+      if (!record) {
+        return res.status(400).json({ error: 'Type, label, and summary are required' });
+      }
+      if (id) {
+        await saveSmartDurableMemory(req.householdId, record, {
+          id,
+          sourceKind: 'manual',
+        });
+        return res.json({ ok: true });
+      }
+      const prior = await getSmartDurableMemoryByTypeAndLabel(
+        req.householdId,
+        record.memoryType,
+        record.normalizedLabel
+      );
+      const merged = prior ? mergeSmartDurableMemoryForUpsert(prior, record) : record;
+      await saveSmartDurableMemory(req.householdId, merged, {
+        id: prior?.id ?? null,
+        sourceKind: 'manual',
+      });
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: 'Failed to save Smart durable memory' });
+    }
+  }
+);
+
+app.delete(
+  '/settings/household/smart-memories/:id',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireOwner,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ error: 'Invalid Smart memory id' });
+      }
+      const noteIndex =
+        req.query.noteIndex != null && Number.isFinite(Number(req.query.noteIndex)) ? Number(req.query.noteIndex) : null;
+      if (noteIndex != null) {
+        const rows = await listSmartDurableMemories(req.householdId);
+        const existing = rows.find((row) => Number(row.id) === id);
+        if (!existing) return res.status(404).json({ error: 'Smart durable memory not found' });
+        if (normalizeSmartDurableMemoryType(existing.memoryType) !== 'person') {
+          return res.status(400).json({ error: 'Only people support note-level deletion' });
+        }
+        const currentNotes = normalizeSmartDurablePersonNotes(existing?.attributes?.notes || []);
+        if (noteIndex < 0 || noteIndex >= currentNotes.length) {
+          return res.status(400).json({ error: 'Invalid saved note index' });
+        }
+        const nextNotes = currentNotes.filter((_, idx) => idx !== noteIndex);
+        if (nextNotes.length === 0) {
+          await deleteSmartDurableMemory(req.householdId, id);
+          return res.json({ ok: true });
+        }
+        const record = buildSmartDurableMemoryRecordForStorage({
+          type: 'person',
+          label: existing.label,
+          attributes: { ...(existing.attributes || {}), notes: nextNotes },
+        });
+        if (!record) return res.status(400).json({ error: 'Could not rebuild person memory' });
+        await saveSmartDurableMemory(req.householdId, record, {
+          id,
+          sourceKind: 'manual',
+        });
+        return res.json({ ok: true });
+      }
+      await deleteSmartDurableMemory(req.householdId, id);
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: 'Failed to delete Smart durable memory' });
+    }
+  }
+);
 
 app.post(
   '/settings/household/users/:id/chat-color',
@@ -7441,10 +8672,14 @@ async function runWeeklyPlanGroceryDraftOfferResponse({
     deps: {
       addMessage,
       broadcastToChat,
+      formatSmartGroceryPreviewArtifact,
       formatWeeklyPlanDraftForPrompt,
       formatWeeklyPlanDraftVisibleBlock,
+      generateSmartGroceryPreviewCommitReply,
+      generateSmartGroceryPreviewLead,
       incrementUserMessageCountForSender,
       normalizeGroceryItemsForPost,
+      stripStoredMessageContentForDisplay,
     },
   });
 }
@@ -7645,21 +8880,15 @@ async function handleCompatChatTurn({
   memoriesByKey,
   anthropic,
   householdWebSearchEnabled,
-  smartModeEnabled,
-  runtimeStateMode = 'legacy',
 }) {
   let {
     routePrompt,
     executePendingAction,
     commandUserTextForPersistence,
-    smartModeMixedMemoryHint = false,
-    smartModeClarifyHint = false,
     plannerUserMessageAlreadyPersisted = false,
-    plannerSkipMixedMemoryOffer = false,
     plannerStreamCompletedActionsAck = null,
     skipWeeklyPlanDraftAutoUpdater = false,
   } = turn;
-  const allowLegacyNaturalActionOffers = !!smartModeEnabled;
 
   let cmdRoute = decideCommandRoute({
     routePrompt,
@@ -7720,8 +8949,9 @@ async function handleCompatChatTurn({
           m.role === 'user' ? `${m.name}: ${m.content}` : stripStoredMessageContentForDisplay(m.content),
       }));
       try {
+        const callPurpose = 'chat_title_generation';
         const titleRes = await createLoggedAnthropicMessage(anthropic, {
-          model: 'claude-sonnet-4-5',
+          model: resolveAnthropicModelForCallPurpose(callPurpose),
           max_tokens: 30,
           system: 'You generate very short chat titles (3–6 words). Respond with ONLY the title, no quotes or punctuation.',
           messages: [
@@ -7731,9 +8961,9 @@ async function handleCompatChatTurn({
         }, {
           householdId: req.householdId,
           chatId,
-          smartModeEnabled,
+          smartModeEnabled: false,
           callSurface: 'background',
-          callPurpose: 'chat_title_generation',
+          callPurpose,
           webSearchEnabledAtCall: false,
           usedWebSearchTool: false,
         });
@@ -7774,7 +9004,7 @@ async function handleCompatChatTurn({
       anthropic,
       routePrompt,
       plannerMode: false,
-      smartModeEnabled,
+      smartModeEnabled: false,
     });
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.end(reply);
@@ -7793,7 +9023,7 @@ async function handleCompatChatTurn({
       plannerMode: false,
       skipIncrement: false,
       plannerUserLineAlreadyAdded: false,
-      smartModeEnabled,
+      smartModeEnabled: false,
     });
     if (gOut.type === 'disambiguation') {
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -7852,14 +9082,8 @@ async function handleCompatChatTurn({
     threadCtx.threadScene && typeof threadCtx.threadScene === 'object' && !Array.isArray(threadCtx.threadScene)
       ? threadCtx.threadScene
       : {};
-  const threadSceneCompactMain = smartModeEnabled
-    ? Object.keys(mainThreadScene).length === 0
-      ? '(empty)'
-      : truncateSmartModeContext(JSON.stringify(mainThreadScene), 800)
-    : '(not injected for this reply)';
-  const weeklyPlanDraftCompact = smartModeEnabled
-    ? formatWeeklyPlanDraftForPrompt(threadCtx.weeklyPlanDraft ?? {})
-    : '(not available in this chat)';
+  const threadSceneCompactMain = '(not injected for this reply)';
+  const weeklyPlanDraftCompact = '(not available in this chat)';
   const claudeMessages = recentConversation.map((message) => ({
     role: message.role,
     content:
@@ -7872,8 +9096,9 @@ async function handleCompatChatTurn({
 
   if (shouldNameChat) {
     try {
+      const callPurpose = 'chat_title_generation';
       const titleResponse = await createLoggedAnthropicMessage(anthropic, {
-        model: 'claude-sonnet-4-5',
+        model: resolveAnthropicModelForCallPurpose(callPurpose),
         max_tokens: 30,
         system:
           'You generate very short chat titles (3-6 words) based on the conversation. Respond with ONLY the title text, no quotes or punctuation.',
@@ -7887,9 +9112,9 @@ async function handleCompatChatTurn({
       }, {
         householdId: req.householdId,
         chatId,
-        smartModeEnabled,
+        smartModeEnabled: false,
         callSurface: 'background',
-        callPurpose: 'chat_title_generation',
+        callPurpose,
         webSearchEnabledAtCall: false,
         usedWebSearchTool: false,
       });
@@ -7902,56 +9127,14 @@ async function handleCompatChatTurn({
       console.error('Title generation failed:', e);
     }
   }
-
-  let mixedMemoryProposal = null;
-  let mixedMemoryOfferLine = null;
-  if (allowLegacyNaturalActionOffers && hasSmartStrongMemoryIntentKeywords(routePrompt) && !plannerSkipMixedMemoryOffer) {
-    const proposed = await trySmartAiMemoryProposal(anthropic, routePrompt, memories, threadCtx, {
-      isAnthropicSdkAuthOrKeyError,
-      householdId: req.householdId,
-      chatId,
-    });
-    if (proposed) {
-      const mixed = isSmartMixedIntentMemoryMessage(routePrompt) || !!smartModeMixedMemoryHint;
-      if (!mixed) {
-        const reply = buildPendingActionReply(proposed, memoriesByKey);
-        const persistedAssistantContent = appendPendingMarkerToAssistantContent(reply, proposed);
-        await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', persistedAssistantContent);
-        if (typeof broadcastToChat === 'function') {
-          broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-        }
-        if (runtimeStateMode === 'smart') {
-          await setChatRuntimeState(chatId, req.householdId, {
-            mode: 'smart',
-            pending: { action: proposed },
-            checkpoint: {},
-          }).catch(() => {});
-        }
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(proposed)));
-        return res.end(reply);
-      }
-      mixedMemoryProposal = proposed;
-      mixedMemoryOfferLine = buildSmartMixedMemoryOfferLine(proposed, routePrompt);
-    }
-  }
-
-  const mixedIntentBlock = mixedMemoryProposal
-    ? `
-
-    Mixed-intent (this user message): They asked for a primary task plus a memory-like fact. Complete the primary task first; apply the memory fact in-context (e.g. dietary exclusions). Do NOT add any line offering to save to household memory, asking to confirm a save, or mirroring the backend offer—the server appends exactly one such line after your reply; duplicate offer text is stripped. Do not ask again to save; a pending confirmation is already attached. Never output [[KB_OFFER_MEMORY_SAVE]] or any [[KB_...]] marker (it will be stripped).`
-    : '';
   const useWebSearchTool = householdWebSearchEnabled && shouldEnableWebSearchForPrompt(routePrompt);
   const webSearchCapabilityBlock = useWebSearchTool
     ? `Web (this request): Anthropic web_search IS attached. Only attribute content to a site or URL if the search tool actually returned that material this turn. Do not fabricate "exact" ingredients, steps, or quotes from a page you did not receive via the tool. If the tool did not return a page body, say you do not have the exact text from that source.`
     : householdWebSearchEnabled
       ? `Web (this request): Web search is NOT attached—no live fetch of links for this reply. Seeing a URL in the user's message does not mean you read it. Do not imply you extracted, checked, read, or matched that page.`
       : `Web (this request): Web search is off for this household. You cannot load URLs. A link in the chat is not page content—do not imply you read it.`;
-  const smartModeCapabilityBlock = smartModeEnabled
-    ? 'Natural-language app actions are available when clearly intended.'
-    : 'App changes only happen through explicit commands or a real pending confirmation already attached by the app.';
-  const legacyModeBehaviorBlock = !smartModeEnabled
-    ? `
+  const smartModeCapabilityBlock = 'App changes only happen when the server actually executes them. Plain chat text by itself does not perform app actions.';
+  const legacyModeBehaviorBlock = `
     Command-first contract:
     - I can chat naturally, but I cannot execute app actions from a normal chat message.
     - If the user asks me to change app state in normal language, reply naturally and point them to the right explicit command.
@@ -7959,36 +9142,27 @@ async function handleCompatChatTurn({
     - Do not imply a pending confirmation exists unless a real command flow already attached one.
     - Do not offer "I can do that for you" style confirmations for grocery, memory, rename, or help from normal language.
     - Do not mention hidden modes, internal settings, or alternate versions of KitchenBot.
-    - Do not create or update weekly-plan state here. Meal-planning discussion may stay conversational only.`
-    : '';
-  const smartModeClarifyBlock =
-    smartModeEnabled && smartModeClarifyHint
-      ? `\n    Smart Mode hint: If the user message is ambiguous, ask one short clarifying question before answering.`
-      : '';
+    - Do not create or update weekly-plan state here. Meal-planning discussion may stay conversational only.`;
+  const smartModeClarifyBlock = '';
   const plannerCompletedActionsBlock = plannerStreamCompletedActionsAck
     ? `\n    Planner (this request): The server already completed these actions; you may open your reply by acknowledging them as fact:\n    ${plannerStreamCompletedActionsAck}\n    If this block is present, the usual restriction below against claiming memory or grocery tab updates does not apply to those specific outcomes—they are confirmed for this request.`
     : '';
-  const weeklyPlanServerVisibleHint =
-    smartModeEnabled &&
-    (skipWeeklyPlanDraftAutoUpdater || isWeeklyPlanningLikeUserTurn(routePrompt, threadCtx.weeklyPlanDraft ?? {}))
-      ? `\n    Weekly plan visibility: When this turn updates the chat's weekly dinner plan, the server appends a fixed "Weekly plan" block after your reply. Acknowledge briefly; do not repeat the full numbered meal list in prose.`
-      : '';
+  const weeklyPlanServerVisibleHint = '';
   const streamParams = {
-    model: 'claude-sonnet-4-5',
+    model: resolveAnthropicModelForCallPurpose('chat_reply'),
     max_tokens: useWebSearchTool ? 4096 : 800,
     system: `You are KitchenBot: a concise household assistant. Always use first person (I/me/my)—never describe "KitchenBot" as a separate system. Plain text by default; code blocks only if the user asks.
 
-    App contract: This message is plain text only; it does not run \`!\` commands or change stored state by itself. Persisted changes happen only through explicit commands, Settings, or when I offer a save/list update and the app attaches a real pending confirmation—your next reply alone cannot complete that unless the client sends that confirmation.
-    - Do not claim I saved, updated, or changed the app this turn unless the history shows a real command or confirmation outcome. Do not narrate a successful grocery or memory write unless the thread shows the actual backend confirmation for that action.
-    - New facts may inform this reply only; do not describe them as already saved or remembered for future use unless the backend actually executed a save in this thread (visible command outcome in history).
-    - Do not say \`I saved memory …\`, \`I updated memory …\`, or \`I've updated … preferences\` unless the thread history clearly shows the real command-backed assistant message from a save. Ephemeral facts: a new user fact not already in household memory below may be used only for this reply. Do not say I noted it, saved it, will remember it next time, updated preferences, or kept it in mind for future meals—unless quoting a confirmed command outcome from chat history. Only a real \`!remember\` or confirmed pending action is a save.
-    - Do not ask "which would you prefer?" or offer Settings vs chat-style forks for actions I cannot complete from the next natural-language reply. Give one clear path (e.g. edit in Settings, or confirm when I have attached a real pending action).
-    - Do not tell users to type \`!remember\` here; if they only say yes/sure/ok, they may be confirming an offer—no command tutorials.
-    ${mixedIntentBlock}
+    App contract: This message is plain text only; it does not execute app actions by itself. An app action only happened if the server already executed it and the thread shows the confirmed outcome.
+    - Do not claim I saved, updated, or changed the app this turn unless the thread shows the real confirmed outcome for that action.
+    - New facts may inform this reply only; do not describe them as already saved or remembered for future use unless the backend actually executed a save in this thread.
+    - Do not say \`I saved memory …\`, \`I updated memory …\`, or \`I've updated … preferences\` unless the thread history clearly shows the real confirmed save outcome.
+    - Do not frame non-executed ideas as completed app actions. If the server did not execute it, speak about it as a suggestion, question, or next step instead.
+    - If the thread already shows a confirmed outcome, you may acknowledge it naturally as fact.
 
     One reply per user message; finish here (no "stand by" or promised follow-ups). If web_search is attached, use it in this reply. Do not print raw search queries unless asked.
 
-    ${smartModeEnabled ? `Grocery (draft-first): first output the shopping/ingredient list in this reply. If you do not start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it), include one brief sentence that this list is a draft in chat only and the Grocery List tab in the app is unchanged by this reply alone—so users are not left wondering whether the real tab updated. Only after a concrete list in this message may you offer once: "If you want, I can add this to the Grocery List tab." (optionally add one short clause about plan swaps if relevant). Do not claim the tab is already updated. Do not say \`That's a command-backed action\`, \`run !grocerylist\`, or \`say yes and I'll add it\` unless you start the reply with [[KB_OFFER_GROCERY_UPDATE]] (hidden; never explain it)—that marker is what attaches a real pending action. If you do not use the marker, do not imply the user can confirm to save to the tab. Do not ask them to type \`!grocerylist\`.` : `If the user asks for grocery, memory, rename, or help actions in ordinary language, explain the right command naturally and stop there. Do not mention any hidden modes or internal settings. Do not ask "Would you like to run that now?" unless a real pending confirmation is already attached.`}
+    If the user asks for grocery, memory, rename, or help actions in ordinary language, respond based on the real server-confirmed state in the thread. Do not invent command requirements, hidden modes, or confirmations that are not present.
 
     ${webSearchCapabilityBlock}
     ${smartModeCapabilityBlock}
@@ -8022,37 +9196,21 @@ async function handleCompatChatTurn({
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Transfer-Encoding', 'chunked');
   res.setHeader('X-Accel-Buffering', 'no');
-  if (mixedMemoryProposal) {
-    res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(mixedMemoryProposal)));
-  }
 
   let finalReply = '';
   let streamRawAccum = '';
-  const pendingOfferMarker = '[[KB_OFFER_GROCERY_UPDATE]]';
-  let pendingOfferDecisionMade = false;
-  let pendingOfferAction = null;
-  let pendingOfferBuffer = '';
   let streamEnded = false;
   let displayEmittedLen = 0;
 
   function flushDisplayEmit() {
     const cleaned = stripKitchenBotHiddenMarkers(streamRawAccum);
-    let persistPlain = pendingOfferAction && !mixedMemoryProposal ? cleaned : stripFakeGroceryOperationalLines(cleaned);
-    if (!mixedMemoryProposal) {
-      persistPlain = stripFakeMemoryPendingOfferLines(persistPlain);
-    }
-    finalReply = persistPlain;
-    if (mixedMemoryProposal) return;
-    let emitPlain;
-    if (pendingOfferAction) {
-      emitPlain = !mixedMemoryProposal ? stripFakeMemoryPendingOfferLines(cleaned) : cleaned;
-    } else {
-      emitPlain = persistPlain;
-      if (!streamEnded) {
-        const lastNl = emitPlain.lastIndexOf('\n');
-        if (lastNl === -1) return;
-        emitPlain = emitPlain.slice(0, lastNl + 1);
-      }
+    let emitPlain = stripFakeGroceryOperationalLines(cleaned);
+    emitPlain = stripFakeMemoryPendingOfferLines(emitPlain);
+    finalReply = emitPlain;
+    if (!streamEnded) {
+      const lastNl = emitPlain.lastIndexOf('\n');
+      if (lastNl === -1) return;
+      emitPlain = emitPlain.slice(0, lastNl + 1);
     }
     displayEmittedLen = Math.min(displayEmittedLen, emitPlain.length);
     const newSuffix = emitPlain.slice(displayEmittedLen);
@@ -8078,47 +9236,8 @@ async function handleCompatChatTurn({
 
   for await (const event of stream) {
     if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-      const delta = event.delta.text;
-      pendingOfferBuffer += delta;
-      if (!pendingOfferDecisionMade) {
-        if (
-          pendingOfferBuffer.length >= pendingOfferMarker.length ||
-          pendingOfferBuffer.includes('\n') ||
-          pendingOfferBuffer.includes('\r')
-        ) {
-          if (smartModeEnabled && pendingOfferBuffer.startsWith(pendingOfferMarker)) {
-            pendingOfferAction = { command: '!grocerylist', source: 'draft_chat_offer' };
-            if (!mixedMemoryProposal) {
-              res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(pendingOfferAction)));
-            }
-            pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
-            pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
-          }
-          pendingOfferDecisionMade = true;
-          if (pendingOfferBuffer) {
-            writeChatDelta(pendingOfferBuffer);
-            pendingOfferBuffer = '';
-          }
-        }
-        continue;
-      }
-      writeChatDelta(delta);
+      writeChatDelta(event.delta.text);
     }
-  }
-  if (!pendingOfferDecisionMade) {
-    if (smartModeEnabled && pendingOfferBuffer.startsWith(pendingOfferMarker)) {
-      pendingOfferAction = { command: '!grocerylist', source: 'draft_chat_offer' };
-      if (!mixedMemoryProposal) {
-        res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(pendingOfferAction)));
-      }
-      pendingOfferBuffer = pendingOfferBuffer.slice(pendingOfferMarker.length);
-      pendingOfferBuffer = pendingOfferBuffer.replace(/^\s*\n/, '');
-    }
-    if (pendingOfferBuffer) {
-      writeChatDelta(pendingOfferBuffer);
-      pendingOfferBuffer = '';
-    }
-    pendingOfferDecisionMade = true;
   }
 
   streamEnded = true;
@@ -8126,42 +9245,16 @@ async function handleCompatChatTurn({
   await finalizeLoggedAnthropicStream(stream, {
     householdId: req.householdId,
     chatId,
-    smartModeEnabled,
+    smartModeEnabled: false,
     callSurface: 'chat',
     callPurpose: 'chat_reply',
     webSearchEnabledAtCall: householdWebSearchEnabled,
     usedWebSearchTool: useWebSearchTool,
   });
 
-  const cleanedStreamForGroceryOffer = stripKitchenBotHiddenMarkers(streamRawAccum);
-  if (smartModeEnabled && !pendingOfferAction && !mixedMemoryProposal && groceryTabOfferTextMatchesForPending(cleanedStreamForGroceryOffer)) {
-    pendingOfferAction = { command: '!grocerylist', source: 'draft_chat_offer' };
-    res.setHeader('X-KitchenBot-Pending-Action', encodeURIComponent(JSON.stringify(pendingOfferAction)));
-    finalReply = stripFakeMemoryPendingOfferLines(cleanedStreamForGroceryOffer);
-  }
-  if (!pendingOfferAction && !mixedMemoryProposal) {
-    finalReply = stripFakeGroceryOperationalLines(finalReply);
-  }
-  if (!mixedMemoryProposal) {
-    finalReply = stripFakeMemoryPendingOfferLines(finalReply);
-  }
-
-  if (mixedMemoryProposal) {
-    finalReply = stripModelAuthoredMemoryOfferLines(finalReply);
-    if (mixedMemoryOfferLine) {
-      finalReply += '\n\n' + mixedMemoryOfferLine;
-    }
-    res.write(finalReply);
-    if (typeof broadcastToChat === 'function') {
-      broadcastToChat(chatId, {
-        type: 'stream_delta',
-        householdId: req.householdId,
-        chatId,
-        delta: finalReply,
-        user: name,
-      });
-    }
-  }
+  finalReply = stripFakeGroceryOperationalLines(finalReply);
+  finalReply = stripFakeMemoryPendingOfferLines(finalReply);
+  finalReply = stripModelAuthoredMemoryOfferLines(finalReply);
 
   const senderForCompliment = await getHouseholdUserById(req.householdId, req.userId);
   const complimentsEnabled =
@@ -8193,94 +9286,22 @@ async function handleCompatChatTurn({
   }
 
   {
-    const offerSep = mixedMemoryProposal && mixedMemoryOfferLine ? '\n\n' + mixedMemoryOfferLine : null;
-    let beforeScrub = finalReply;
-    let afterScrub = '';
-    if (offerSep && finalReply.includes(offerSep)) {
-      const idx = finalReply.lastIndexOf(offerSep);
-      beforeScrub = finalReply.slice(0, idx);
-      afterScrub = finalReply.slice(idx);
-    }
-    finalReply = scrubUnsavedMemoryClaimsInNormalChatReply(beforeScrub) + afterScrub;
+    finalReply = scrubUnsavedMemoryClaimsInNormalChatReply(finalReply);
   }
 
-  let weeklyPlanDraftSyncAwaited = false;
-  let threadCtxForWeeklyVisible = threadCtx;
-  if (smartModeEnabled && !skipWeeklyPlanDraftAutoUpdater && isWeeklyPlanningLikeUserTurn(routePrompt, threadCtx.weeklyPlanDraft ?? {})) {
-    await runWeeklyPlanDraftAutoUpdaterAfterNormalChat(anthropic, {
-      smartModeEnabled,
-      chatId,
-      householdId: req.householdId,
-      priorWeeklyPlanDraft: threadCtx.weeklyPlanDraft ?? {},
-      routePrompt,
-      finalAssistantReply: finalReply,
-      threadMealPlanSummary: threadCtx.mealPlanSummary,
-      threadGrocerySummary: threadCtx.threadGrocerySummary,
-      skipBecausePlannerPatched: false,
-    });
-    weeklyPlanDraftSyncAwaited = true;
-    threadCtxForWeeklyVisible = await getChatThreadContext(chatId, req.householdId);
-  }
-
-  let weeklyPlanVisibleAppend = '';
-  if (skipWeeklyPlanDraftAutoUpdater && weeklyPlanDraftHasMeaningfulContent(threadCtx.weeklyPlanDraft ?? {})) {
-    weeklyPlanVisibleAppend = formatWeeklyPlanDraftVisibleBlock(threadCtx.weeklyPlanDraft ?? {});
-  } else if (weeklyPlanDraftSyncAwaited && weeklyPlanDraftHasMeaningfulContent(threadCtxForWeeklyVisible.weeklyPlanDraft ?? {})) {
-    weeklyPlanVisibleAppend = formatWeeklyPlanDraftVisibleBlock(threadCtxForWeeklyVisible.weeklyPlanDraft ?? {});
-  }
-
-  if (weeklyPlanVisibleAppend) {
-    const append = '\n\n' + weeklyPlanVisibleAppend;
-    finalReply += append;
-    res.write(append);
-    if (typeof broadcastToChat === 'function') {
-      broadcastToChat(chatId, {
-        type: 'stream_delta',
-        householdId: req.householdId,
-        chatId,
-        delta: append,
-        user: name,
-      });
-    }
-  }
-
-  const streamPendingForMarker = mixedMemoryProposal || pendingOfferAction || null;
-  const finalReplyToPersist = streamPendingForMarker
-    ? appendPendingMarkerToAssistantContent(finalReply, streamPendingForMarker)
-    : finalReply;
-  await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReplyToPersist);
-  if (runtimeStateMode === 'smart' && streamPendingForMarker) {
-    await setChatRuntimeState(chatId, req.householdId, {
-      mode: 'smart',
-      pending: { action: streamPendingForMarker },
-      checkpoint: {},
-    }).catch(() => {});
-  } else if (runtimeStateMode === 'smart') {
-    await clearChatRuntimeState(chatId, req.householdId).catch(() => {});
-  }
+  await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReply);
   void runThreadSceneAutoUpdaterAfterNormalChat(anthropic, {
-    smartModeEnabled,
+    smartModeEnabled: false,
     chatId,
     householdId: req.householdId,
     priorThreadScene: mainThreadScene,
     routePrompt,
     finalAssistantReply: finalReply,
-    threadMealPlanSummary: threadCtxForWeeklyVisible.mealPlanSummary,
-    threadGrocerySummary: threadCtxForWeeklyVisible.threadGrocerySummary,
+    threadMealPlanSummary: threadCtx.mealPlanSummary,
+    threadGrocerySummary: threadCtx.threadGrocerySummary,
     householdMemoriesCompact: memoryText,
     recentConversationForContext: recentConversation,
     trustedActionSummary: null,
-  });
-  void runWeeklyPlanDraftAutoUpdaterAfterNormalChat(anthropic, {
-    smartModeEnabled,
-    chatId,
-    householdId: req.householdId,
-    priorWeeklyPlanDraft: threadCtx.weeklyPlanDraft ?? {},
-    routePrompt,
-    finalAssistantReply: finalReply,
-    threadMealPlanSummary: threadCtx.mealPlanSummary,
-    threadGrocerySummary: threadCtx.threadGrocerySummary,
-    skipBecausePlannerPatched: skipWeeklyPlanDraftAutoUpdater || weeklyPlanDraftSyncAwaited,
   });
   if (typeof broadcastToChat === 'function') {
     broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
@@ -8306,68 +9327,57 @@ app.post(
 
       const sharedDeps = {
         ANTHROPIC_KEY_USER_MESSAGE,
+        detectCommandIntentFromNaturalLanguage,
+        getAnthropicClient,
+        handleCompatChatTurn,
+        isPrivateChatCommand,
+        stripStoredMessageContentForDisplay,
+        threadHasConcreteGroceryDraftForFollowUp,
+      };
+
+      const smartDeps = {
+        ANTHROPIC_KEY_USER_MESSAGE,
         addMessage,
         broadcastToChat,
-        buildMixedMemoryOfferLine: buildSmartMixedMemoryOfferLine,
         buildSmartModeInterpreterContext,
         clearChatRuntimeState,
-        clearGroceryItems,
-        complimentTemplates,
-        compliments,
-        combinePlannerDisambiguationWithRememberAck,
-        detectCommandIntentFromNaturalLanguage,
+        detectSmartActionIntentFromNaturalLanguage,
         ensureUserComplimentStateRow,
+        executeSmartActions,
         formatSmartGroceryPreviewArtifact,
-        formatSmartWeeklyPlanArtifact,
-        formatWeeklyPlanDraftForPrompt,
-        formatWeeklyPlanDraftVisibleBlock,
         generateSmartGroceryModeChoiceReply,
         generateSmartGroceryPreviewCommitReply,
         generateSmartGroceryPreviewLead,
         getAnthropicClient,
-        getChatThreadContext,
-        getHelpReply,
         getMessages,
+        getSmartDurableMemoryPromptContext,
         getUserByHouseholdAndDisplayName,
-        handleCompatChatTurn,
-        hasStrongMemoryIntentKeywords: hasSmartStrongMemoryIntentKeywords,
         incrementUserMessageCountForSender,
+        interpretSmartSkillFollowUp: interpretGrocerySkillFollowUp,
         invokeSmartModeInterpreterModel,
-        isDurableAutoMemoryCandidate: isSmartDurableAutoMemoryCandidate,
         isAnthropicSdkAuthOrKeyError,
         isGroceryListCommand,
-        isMixedIntentMemoryMessage: isSmartMixedIntentMemoryMessage,
-        isMemoriesCommand,
         isPrivateChatCommand,
-        isSharedChatCommand,
         mergeGroceryItemsFromAi,
         normalizeGroceryItemsForPost,
         normalizeGroceryNameKey,
         parseMemoryCommand,
-        parseThreadGrocerySummaryKeys,
         pruneStaleGroceryItemsForChat,
-        runGrocerySharedCommandEffects,
-        runThreadSceneAutoUpdaterAfterNormalChat,
-        runRememberSharedCommandEffects,
-        runSmartTypedPlan,
-        runWeeklyPlanDraftAutoUpdaterAfterNormalChat,
-        runWeeklyPlanGroceryDraftOfferResponse,
         scrubUnsavedMemoryClaimsInNormalChatReply,
         setUserLoveBoost,
-        shouldApplyDurableAutoMemoryGuard: (args) =>
-          shouldApplySmartDurableAutoMemoryGuard({ ...args, isPendingActionConfirmation }),
         shouldEnableWebSearchForPrompt,
         stripFakeGroceryOperationalLines,
         stripFakeMemoryPendingOfferLines,
-        stripKitchenBotHiddenMarkers,
         stripModelAuthoredMemoryOfferLines,
-        truncateSmartModeContext,
         stripStoredMessageContentForDisplay,
-        threadHasConcreteGroceryDraftForFollowUp,
-        tryAiMemoryProposal: trySmartAiMemoryProposal,
+        truncateSmartModeContext,
         updateChatTitle,
-        withSmartPlannerWeeklyPlanArtifact,
-        withPlannerWeeklyPlanVisibleBlock,
+        combinePlannerDisambiguationWithRememberAck,
+        clearGroceryItems,
+        loadSmartDurableMemoryCompatRows: async (householdId) => {
+          const ctx = await getSmartDurableMemoryPromptContext(householdId, {}, { limit: 6 });
+          return ctx.compatRows;
+        },
       };
 
       if (Number((await getHouseholdById(req.householdId))?.smart_mode_enabled) === 1) {
@@ -8377,10 +9387,7 @@ app.post(
           name,
           chatId,
           prompt,
-          deps: {
-            ...sharedDeps,
-            runTypedPlan: runSmartTypedPlan,
-          },
+          deps: smartDeps,
         });
       }
 
