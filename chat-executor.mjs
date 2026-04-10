@@ -1,6 +1,5 @@
 import { renderSmartHelpReply } from './capability-registry.mjs';
-import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
-import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
+import { generateAutoChatTitle } from './chat-title-runtime.mjs';
 
 export async function executeChatRename(runtimeAction, context) {
   const { req, chatId, anthropic, deps = {} } = context;
@@ -9,48 +8,21 @@ export async function executeChatRename(runtimeAction, context) {
     if (!title) {
       return { capability: 'chat.rename', status: 'invalid', error: 'Title cannot be empty.' };
     }
-    await deps.updateChatTitle(chatId, req.householdId, title);
+    await deps.updateChatTitleAndLock(chatId, req.householdId, title);
     return { capability: 'chat.rename', status: 'renamed', mode: 'manual', title };
   }
 
   const conv = await deps.getMessages(chatId, req.householdId);
-  const forContext = conv.filter((m) => m.role !== 'user' || !String(m.content).trim().startsWith('!'));
-  const recent = forContext.length > 20 ? forContext.slice(-20) : forContext;
-  const titleMessages = recent.map((m) => ({
-    role: m.role,
-    content:
-      m.role === 'user'
-        ? `${m.name}: ${m.content}`
-        : deps.stripStoredMessageContentForDisplay(m.content),
-  }));
-  let title = 'New chat';
-  try {
-    const callPurpose = 'chat_title_generation';
-    const titleRes = await createLoggedAnthropicMessage(anthropic, {
-      model: resolveAnthropicModelForCallPurpose(callPurpose),
-      max_tokens: 30,
-      system: 'You generate very short chat titles (3–6 words). Respond with ONLY the title, no quotes or punctuation.',
-      messages: [
-        ...titleMessages,
-        { role: 'user', content: 'Suggest a very short title for this chat (3–6 words only).' },
-      ],
-    }, {
-      householdId: req.householdId,
-      chatId,
-      smartModeEnabled: true,
-      callSurface: 'background',
-      callPurpose,
-      webSearchEnabledAtCall: false,
-      usedWebSearchTool: false,
-    });
-    const blocks = titleRes.content.filter((b) => b.type === 'text');
-    const raw = blocks.map((b) => b.text).join(' ').trim().split('\n')[0].trim();
-    title = raw && raw.length > 0 ? raw.slice(0, 80) : 'New chat';
-  } catch (e) {
-    if (deps.isAnthropicSdkAuthOrKeyError?.(e)) throw e;
-    console.error('Title suggestion failed:', e);
-  }
-  await deps.updateChatTitle(chatId, req.householdId, title);
+  const title = await generateAutoChatTitle({
+    anthropic,
+    householdId: req.householdId,
+    chatId,
+    smartModeEnabled: true,
+    conversation: conv,
+    stripStoredMessageContentForDisplay: deps.stripStoredMessageContentForDisplay,
+    isAnthropicSdkAuthOrKeyError: deps.isAnthropicSdkAuthOrKeyError,
+  });
+  await deps.updateChatTitleAndLock(chatId, req.householdId, title);
   return { capability: 'chat.rename', status: 'renamed', mode: 'auto', title };
 }
 

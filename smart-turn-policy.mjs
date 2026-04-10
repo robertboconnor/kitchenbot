@@ -67,6 +67,7 @@ export async function decideSmartRuntimeTurn(input) {
         routePrompt: promptText,
         commandUserTextForPersistence: promptText,
         replyPlan: { kind: 'generate_reply', style: 'conversation' },
+        durableMemoryScope: ir.durableMemoryScope,
       };
     }
     if (ir?.kind === 'actions' && Array.isArray(ir.actions) && ir.actions.length >= 1) {

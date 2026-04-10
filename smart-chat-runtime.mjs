@@ -8,6 +8,7 @@ import {
   renderSmartHelpReply,
 } from './capability-registry.mjs';
 import { decideSmartRuntimeTurn } from './smart-turn-policy.mjs';
+import { createChatStatusEmitter } from './chat-status-runtime.mjs';
 import {
   respondWithSmartClarify,
   respondWithSmartReply,
@@ -93,6 +94,14 @@ export async function handleSmartModeChatTurn(params) {
   if (!householdChatSettings) {
     return res.status(404).json({ reply: 'Household not found.' });
   }
+  const statusEmitter = createChatStatusEmitter({
+    broadcastToChat: deps.broadcastToChat,
+    householdId: req.householdId,
+    chatId,
+    user: name,
+    requestId: req.body?.requestId,
+  });
+  statusEmitter.emit('thinking');
   const smartModeEnabled = Number(householdChatSettings.smart_mode_enabled) === 1;
   if (!smartModeEnabled) {
     throw new Error('handleSmartModeChatTurn called while Smart Mode is disabled');
@@ -105,6 +114,7 @@ export async function handleSmartModeChatTurn(params) {
     if (!targetName) {
       const reply =
         "Usage: !love <display name> — boosts that household user's compliment chances for their next messages. Example: !love Jamie";
+      statusEmitter.done();
       res.setHeader('X-KitchenBot-Ephemeral', '1');
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
@@ -112,6 +122,7 @@ export async function handleSmartModeChatTurn(params) {
     const targetUser = await deps.getUserByHouseholdAndDisplayName(req.householdId, targetName);
     if (!targetUser) {
       const reply = 'No household user with that display name. Check spelling or add them under Settings.';
+      statusEmitter.done();
       res.setHeader('X-KitchenBot-Ephemeral', '1');
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.end(reply);
@@ -122,6 +133,7 @@ export async function handleSmartModeChatTurn(params) {
       'Love boost activated for ' +
       targetName +
       '. Their next few messages are extra likely to get a compliment.';
+    statusEmitter.done();
     res.setHeader('X-KitchenBot-Ephemeral', '1');
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.end(reply);
@@ -130,6 +142,7 @@ export async function handleSmartModeChatTurn(params) {
   if (promptText === '!help' && deps.isPrivateChatCommand(promptText)) {
     const reply = renderSmartHelpReply();
     await deps.incrementUserMessageCountForSender(req);
+    statusEmitter.done();
     res.setHeader('X-KitchenBot-Ephemeral', '1');
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.end(reply);
@@ -143,6 +156,7 @@ export async function handleSmartModeChatTurn(params) {
     anthropicForInterpreter = null;
   }
 
+  statusEmitter.emit('reading_memories', 'Getting memories/preferences...');
   let smartMemoryContext = await deps.getSmartDurableMemoryPromptContext(req.householdId, { prompt }, { limit: 6 });
   let memories = smartMemoryContext.compatRows;
   let memoriesByKey = new Map(memories.map((m) => [m.key, m.value]));
@@ -166,6 +180,7 @@ export async function handleSmartModeChatTurn(params) {
         }
       : undefined;
 
+  statusEmitter.emit('planning');
   let turn = await decideSmartRuntimeTurn({
     prompt,
     chatId,
@@ -190,8 +205,10 @@ export async function handleSmartModeChatTurn(params) {
   } catch (keyErr) {
     const m = keyErr && String(keyErr.message);
     if (m && m.includes('Household not found')) {
+      statusEmitter.done();
       return res.status(503).json({ reply: 'Household not found.' });
     }
+    statusEmitter.done();
     return res.status(503).json({ reply: deps.ANTHROPIC_KEY_USER_MESSAGE });
   }
 
@@ -217,6 +234,7 @@ export async function handleSmartModeChatTurn(params) {
       memories,
       anthropic,
       smartModeEnabled,
+      statusEmitter,
       deps,
     });
     turn = {
@@ -228,32 +246,39 @@ export async function handleSmartModeChatTurn(params) {
     };
   }
 
-  if (turn.kind === 'clarify') {
-    return respondWithSmartClarify({
-      req,
-      res,
-      name,
-      chatId,
-      routePrompt: turn.routePrompt || promptText,
-      question: turn.question,
-      deps,
-    });
-  }
+  try {
+    if (turn.kind === 'clarify') {
+      return respondWithSmartClarify({
+        req,
+        res,
+        name,
+        chatId,
+        routePrompt: turn.routePrompt || promptText,
+        question: turn.question,
+        statusEmitter,
+        deps,
+      });
+    }
 
-  if (turn.kind === 'reply_only') {
-    return respondWithSmartReply({
-      anthropic,
-      req,
-      res,
-      name,
-      chatId,
-      routePrompt: turn.routePrompt || promptText,
-      replyText: turn.replyText,
-      replyPlan: turn.replyPlan,
-      userMessageAlreadyPersisted: !!turn.userMessageAlreadyPersisted,
-      proposedNextAction: turn.proposedNextAction,
-      householdWebSearchEnabled,
-      deps,
-    });
+    if (turn.kind === 'reply_only') {
+      return respondWithSmartReply({
+        anthropic,
+        req,
+        res,
+        name,
+        chatId,
+        routePrompt: turn.routePrompt || promptText,
+        replyText: turn.replyText,
+        replyPlan: turn.replyPlan,
+        userMessageAlreadyPersisted: !!turn.userMessageAlreadyPersisted,
+        proposedNextAction: turn.proposedNextAction,
+        householdWebSearchEnabled,
+        durableMemoryScope: turn.durableMemoryScope,
+        statusEmitter,
+        deps,
+      });
+    }
+  } finally {
+    statusEmitter.done();
   }
 }

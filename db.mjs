@@ -95,6 +95,7 @@ db.serialize(() => {
       household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
       owner TEXT NOT NULL,
       title TEXT NOT NULL,
+      title_user_locked INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -401,6 +402,14 @@ const MIGRATIONS = [
       await migrationRun(
         `CREATE INDEX IF NOT EXISTS idx_smart_durable_memories_household ON smart_durable_memories(household_id, updated_at)`
       );
+    },
+  },
+  {
+    name: '013_add_title_user_locked_to_chats',
+    async up() {
+      if (!(await migrationTableHasColumn('chats', 'title_user_locked'))) {
+        await migrationRun(`ALTER TABLE chats ADD COLUMN title_user_locked INTEGER NOT NULL DEFAULT 0`);
+      }
     },
   },
 ];
@@ -1108,6 +1117,32 @@ export function updateChatTitle(chatId, householdId, title) {
       function (err) {
         if (err) reject(err);
         else resolve();
+      }
+    );
+  });
+}
+
+export function updateChatTitleAndLock(chatId, householdId, title) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE chats SET title = ?, title_user_locked = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND household_id = ?`,
+      [title, chatId, householdId],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.changes || 0);
+      }
+    );
+  });
+}
+
+export function updateChatTitleAutoIfUnlocked(chatId, householdId, title) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE chats SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND household_id = ? AND COALESCE(title_user_locked, 0) = 0`,
+      [title, chatId, householdId],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.changes || 0);
       }
     );
   });

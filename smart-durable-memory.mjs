@@ -71,12 +71,117 @@ export function normalizeSmartDurableMemoryAttributes(raw) {
   return out;
 }
 
-function normalizeSmartDurableMemoryLabelKey(raw) {
+export function normalizeSmartDurableMemoryLabelKey(raw) {
   return normalizeSmartDurableMemoryLabel(raw)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 120);
+}
+
+/** Interpreter-driven scopes for the final Smart Mode reply memory injection (Design A). */
+export const DURABLE_MEMORY_REPLY_SCOPE_MODES = new Set(['auto', 'none', 'all_people', 'all_household_notes', 'full', 'labels']);
+
+/**
+ * Normalize interpreter output field durable_memory_scope (string or { mode, labels? }).
+ * Invalid or missing values → { mode: 'auto' }.
+ */
+export function normalizeDurableMemoryScopeFromInterpreter(raw) {
+  if (raw == null || raw === '') return { mode: 'auto' };
+  if (typeof raw === 'string') {
+    const m = String(raw).trim().toLowerCase();
+    if (DURABLE_MEMORY_REPLY_SCOPE_MODES.has(m) && m !== 'labels') return { mode: m };
+    return { mode: 'auto' };
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const mode = String(raw.mode ?? '').trim().toLowerCase();
+    if (mode === 'labels') {
+      const labels = Array.isArray(raw.labels)
+        ? raw.labels.map((l) => String(l ?? '').trim()).filter(Boolean).slice(0, 12)
+        : [];
+      return labels.length > 0 ? { mode: 'labels', labels } : { mode: 'auto' };
+    }
+    if (DURABLE_MEMORY_REPLY_SCOPE_MODES.has(mode) && mode !== 'labels') return { mode };
+  }
+  return { mode: 'auto' };
+}
+
+function sortSmartDurableItemsByUpdatedDesc(items) {
+  return [...(Array.isArray(items) ? items : [])].sort(
+    (a, b) =>
+      String(b.updatedAt || b.updated_at || '').localeCompare(String(a.updatedAt || a.updated_at || '')) ||
+      String(a.label || '').localeCompare(String(b.label || ''))
+  );
+}
+
+function smartMemoryItemMatchesLabels(item, labels) {
+  const display = String(item.label ?? '').trim().toLowerCase();
+  const norm = String(item.normalizedLabel ?? '').trim().toLowerCase();
+  for (const req of labels) {
+    const r = String(req ?? '').trim().toLowerCase();
+    if (!r) continue;
+    if (display === r || norm === r) return true;
+    const rk = normalizeSmartDurableMemoryLabelKey(req).toLowerCase();
+    if (norm && (norm === rk || norm.includes(rk) || rk.includes(norm))) return true;
+    if (display.includes(r) || r.includes(display)) return true;
+  }
+  return false;
+}
+
+/**
+ * Select structured memories for chat_reply when the interpreter requests a non-auto scope.
+ * Returns null when scope.mode is 'auto' (caller should use selectRelevantSmartDurableMemories).
+ */
+export function selectSmartDurableMemoriesForReplyScope(allItems, scope, caps = {}) {
+  if (!scope || scope.mode === 'auto') return null;
+  const maxPeople = Math.min(24, Math.max(1, Number(caps.maxPeople) || 16));
+  const maxNotes = Math.min(24, Math.max(1, Number(caps.maxNotes) || 16));
+  const maxTotal = Math.min(32, Math.max(1, Number(caps.maxTotal) || 24));
+  const list = Array.isArray(allItems) ? allItems : [];
+
+  const people = () =>
+    sortSmartDurableItemsByUpdatedDesc(
+      list.filter((item) => normalizeSmartDurableMemoryType(item.memoryType || item.type) === 'person')
+    );
+  const householdNotes = () =>
+    sortSmartDurableItemsByUpdatedDesc(
+      list.filter((item) => normalizeSmartDurableMemoryType(item.memoryType || item.type) === 'household_note')
+    );
+
+  if (scope.mode === 'none') return [];
+
+  if (scope.mode === 'all_people') return people().slice(0, maxPeople);
+
+  if (scope.mode === 'all_household_notes') return householdNotes().slice(0, maxNotes);
+
+  if (scope.mode === 'full') {
+    const p = people().slice(0, maxPeople);
+    const n = householdNotes().slice(0, maxNotes);
+    const merged = [];
+    const seen = new Set();
+    for (const item of [...p, ...n]) {
+      const id = String(item.id ?? `${item.memoryType}:${item.label}`);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      merged.push(item);
+    }
+    return merged.slice(0, maxTotal);
+  }
+
+  if (scope.mode === 'labels' && Array.isArray(scope.labels) && scope.labels.length > 0) {
+    const out = [];
+    const seen = new Set();
+    for (const item of list) {
+      if (!smartMemoryItemMatchesLabels(item, scope.labels)) continue;
+      const id = String(item.id ?? `${item.memoryType}:${item.label}`);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(item);
+    }
+    return sortSmartDurableItemsByUpdatedDesc(out).slice(0, maxTotal);
+  }
+
+  return null;
 }
 
 function mergeSummaries(existingRaw, incomingRaw) {
@@ -428,7 +533,15 @@ export function formatSmartDurableMemoriesForPrompt(items) {
 
 export async function getSmartDurableMemoryPromptContext(householdId, context = {}, opts = {}) {
   const allItems = await listSmartDurableMemories(householdId);
-  const selectedItems = selectRelevantSmartDurableMemories(allItems, context, opts);
+  const scope = normalizeDurableMemoryScopeFromInterpreter(opts.durableMemoryScope);
+  const capOpts = {
+    maxPeople: opts.scopeMaxPeople,
+    maxNotes: opts.scopeMaxNotes,
+    maxTotal: opts.scopeMaxTotal,
+  };
+  const scoped = selectSmartDurableMemoriesForReplyScope(allItems, scope, capOpts);
+  const selectedItems =
+    scoped === null ? selectRelevantSmartDurableMemories(allItems, context, opts) : scoped;
   return {
     allItems,
     selectedItems,

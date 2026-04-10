@@ -13,11 +13,26 @@ function safeTrim(text) {
 }
 
 export async function respondWithSmartClarify(params) {
-  const { req, res, name, chatId, routePrompt, question, deps } = params;
+  const { req, res, name, chatId, routePrompt, question, deps, statusEmitter = null } = params;
   const reply = safeTrim(question) || 'Can you clarify what you want me to do?';
+  statusEmitter?.emit?.('writing_reply');
   await addMessage(chatId, req.householdId, 'user', name, routePrompt);
   await deps.incrementUserMessageCountForSender(req);
   await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+  if (typeof deps.maybeAutoNameChatOnTurn === 'function') {
+    await deps.maybeAutoNameChatOnTurn({
+      anthropic: null,
+      householdId: req.householdId,
+      chatId,
+      smartModeEnabled: true,
+      getMessages: deps.getMessages,
+      updateChatTitleAutoIfUnlocked: deps.updateChatTitleAutoIfUnlocked,
+      stripStoredMessageContentForDisplay: deps.stripStoredMessageContentForDisplay,
+      isAnthropicSdkAuthOrKeyError: deps.isAnthropicSdkAuthOrKeyError,
+      broadcastToChat: deps.broadcastToChat,
+      broadcastUser: name,
+    }).catch(() => {});
+  }
   await clearChatRuntimeState(chatId, req.householdId).catch(() => {});
   if (typeof deps.broadcastToChat === 'function') {
     deps.broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
@@ -39,6 +54,8 @@ export async function respondWithSmartReply(params) {
     userMessageAlreadyPersisted = false,
     proposedNextAction = null,
     householdWebSearchEnabled = false,
+    durableMemoryScope = undefined,
+    statusEmitter = null,
     deps,
   } = params;
 
@@ -49,19 +66,37 @@ export async function respondWithSmartReply(params) {
 
   let plannedReply = null;
   if (!safeTrim(replyText) && replyPlan?.kind === 'generate_reply') {
+    statusEmitter?.emit?.('writing_reply');
     plannedReply = await resolveSmartReplyPlan({
       anthropic,
       req,
       chatId,
       routePrompt,
       householdWebSearchEnabled,
+      durableMemoryScope,
+      statusEmitter,
       deps,
     });
   }
 
   let finalReply = safeTrim(replyText) || safeTrim(plannedReply?.replyText);
   finalReply = finalReply || 'Done.';
+  statusEmitter?.emit?.('writing_reply');
   await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReply);
+  if (typeof deps.maybeAutoNameChatOnTurn === 'function') {
+    await deps.maybeAutoNameChatOnTurn({
+      anthropic,
+      householdId: req.householdId,
+      chatId,
+      smartModeEnabled: true,
+      getMessages: deps.getMessages,
+      updateChatTitleAutoIfUnlocked: deps.updateChatTitleAutoIfUnlocked,
+      stripStoredMessageContentForDisplay: deps.stripStoredMessageContentForDisplay,
+      isAnthropicSdkAuthOrKeyError: deps.isAnthropicSdkAuthOrKeyError,
+      broadcastToChat: deps.broadcastToChat,
+      broadcastUser: name,
+    }).catch(() => {});
+  }
   const nextActionToPersist =
     proposedNextAction && typeof proposedNextAction === 'object' && !Array.isArray(proposedNextAction)
       ? proposedNextAction
@@ -89,6 +124,8 @@ async function resolveSmartReplyPlan(params) {
     routePrompt,
     anthropic,
     householdWebSearchEnabled,
+    durableMemoryScope,
+    statusEmitter,
     deps,
   } = params;
 
@@ -98,12 +135,13 @@ async function resolveSmartReplyPlan(params) {
   );
   const recentConversation = conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
   const threadCtx = await getChatThreadContext(chatId, req.householdId);
+  statusEmitter?.emit?.('reading_memories', 'Getting memories/preferences...');
   const smartMemoryContext = await deps.getSmartDurableMemoryPromptContext(
     req.householdId,
     {
       routePrompt,
     },
-    { limit: 6 }
+    { limit: 6, durableMemoryScope }
   );
   const memoryText = smartMemoryContext.promptText || '(none)';
   const claudeMessages = recentConversation.map((message) => ({

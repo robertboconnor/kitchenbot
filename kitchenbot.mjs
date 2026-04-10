@@ -4,6 +4,8 @@ import {
   listAllChats,
   touchChat,
   updateChatTitle,
+  updateChatTitleAndLock,
+  updateChatTitleAutoIfUnlocked,
   deleteChatById,
   addMessage,
   getMessages,
@@ -111,6 +113,7 @@ import {
   estimateAnthropicLedgerCostUsd,
 } from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
+import { maybeAutoNameChatOnTurn, generateAutoChatTitle } from './chat-title-runtime.mjs';
 import 'dotenv/config';
 import os from 'os';
 import http from 'http';
@@ -806,6 +809,7 @@ async function requireHousehold(req, res, next) {
 
 const COOKIE_NAME = 'kitchenbot_auth';
 const COOKIE_SECRET = process.env.KITCHENBOT_SECRET;
+const AUTH_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days
 if (!COOKIE_SECRET) {
   throw new Error('Missing KITCHENBOT_SECRET');
 }
@@ -850,7 +854,13 @@ function signToken(payload) {
 }
 
 function setAuthCookie(res, token) {
-  const cookieParts = [`${COOKIE_NAME}=${encodeURIComponent(token)}`, 'HttpOnly', 'Path=/', 'SameSite=Lax'];
+  const cookieParts = [
+    `${COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'HttpOnly',
+    'Path=/',
+    'SameSite=Lax',
+    `Max-Age=${AUTH_COOKIE_MAX_AGE_SECONDS}`,
+  ];
   if (process.env.NODE_ENV === 'production') {
     cookieParts.push('Secure');
   }
@@ -3236,6 +3246,7 @@ app.get('/', (req, res) => {
           width: 100%;
         }
 
+
         .settings-user-inline-controls label,
         .settings-user-inline-controls span {
           font-size: 13px;
@@ -4180,33 +4191,7 @@ app.get('/', (req, res) => {
                     <p class="settings-card-subtitle">Legacy household memory applies to every chat. Smart durable memory is richer, user-editable, and only used when Smart Mode is on.</p>
                   </div>
                 </div>
-                <div class="settings-split-grid">
-                  <div id="my-settings-memories-wrap">
-                    <h4 style="margin:0 0 6px;">Household memories</h4>
-                    <p class="settings-section-note">
-                      These entries are included in chat context for everyone in this household.
-                    </p>
-                    <div class="settings-memory-viewer">
-                      <div id="my-settings-memories-list" style="font-size: 13px;"></div>
-                    </div>
-                    <div id="my-settings-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin: 8px 0 0;"></div>
-                    <div class="settings-memory-editor" style="margin-top: 12px;">
-                      <div class="settings-form-row" style="margin-bottom:8px;">
-                        <div class="settings-form-field" style="max-width: 220px;">
-                          <label for="my-settings-memory-key">Key</label>
-                          <input id="my-settings-memory-key" type="text" autocomplete="off" placeholder="e.g. dietary_notes" />
-                        </div>
-                        <div class="settings-form-field">
-                          <label for="my-settings-memory-value">Value</label>
-                          <input id="my-settings-memory-value" type="text" autocomplete="off" placeholder="Value" />
-                        </div>
-                      </div>
-                      <div class="settings-actions-row">
-                        <button type="button" id="my-settings-memory-save">Save</button>
-                        <button type="button" id="my-settings-memory-cancel-edit" style="display: none;">Cancel</button>
-                      </div>
-                    </div>
-                  </div>
+                <div style="display:flex; flex-direction:column; gap: 16px;">
                   <div id="my-settings-smart-memories-wrap" style="display: none;">
                     <h4 style="margin:0 0 6px;">Smart durable memory</h4>
                     <p class="settings-section-note">
@@ -4237,6 +4222,32 @@ app.get('/', (req, res) => {
                       <div class="settings-actions-row">
                         <button type="button" id="my-settings-smart-memory-save">Save</button>
                         <button type="button" id="my-settings-smart-memory-cancel-edit" style="display: none;">Cancel</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="my-settings-memories-wrap">
+                    <h4 style="margin:0 0 6px;">Legacy memories</h4>
+                    <p class="settings-section-note">
+                      These entries are included in chat context for everyone in this household.
+                    </p>
+                    <div class="settings-memory-viewer">
+                      <div id="my-settings-memories-list" style="font-size: 13px;"></div>
+                    </div>
+                    <div id="my-settings-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin: 8px 0 0;"></div>
+                    <div class="settings-memory-editor" style="margin-top: 12px;">
+                      <div class="settings-form-row" style="margin-bottom:8px;">
+                        <div class="settings-form-field" style="max-width: 220px;">
+                          <label for="my-settings-memory-key">Key</label>
+                          <input id="my-settings-memory-key" type="text" autocomplete="off" placeholder="e.g. dietary_notes" />
+                        </div>
+                        <div class="settings-form-field">
+                          <label for="my-settings-memory-value">Value</label>
+                          <input id="my-settings-memory-value" type="text" autocomplete="off" placeholder="Value" />
+                        </div>
+                      </div>
+                      <div class="settings-actions-row">
+                        <button type="button" id="my-settings-memory-save">Save</button>
+                        <button type="button" id="my-settings-memory-cancel-edit" style="display: none;">Cancel</button>
                       </div>
                     </div>
                   </div>
@@ -4883,6 +4894,7 @@ app.get('/', (req, res) => {
           if (groceryAddSection) groceryAddSection.disabled = ro;
           if (groceryAddSubmit) groceryAddSubmit.disabled = ro;
           if (groceryClearButton) groceryClearButton.disabled = ro;
+          syncChatInputVisibility();
         }
 
         let typingWs = null;
@@ -4890,6 +4902,49 @@ app.get('/', (req, res) => {
         let typingStopTimeout = null;
         let weAreStreamingThisChat = false;
         let remoteStreamBodyEl = null;
+        let activeChatRequestId = null;
+        const CHAT_STATUS_MIN_DWELL_MS = 700;
+        let activeStatusText = '';
+        let activeStatusAppliedAtMs = 0;
+        let pendingStatusTimer = null;
+        let pendingStatusPayload = null;
+
+        function clearPendingStatusTimer() {
+          if (pendingStatusTimer) {
+            clearTimeout(pendingStatusTimer);
+            pendingStatusTimer = null;
+          }
+          pendingStatusPayload = null;
+        }
+
+        function applyStatusToBody(bodyEl, statusText) {
+          if (!bodyEl) return;
+          bodyEl.classList.add('kb-thinking', 'kb-thinking-anim');
+          bodyEl.textContent = statusText;
+          activeStatusText = statusText;
+          activeStatusAppliedAtMs = Date.now();
+          chat.scrollTop = chat.scrollHeight;
+        }
+
+        function scheduleOrApplyStatus(bodyEl, statusText) {
+          const now = Date.now();
+          const elapsed = now - activeStatusAppliedAtMs;
+          if (!activeStatusAppliedAtMs || elapsed >= CHAT_STATUS_MIN_DWELL_MS) {
+            clearPendingStatusTimer();
+            applyStatusToBody(bodyEl, statusText);
+            return;
+          }
+          pendingStatusPayload = { bodyEl, statusText };
+          if (pendingStatusTimer) return;
+          const waitMs = Math.max(20, CHAT_STATUS_MIN_DWELL_MS - elapsed);
+          pendingStatusTimer = setTimeout(() => {
+            pendingStatusTimer = null;
+            const next = pendingStatusPayload;
+            pendingStatusPayload = null;
+            if (!next) return;
+            applyStatusToBody(next.bodyEl, next.statusText);
+          }, waitMs);
+        }
 
         const headerEl = document.getElementById('header');
 
@@ -4979,6 +5034,44 @@ app.get('/', (req, res) => {
                   }
                   return;
                 }
+                if (msg.type === 'chat_status' && msgChatId === currentChatId) {
+                  if (msgHid != null && currentHouseholdId != null && msgHid !== Number(currentHouseholdId)) {
+                    return;
+                  }
+                  if (msg.requestId && activeChatRequestId && String(msg.requestId) !== String(activeChatRequestId)) {
+                    return;
+                  }
+                  if (msg.done) {
+                    clearPendingStatusTimer();
+                    if (remoteStreamBodyEl && remoteStreamBodyEl.classList.contains('kb-thinking')) {
+                      remoteStreamBodyEl.classList.remove('kb-thinking-anim');
+                    }
+                    return;
+                  }
+                  const statusText = String(msg.statusText || '').trim();
+                  if (!statusText) return;
+                  if (!remoteStreamBodyEl) {
+                    const wrap = document.createElement('div');
+                    wrap.className = 'message assistant';
+                    const author = document.createElement('span');
+                    author.className = 'message-author';
+                    author.textContent = 'KitchenBot';
+                    wrap.appendChild(author);
+                    const body = document.createElement('div');
+                    body.className = 'message-body kb-thinking kb-thinking-anim';
+                    body.textContent = statusText;
+                    wrap.appendChild(body);
+                    chat.appendChild(wrap);
+                    remoteStreamBodyEl = body;
+                    activeStatusText = statusText;
+                    activeStatusAppliedAtMs = Date.now();
+                    chat.scrollTop = chat.scrollHeight;
+                    return;
+                  }
+                  if (statusText === activeStatusText) return;
+                  scheduleOrApplyStatus(remoteStreamBodyEl, statusText);
+                  return;
+                }
                 if (msg.type === 'user_typing' || msg.type === 'user_stopped_typing') {
                   if (currentHouseholdId == null || !Number.isFinite(Number(currentHouseholdId))) return;
                   if (msgHid == null || msgHid !== Number(currentHouseholdId)) return;
@@ -5046,6 +5139,15 @@ app.get('/', (req, res) => {
           showLoginFormOnly();
           if (tabSettings) tabSettings.style.display = 'none';
           setActiveTab('chat');
+        }
+
+        function isChatTabCurrentlyActive() {
+          return !!(tabChat && tabChat.classList.contains('tab-active'));
+        }
+
+        function syncChatInputVisibility() {
+          if (!inputArea) return;
+          inputArea.style.display = isChatTabCurrentlyActive() ? 'flex' : 'none';
         }
 
         function setActiveTab(tab) {
@@ -6659,6 +6761,7 @@ app.get('/', (req, res) => {
             syncMemoriesWrapVisibility();
             rebuildDisplayNameToColorFromMeChatColors(data.chatColors);
             showApp(data.name);
+            setActiveTab('chat');
             await loadChatsAndEnsureOne();
             await loadHistory();
             connectTypingWs();
@@ -7401,6 +7504,9 @@ app.get('/', (req, res) => {
           const thinkingBody = document.createElement('div');
           thinkingBody.className = 'message-body kb-thinking kb-thinking-anim';
           thinkingBody.textContent = 'Thinking…';
+          activeStatusText = 'Thinking…';
+          activeStatusAppliedAtMs = Date.now();
+          clearPendingStatusTimer();
           thinkingDiv.appendChild(thinkingBody);
           chat.appendChild(thinkingDiv);
           chat.scrollTop = chat.scrollHeight;
@@ -7410,6 +7516,8 @@ app.get('/', (req, res) => {
             lastPersistedMessageCountByChatId.get(Number(currentChatId)) ?? 0;
 
           try {
+            const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            activeChatRequestId = requestId;
             const response = await fetch('/chat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -7417,6 +7525,7 @@ app.get('/', (req, res) => {
                 prompt,
                 name: speaker,
                 chatId: currentChatId,
+                requestId,
                 ...(actionToExecute ? { executePendingAction: actionToExecute } : {}),
               })
             });
@@ -7424,6 +7533,8 @@ app.get('/', (req, res) => {
             if (!response.ok) {
               remoteStreamBodyEl = null;
               weAreStreamingThisChat = false;
+              activeChatRequestId = null;
+              clearPendingStatusTimer();
               thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
               if (response.status === 401) {
                 thinkingBody.textContent = 'Please log in.';
@@ -7487,6 +7598,7 @@ app.get('/', (req, res) => {
               if (!chunk) continue;
               fullReply += chunk;
               if (firstStreamChunk) {
+                clearPendingStatusTimer();
                 thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
                 thinkingBody.textContent = '';
                 firstStreamChunk = false;
@@ -7501,6 +7613,8 @@ app.get('/', (req, res) => {
             chat.scrollTop = chat.scrollHeight;
             remoteStreamBodyEl = null;
             weAreStreamingThisChat = false;
+            activeChatRequestId = null;
+            clearPendingStatusTimer();
 
             if (chatResponseEphemeral && currentChatId != null) {
               const cid = Number(currentChatId);
@@ -7534,6 +7648,8 @@ app.get('/', (req, res) => {
             thinkingBody.textContent = 'Something went wrong.';
             remoteStreamBodyEl = null;
             weAreStreamingThisChat = false;
+            activeChatRequestId = null;
+            clearPendingStatusTimer();
           }
         });
 
@@ -8880,6 +8996,7 @@ async function handleCompatChatTurn({
   memoriesByKey,
   anthropic,
   householdWebSearchEnabled,
+  statusEmitter = null,
 }) {
   let {
     routePrompt,
@@ -8941,42 +9058,17 @@ async function handleCompatChatTurn({
       title = arg.slice(0, 200);
     } else {
       const conv = await getMessages(chatId, req.householdId);
-      const forContext = conv.filter((m) => m.role !== 'user' || !String(m.content).trim().startsWith('!'));
-      const recent = forContext.length > 20 ? forContext.slice(-20) : forContext;
-      const titleMessages = recent.map((m) => ({
-        role: m.role,
-        content:
-          m.role === 'user' ? `${m.name}: ${m.content}` : stripStoredMessageContentForDisplay(m.content),
-      }));
-      try {
-        const callPurpose = 'chat_title_generation';
-        const titleRes = await createLoggedAnthropicMessage(anthropic, {
-          model: resolveAnthropicModelForCallPurpose(callPurpose),
-          max_tokens: 30,
-          system: 'You generate very short chat titles (3–6 words). Respond with ONLY the title, no quotes or punctuation.',
-          messages: [
-            ...titleMessages,
-            { role: 'user', content: 'Suggest a very short title for this chat (3–6 words only).' },
-          ],
-        }, {
-          householdId: req.householdId,
-          chatId,
-          smartModeEnabled: false,
-          callSurface: 'background',
-          callPurpose,
-          webSearchEnabledAtCall: false,
-          usedWebSearchTool: false,
-        });
-        const blocks = titleRes.content.filter((b) => b.type === 'text');
-        const raw = blocks.map((b) => b.text).join(' ').trim().split('\n')[0].trim();
-        title = raw && raw.length > 0 ? raw.slice(0, 80) : 'New chat';
-      } catch (e) {
-        if (isAnthropicSdkAuthOrKeyError(e)) throw e;
-        console.error('Title suggestion failed:', e);
-        title = 'New chat';
-      }
+      title = await generateAutoChatTitle({
+        anthropic,
+        householdId: req.householdId,
+        chatId,
+        smartModeEnabled: false,
+        conversation: conv,
+        stripStoredMessageContentForDisplay,
+        isAnthropicSdkAuthOrKeyError,
+      });
     }
-    await updateChatTitle(chatId, req.householdId, title);
+    await updateChatTitleAndLock(chatId, req.householdId, title);
     const reply = `Renamed this chat to "${title}".`;
     res.setHeader('X-KitchenBot-Ephemeral', '1');
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -9056,6 +9148,18 @@ async function handleCompatChatTurn({
     }
     const reply = buildLegacyCommandGuidanceReply(turn.pendingAction);
     await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+    await maybeAutoNameChatOnTurn({
+      anthropic,
+      householdId: req.householdId,
+      chatId,
+      smartModeEnabled: false,
+      getMessages,
+      updateChatTitleAutoIfUnlocked,
+      stripStoredMessageContentForDisplay,
+      isAnthropicSdkAuthOrKeyError,
+      broadcastToChat,
+      broadcastUser: name,
+    });
     if (typeof broadcastToChat === 'function') {
       broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
     }
@@ -9091,42 +9195,18 @@ async function handleCompatChatTurn({
         ? `${message.name}: ${message.content}`
         : stripStoredMessageContentForDisplay(message.content),
   }));
-  const userMessagesForTitle = conversation.filter((m) => m.role === 'user');
-  const shouldNameChat = userMessagesForTitle.length === 1 || userMessagesForTitle.length === 3;
-
-  if (shouldNameChat) {
-    try {
-      const callPurpose = 'chat_title_generation';
-      const titleResponse = await createLoggedAnthropicMessage(anthropic, {
-        model: resolveAnthropicModelForCallPurpose(callPurpose),
-        max_tokens: 30,
-        system:
-          'You generate very short chat titles (3-6 words) based on the conversation. Respond with ONLY the title text, no quotes or punctuation.',
-        messages: [
-          ...claudeMessages.slice(-10),
-          {
-            role: 'user',
-            content: 'Based on this conversation, generate a very short, descriptive title for this chat (3-6 words only, no quotes).',
-          },
-        ],
-      }, {
-        householdId: req.householdId,
-        chatId,
-        smartModeEnabled: false,
-        callSurface: 'background',
-        callPurpose,
-        webSearchEnabledAtCall: false,
-        usedWebSearchTool: false,
-      });
-      const titleBlocks = titleResponse.content.filter((b) => b.type === 'text');
-      const rawTitle = titleBlocks.map((b) => b.text).join(' ').trim().split('\n')[0].trim();
-      const safeTitle = rawTitle && rawTitle.length > 0 ? rawTitle.slice(0, 80) : 'New chat';
-      await updateChatTitle(chatId, req.householdId, safeTitle);
-    } catch (e) {
-      if (isAnthropicSdkAuthOrKeyError(e)) throw e;
-      console.error('Title generation failed:', e);
-    }
-  }
+  await maybeAutoNameChatOnTurn({
+    anthropic,
+    householdId: req.householdId,
+    chatId,
+    smartModeEnabled: false,
+    getMessages,
+    updateChatTitleAutoIfUnlocked,
+    stripStoredMessageContentForDisplay,
+    isAnthropicSdkAuthOrKeyError,
+    broadcastToChat,
+    broadcastUser: name,
+  });
   const useWebSearchTool = householdWebSearchEnabled && shouldEnableWebSearchForPrompt(routePrompt);
   const webSearchCapabilityBlock = useWebSearchTool
     ? `Web (this request): Anthropic web_search IS attached. Only attribute content to a site or URL if the search tool actually returned that material this turn. Do not fabricate "exact" ingredients, steps, or quotes from a page you did not receive via the tool. If the tool did not return a page body, say you do not have the exact text from that source.`
@@ -9192,6 +9272,7 @@ async function handleCompatChatTurn({
     streamParams.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }];
   }
 
+  statusEmitter?.emit?.('writing_reply');
   const stream = await anthropic.messages.stream(streamParams);
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Transfer-Encoding', 'chunked');
@@ -9327,6 +9408,7 @@ app.post(
 
       const sharedDeps = {
         ANTHROPIC_KEY_USER_MESSAGE,
+        broadcastToChat,
         detectCommandIntentFromNaturalLanguage,
         getAnthropicClient,
         handleCompatChatTurn,
@@ -9372,6 +9454,9 @@ app.post(
         stripStoredMessageContentForDisplay,
         truncateSmartModeContext,
         updateChatTitle,
+        updateChatTitleAndLock,
+        updateChatTitleAutoIfUnlocked,
+        maybeAutoNameChatOnTurn,
         combinePlannerDisambiguationWithRememberAck,
         clearGroceryItems,
         loadSmartDurableMemoryCompatRows: async (householdId) => {

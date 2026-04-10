@@ -27,6 +27,7 @@ export async function executeSmartActions({
   memories: memoriesInitial,
   anthropic,
   smartModeEnabled,
+  statusEmitter = null,
   deps,
 }) {
   const rawActions = Array.isArray(actions) ? actions : [];
@@ -53,10 +54,16 @@ export async function executeSmartActions({
   await deps.addMessage(chatId, req.householdId, 'user', name, prompt);
   await deps.incrementUserMessageCountForSender(req);
   deps.broadcastToChat?.(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
+  statusEmitter?.emit?.('planning');
 
   let memories = memoriesInitial;
 
   for (const action of normalizedActions) {
+    if (action.capability === 'grocery.generate_and_commit') {
+      statusEmitter?.emit?.('planning', 'Getting ingredients...');
+    } else if (action.capability === 'memory.save') {
+      statusEmitter?.emit?.('reading_memories', 'Getting memories/preferences...');
+    }
     let outcome;
     try {
       outcome = await dispatchTypedAction(action, {
@@ -93,6 +100,10 @@ export async function executeSmartActions({
         outcomes,
         replyText: "I wasn't able to finish that app action cleanly. Try asking me again and I'll take another pass.",
       });
+    }
+
+    if (action.capability === 'grocery.generate_and_commit' && outcome.status === 'committed') {
+      statusEmitter?.emit?.('planning', 'Adding to Grocery List tab...');
     }
 
     if (outcome.capability === 'memory.save') {
