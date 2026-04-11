@@ -337,21 +337,23 @@ export async function isGlobalAdminUser(userId) {
 }
 
 export async function getHouseholdById(householdId) {
-  return await get(
+  const row = await get(
     `SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, created_at
      FROM households
      WHERE id = ?`,
     [householdId]
   );
+  return mapHouseholdRow(row);
 }
 
 export async function getHouseholdByKey(householdKey) {
-  return await get(
+  const row = await get(
     `SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, created_at
      FROM households
      WHERE household_key = ?`,
     [normalizeHouseholdKey(householdKey)]
   );
+  return mapHouseholdRow(row);
 }
 
 export async function updateHouseholdAnthropicSettings(householdId, { anthropicKeyMode, anthropicApiKey }) {
@@ -411,11 +413,26 @@ export async function bootstrapFirstHousehold(args) {
 }
 
 export async function listAllHouseholdsSummary() {
-  return await all(
+  const rows = await all(
     `SELECT id, name, household_key, anthropic_key_mode, anthropic_api_key, web_search_enabled, created_at
      FROM households
      ORDER BY id ASC`
   );
+  return rows.map(mapHouseholdRow);
+}
+
+function mapHouseholdRow(row) {
+  if (!row) return null;
+  const webSearchEnabled = Number(row.web_search_enabled ?? 0) === 1;
+  return {
+    ...row,
+    id: Number(row.id),
+    householdKey: row.household_key,
+    anthropicKeyMode: row.anthropic_key_mode,
+    anthropicApiKey: row.anthropic_api_key,
+    webSearchEnabled,
+    createdAt: row.created_at,
+  };
 }
 
 export async function getUserByHouseholdAndDisplayName(householdId, displayName) {
