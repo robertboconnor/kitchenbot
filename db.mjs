@@ -568,7 +568,7 @@ export async function clearMessages(chatId, householdId) {
 
 export async function getHouseholdMessageStats(householdId) {
   const row = await get(
-    `SELECT COUNT(*) AS total_messages, COUNT(DISTINCT chat_id) AS total_chats
+    `SELECT COUNT(*) AS total_messages, COUNT(DISTINCT chat_id) AS total_chats, MAX(created_at) AS latest_message_at
      FROM messages
      WHERE household_id = ?`,
     [householdId]

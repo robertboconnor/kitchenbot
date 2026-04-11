@@ -74,6 +74,11 @@ import {
 } from './inventory-service.mjs';
 import { buildKbRuntimeDeps } from './kb-server-deps.mjs';
 import { registerKitchenInventoryRoutes } from './kitchen-inventory-routes.mjs';
+import {
+  normalizeAdminHouseholdSummary,
+  normalizeAdminUsage,
+  normalizeAdminUsers,
+} from './admin-households.mjs';
 import 'dotenv/config';
 import os from 'os';
 import http from 'http';
@@ -691,7 +696,13 @@ app.post('/bootstrap', async (req, res) => {
 app.get('/admin/households', requireHousehold, requireAuth, requireGlobalAdminRead, async (req, res) => {
   try {
     const households = await listAllHouseholdsSummary();
-    return res.json({ households });
+    const enriched = await Promise.all(
+      households.map(async (household) => {
+        const stats = await getHouseholdMessageStats(household.id);
+        return normalizeAdminHouseholdSummary(household, stats);
+      })
+    );
+    return res.json({ households: enriched });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'Server error' });
@@ -709,17 +720,17 @@ app.get('/admin/households/:id', requireHousehold, requireAuth, requireGlobalAdm
     if (!hh) {
       return res.status(404).json({ error: 'Household not found' });
     }
-    const [stats, messagesByUser] = await Promise.all([
+    const [stats, messagesByUser, users] = await Promise.all([
       getHouseholdMessageStats(id),
       getUserMessageCountsInHousehold(id),
+      listHouseholdUsers(id),
     ]);
     return res.json({
-      household: hh,
-      usage: {
-        totalMessages: stats.totalMessages,
-        latestMessageAt: stats.latestMessageAt,
-        messagesByUser,
+      household: {
+        ...normalizeAdminHouseholdSummary(hh, stats),
+        users: normalizeAdminUsers(users),
       },
+      usage: normalizeAdminUsage(stats, messagesByUser),
     });
   } catch (e) {
     console.error(e);
