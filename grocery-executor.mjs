@@ -1,23 +1,31 @@
 import {
   getGroceryItems,
   getMessages,
-  setChatRuntimeState,
 } from './db.mjs';
 import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
-import { buildGroceryChoiceNextStep } from './grocery-smart-skill.mjs';
+import { resolveInventoryItems } from './inventory-classification.mjs';
+import { buildKbContextSystemText } from './kb-prompt-context.mjs';
 
-function buildLegacyGroceryReply(outcome) {
-  if (!outcome || typeof outcome !== 'object') return 'I was not able to build a grocery list from our conversation.';
-  if (outcome.status === 'needs_mode_choice') return outcome.question;
-  if (outcome.status === 'committed') {
-    if (outcome.changed) return 'I updated the grocery list. Head over to the Grocery List tab to check it.';
-    if (Number(outcome.parsedItemCount || 0) > 0) {
-      return "The grocery list already had those items, so there wasn't anything new to update.";
-    }
-    return 'I was not able to build a grocery list from our conversation.';
-  }
-  return 'I was not able to build a grocery list from our conversation.';
+function safeTrim(text) {
+  return String(text ?? '').trim();
+}
+
+function buildGroceryChoiceNextStep({ optionModes, question, reply, actionInputBase = {}, choiceLabels = {} }) {
+  const choices = optionModes.map((mode) => ({
+    id: mode,
+    label: String(choiceLabels?.[mode] ?? mode).trim() || mode,
+    actionInput: { ...actionInputBase, mode },
+  }));
+  return {
+    active: true,
+    type: 'choice',
+    createdAt: Date.now(),
+    action: { capability: 'grocery.write', input: {} },
+    choices,
+    question,
+    visibleReplySummary: String(reply ?? '').trim().slice(0, 400),
+  };
 }
 
 function buildGroceryConversationContextForPrompt(recentConversation, deps) {
@@ -42,238 +50,83 @@ function buildGroceryConversationContextForPrompt(recentConversation, deps) {
   return compact || '(none)';
 }
 
-export async function runWeeklyPlanGroceryDraftOfferResponse(params) {
-  const {
-    req,
-    name,
-    chatId,
-    prompt,
-    memories,
-    anthropic,
-    deps,
-    res,
-  } = params;
-
-  const outcome = await executeGroceryPreview(
-    { capability: 'grocery.preview', input: {} },
-    { req, name, chatId, prompt, memories, anthropic, legacyCommandMode: true, runtimeManagedResponse: true, deps }
+function hasUsableWorkingContext(memoryContext) {
+  const workingContext = memoryContext?.workingContext;
+  return !!(
+    workingContext &&
+    typeof workingContext === 'object' &&
+    !Array.isArray(workingContext) &&
+    (((Array.isArray(workingContext.mealIdeas) ? workingContext.mealIdeas.length : 0) > 0) ||
+      safeTrim(workingContext.topicSummary))
   );
-  const reply = String(outcome?.reply || '').trim() || 'I couldn’t generate a grocery preview right now.';
-
-  await deps.incrementUserMessageCountForSender(req);
-  await deps.addMessage(chatId, req.householdId, 'user', name, prompt);
-  await deps.addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-  await setChatRuntimeState(chatId, req.householdId, {
-    mode: 'smart',
-    proposedNextAction:
-      outcome?.proposedNextAction && typeof outcome.proposedNextAction === 'object' && !Array.isArray(outcome.proposedNextAction)
-        ? outcome.proposedNextAction
-        : {},
-  }).catch(() => {});
-  deps.broadcastToChat?.(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  return res.end(reply);
 }
 
-export async function executeGroceryPreview(runtimeAction, context) {
-  const {
-    req,
-    chatId,
-    prompt,
-    memories = [],
-    anthropic,
-    deps = {},
-  } = context;
-
-  const memoryText = memories.map((m) => `${m.key}: ${m.value}`).join('\n');
-  const conversation = await getMessages(chatId, req.householdId);
-  const conversationForContext = conversation.filter(
-    (m) => m.role !== 'user' || !String(m.content || '').trim().startsWith('!')
-  );
-  const recentConversation = conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
-  const conversationContextCompact = buildGroceryConversationContextForPrompt(recentConversation, deps);
-
-  let reply =
-    'I couldn’t generate a draft list in chat right now. The Grocery List tab is unchanged, but I can still try updating it from this conversation.';
-  let previewRendered = false;
-  try {
-    const callPurpose = 'grocery_draft_generation';
-    const groceryResponse = await createLoggedAnthropicMessage(anthropic, {
-      model: resolveAnthropicModelForCallPurpose(callPurpose),
-      max_tokens: 400,
-      system: `You suggest ingredients to buy based on the cooking and meal discussion in a household chat. Output ONLY lines in this format (no other text):
-section | product | amount
-section is one of: produce, meat, dairy, frozen, dry, other
-
-Household memory:
-${memoryText || '(none)'}
-
-Conversation context for this chat:
-${conversationContextCompact}
-
-Personalization rules:
-- Treat saved people/preferences in household memory as real constraints for the list.
-- Avoid ingredients that clearly conflict with saved dislikes or food constraints.
-- Use household-style notes like concise recipes to prefer simpler ingredient sets when reasonable.`,
-      messages: [
-        {
-          role: 'user',
-          content: `User said: ${String(prompt).trim()}\n\nBuild a shopping list from the cooking and meal discussion in this chat.`,
-        },
-      ],
-    }, {
-      householdId: req.householdId,
-      chatId,
-      smartModeEnabled: true,
-      callSurface: 'background',
-      callPurpose,
-      webSearchEnabledAtCall: false,
-      usedWebSearchTool: false,
-    });
-    const textBlocks = groceryResponse.content.filter((block) => block.type === 'text');
-    const fullText = textBlocks.map((b) => b.text).join('\n');
-    const rawLines = fullText.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
-    const items = [];
-    for (const line of rawLines) {
-      const parts = line.split('|').map((p) => p.trim());
-      if (parts.length < 2) continue;
-      const [sectionRaw, nameRaw, amountRaw] = parts;
-      const nameTrim = String(nameRaw).trim();
-      if (!sectionRaw || !nameTrim) continue;
-      items.push({
-        section: sectionRaw,
-        name: nameTrim,
-        amount: amountRaw != null ? String(amountRaw).trim() : '',
-      });
-    }
-    const normalizedItems = deps.normalizeGroceryItemsForPost(items);
-    if (normalizedItems.length > 0) {
-      const lead = await deps.generateSmartGroceryPreviewLead?.({
-        anthropic,
-        prompt,
-        contextSummary: conversationContextCompact,
-        itemCount: normalizedItems.length,
-        householdId: req.householdId,
-        chatId,
-      });
-      const artifact = String(deps.formatSmartGroceryPreviewArtifact?.(normalizedItems) ?? '').trim();
-      if (artifact) {
-        const followUp =
-          (await deps.generateSmartGroceryPreviewCommitReply?.({
-            anthropic,
-            prompt,
-            contextSummary: conversationContextCompact,
-            itemCount: normalizedItems.length,
-            householdId: req.householdId,
-            chatId,
-          })) || "If you'd like, I can put this into your Grocery List tab next.";
-        reply = [lead, artifact, followUp].filter(Boolean).join('\n\n');
-        previewRendered = true;
-      } else {
-        reply =
-          "I wasn't able to render the grocery preview in chat this time, so I left the Grocery List tab unchanged.";
-      }
-    } else {
-      reply =
-        "I wasn’t able to turn this conversation into specific ingredient lines in chat this time. The Grocery List tab is still unchanged. If you want, I can still try building the list into the tab from what we discussed.";
-    }
-  } catch (e) {
-    console.error('Weekly plan grocery draft generation failed:', e?.message || e);
-  }
-
-  const proposedNextAction = previewRendered
-    ? {
-      active: true,
-        type: 'confirm',
-        createdAt: Date.now(),
-        action: { capability: 'grocery.generate_and_commit', input: {} },
-        question: "If you'd like, I can put this into your Grocery List tab next.",
-        visibleReplySummary: String(reply ?? '').trim().slice(0, 400),
-      }
-    : null;
-
-  return {
-    capability: 'grocery.preview',
-    status: previewRendered ? 'preview_ready' : 'preview_unavailable',
-    reply,
-    previewRendered,
-    proposedNextAction,
-  };
+function isReferentialPrompt(prompt) {
+  const text = safeTrim(prompt).toLowerCase();
+  if (!text) return false;
+  return /\b(this|that|those|these|it|them)\b/.test(text) || /\bone of those\b/.test(text);
 }
 
-export async function executeGroceryGenerateAndCommit(runtimeAction, context) {
-  const {
-    req,
-    name,
-    chatId,
-    prompt,
-    memories = [],
-    anthropic,
-    legacyCommandMode = false,
-    skipIncrement = false,
-    userMessageAlreadyPersisted = false,
-    smartModeEnabled = false,
-    legacyRememberAck = null,
-    legacyWeeklyPatchAck = null,
-    runtimeManagedResponse = false,
-    deps = {},
-  } = context;
-  const persistedUserLine = !!userMessageAlreadyPersisted;
-
-  if (!skipIncrement) {
-    await deps.incrementUserMessageCountForSender?.(req);
+function countActiveRelevantPeople(memoryContext) {
+  const entityContext = memoryContext?.entityContext || {};
+  const active = new Set();
+  const speaker = safeTrim(entityContext.activeSpeakerLabel || entityContext.activeSpeakerName).toLowerCase();
+  if (speaker) active.add(speaker);
+  for (const label of Array.isArray(entityContext.mentionedPersonLabels) ? entityContext.mentionedPersonLabels : []) {
+    const text = safeTrim(label).toLowerCase();
+    if (text) active.add(text);
   }
+  return active.size;
+}
 
-  const requestedGroceryMode = runtimeAction?.input?.mode || null;
-  const requestedSource = runtimeAction?.input?.source || null;
-  const conversation = await getMessages(chatId, req.householdId);
-  const conversationForContext = conversation.filter(
-    (m) => m.role !== 'user' || !String(m.content || '').trim().startsWith('!')
-  );
-  const recentConversation = conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
+function hasComplexDefaultsOrMemory(memoryContext) {
+  const pantryCount = Array.isArray(memoryContext?.pantryItems) ? memoryContext.pantryItems.length : 0;
+  const selectedMemoryCount = Array.isArray(memoryContext?.selectedItems) ? memoryContext.selectedItems.length : 0;
+  return pantryCount > 20 || selectedMemoryCount > 5;
+}
 
-  const existingGroceryItems = await getGroceryItems(req.householdId);
+function shouldUsePrimaryGroceryModel(runtimeAction, context) {
+  const promptText = safeTrim(context?.prompt).toLowerCase();
+  const memoryContext = context?.memoryContext || null;
+  if (!hasUsableWorkingContext(memoryContext)) return false;
+  if (isReferentialPrompt(promptText)) return false;
+  if (/\b(swap|replace one|redo|revise|change one|make one)\b/.test(promptText)) return false;
+  if (countActiveRelevantPeople(memoryContext) > 2) return false;
+  if (hasComplexDefaultsOrMemory(memoryContext)) return false;
+  const source = safeTrim(runtimeAction?.input?.source).toLowerCase();
+  if (source && source !== 'draft_chat_offer') return false;
+  return true;
+}
 
-  const memoryText = memories.map((memory) => `${memory.key}: ${memory.value}`).join('\n');
-  const conversationContextCompact = buildGroceryConversationContextForPrompt(recentConversation, deps);
-  const disambigPrefix =
-    [legacyWeeklyPatchAck, legacyRememberAck]
-      .map((x) => (x && String(x).trim()) || '')
-      .filter(Boolean)
-      .join(' ') || null;
+function minimumExpectedItems(memoryContext) {
+  const mealIdeas = Array.isArray(memoryContext?.workingContext?.mealIdeas) ? memoryContext.workingContext.mealIdeas.length : 0;
+  if (mealIdeas >= 3) return 8;
+  if (mealIdeas === 2) return 6;
+  if (mealIdeas === 1) return 4;
+  return 1;
+}
 
-  const claudeMessages = recentConversation.map((message) => ({
-    role: message.role,
-    content:
-      message.role === 'user'
-        ? `${message.name}: ${message.content}`
-        : deps.stripStoredMessageContentForDisplay(message.content),
-  }));
+function shouldEscalatePrimaryGroceryDraft(normalizedItems, memoryContext) {
+  const count = Array.isArray(normalizedItems) ? normalizedItems.length : 0;
+  if (count === 0) return true;
+  return count < minimumExpectedItems(memoryContext);
+}
 
-  const groceryCallPurpose = 'grocery_draft_generation';
-  const groceryResponse = await createLoggedAnthropicMessage(anthropic, {
-    model: resolveAnthropicModelForCallPurpose(groceryCallPurpose),
+async function requestGroceryDraft({
+  anthropic,
+  callPurpose,
+  req,
+  chatId,
+  kbModeEnabled,
+  runtimeManagedResponse,
+  claudeMessages,
+  systemPrompt,
+  conversationContextCompact,
+}) {
+  return await createLoggedAnthropicMessage(anthropic, {
+    model: resolveAnthropicModelForCallPurpose(callPurpose),
     max_tokens: 400,
-    system: `You are a household assistant that generates grocery lists.
-
-Household memory:
-${memoryText}
-
-Conversation context for this chat:
-${conversationContextCompact}
-
-Personalization rules:
-- Treat saved people/preferences in household memory as real constraints for the list.
-- Avoid ingredients that clearly conflict with saved dislikes or food constraints.
-- If household preferences imply simpler cooking, prefer leaner ingredient sets when reasonable.
-
-When the user asks for a grocery list, respond ONLY with plain text lines in the format:
-section | product | amount
-
-Where:
-- section is one of: produce, meat, dairy, frozen, dry, other
-- product is a short item name
-- amount is a human-readable quantity (like "2 lbs", "3", "1 carton")`,
+    system: systemPrompt,
     messages: [
       ...claudeMessages,
       {
@@ -286,40 +139,213 @@ Where:
   }, {
     householdId: req.householdId,
     chatId,
-    smartModeEnabled: !!smartModeEnabled,
-    callSurface: runtimeManagedResponse ? 'smart_action' : 'command',
-    callPurpose: groceryCallPurpose,
+    runtimeEnabled: !!kbModeEnabled,
+    callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
+    callPurpose,
     webSearchEnabledAtCall: false,
     usedWebSearchTool: false,
   });
+}
 
-  const textBlocks = groceryResponse.content.filter((block) => block.type === 'text');
-  const fullText = textBlocks.map((b) => b.text).join('\n');
-  const lines = fullText.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
-  const items = [];
-  for (const line of lines) {
-    const parts = line.split('|').map((p) => p.trim());
-    if (parts.length < 2) continue;
-    const [sectionRaw, nameRaw, amountRaw] = parts;
-    const nameTrim = String(nameRaw).trim();
-    if (!sectionRaw || !nameTrim) continue;
-    items.push({
-      section: sectionRaw,
-      name: nameTrim,
-      amount: amountRaw != null ? String(amountRaw).trim() : '',
+async function generateGroceryDraft(runtimeAction, context) {
+  const {
+    req,
+    chatId,
+    memories = [],
+    memoryContext = null,
+    anthropic,
+    kbModeEnabled = false,
+    runtimeManagedResponse = false,
+    deps = {},
+  } = context;
+  const requestedSource = runtimeAction?.input?.source || null;
+  const conversation = await getMessages(chatId, req.householdId);
+  const conversationForContext = conversation.filter(
+    (m) => m.role !== 'user' || !String(m.content || '').trim().startsWith('!')
+  );
+  const recentConversation = conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
+
+  const existingGroceryItems = await getGroceryItems(req.householdId);
+  const conversationContextCompact = buildGroceryConversationContextForPrompt(recentConversation, deps);
+
+  const claudeMessages = recentConversation.map((message) => ({
+    role: message.role,
+    content:
+      message.role === 'user'
+        ? `${message.name}: ${message.content}`
+        : deps.stripStoredMessageContentForDisplay?.(message.content) ?? String(message.content ?? ''),
+  }));
+
+  const systemPrompt = `You are a household assistant that generates grocery lists.
+
+${buildKbContextSystemText(memoryContext)}
+
+Conversation context for this chat:
+${conversationContextCompact}
+
+Personalization rules:
+- Treat the applied household context as real constraints for the grocery draft, not as optional decoration.
+- Treat the applied household defaults as stronger operating assumptions when relevant.
+- Treat the applied working context as the best short-term guide to what "this" or "that" refers to in the current chat.
+- Use the local time context when the grocery request depends on tonight/tomorrow timing, deadline-sensitive cooking, or speed.
+- Treat pantry items as already on hand unless the conversation clearly implies the household needs more of them.
+- Treat the current Grocery List as real live household state when deciding what is already on the buy-now list.
+- If a default dinner portion count exists, scale grocery quantities to match it unless the conversation clearly implies another serving size.
+- If a weeknight cooking style exists, let that shape ingredient ambition and prep burden.
+- If the active speaker or another clearly relevant person has a saved dislike or preference, account for it directly in the list unless the conversation clearly overrides it.
+- If multiple people are relevant, try to make the list work for the group rather than optimizing for only one person.
+- Avoid ingredients that clearly conflict with saved dislikes or food constraints.
+- If household preferences imply simpler cooking, prefer leaner ingredient sets when reasonable.
+
+When the user asks for a grocery list, respond ONLY with plain text lines in the format:
+section | product | amount
+
+Where:
+- section is one of: produce, meat, dairy, frozen, dry, other
+- product is a short item name
+- amount is a human-readable quantity (like "2 lbs", "3", "1 carton")`;
+
+  async function parseDraftItems(groceryResponse) {
+    const textBlocks = groceryResponse.content.filter((block) => block.type === 'text');
+    const fullText = textBlocks.map((b) => b.text).join('\n');
+    const lines = fullText.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+    const items = [];
+    for (const line of lines) {
+      const parts = line.split('|').map((p) => p.trim());
+      if (parts.length < 2) continue;
+      const [sectionRaw, nameRaw, amountRaw] = parts;
+      const nameTrim = String(nameRaw).trim();
+      if (!sectionRaw || !nameTrim) continue;
+      items.push({
+        section: sectionRaw,
+        name: nameTrim,
+        amount: amountRaw != null ? String(amountRaw).trim() : '',
+      });
+    }
+    return await resolveInventoryItems({
+      target: 'grocery',
+      items,
+      anthropic: anthropic || null,
+      householdId: req.householdId,
+      chatId,
+      runtimeEnabled: !!kbModeEnabled,
+      callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
     });
   }
 
-  const normalizedItems = deps.normalizeGroceryItemsForPost(items);
+  const usePrimary = shouldUsePrimaryGroceryModel(runtimeAction, context);
+  let groceryResponse = await requestGroceryDraft({
+    anthropic,
+    callPurpose: usePrimary ? 'grocery_draft_generation_primary' : 'grocery_draft_generation_fallback',
+    req,
+    chatId,
+    kbModeEnabled,
+    runtimeManagedResponse,
+    claudeMessages,
+    systemPrompt,
+    conversationContextCompact,
+  });
+
+  let normalizedItems = await parseDraftItems(groceryResponse);
+  if (usePrimary && shouldEscalatePrimaryGroceryDraft(normalizedItems, memoryContext)) {
+    groceryResponse = await requestGroceryDraft({
+      anthropic,
+      callPurpose: 'grocery_draft_generation_fallback',
+      req,
+      chatId,
+      kbModeEnabled,
+      runtimeManagedResponse,
+      claudeMessages,
+      systemPrompt,
+      conversationContextCompact,
+    });
+    normalizedItems = await parseDraftItems(groceryResponse);
+  }
   const priorKeys = new Set(
     existingGroceryItems
-      .map((item) => deps.normalizeGroceryNameKey(item?.name))
+      .map((item) => deps.normalizeInventoryNameKey(item?.name))
       .filter(Boolean)
   );
-  const runKeys = new Set(normalizedItems.map((i) => deps.normalizeGroceryNameKey(i.name)).filter(Boolean));
+  const runKeys = new Set(normalizedItems.map((i) => deps.normalizeInventoryNameKey(i.name)).filter(Boolean));
   const likelyRemovedKeys = new Set([...priorKeys].filter((k) => !runKeys.has(k)));
   const likelyAddedKeys = new Set([...runKeys].filter((k) => !priorKeys.has(k)));
   const draftChatOfferCommit = requestedSource === 'draft_chat_offer';
+
+  return {
+    recentConversation,
+    existingGroceryItems,
+    conversationContextCompact,
+    normalizedItems,
+    priorKeys,
+    runKeys,
+    likelyRemovedKeys,
+    likelyAddedKeys,
+    draftChatOfferCommit,
+  };
+}
+
+export async function previewGroceryListFromConversation(runtimeAction, context) {
+  const draft = await generateGroceryDraft(runtimeAction, context);
+  const hasExistingList = draft.existingGroceryItems.length > 0;
+  const optionModes = hasExistingList ? ['append', 'replace'] : ['append'];
+  const question =
+    hasExistingList
+      ? 'If you want, I can add these items to your Grocery List tab or replace the current Grocery List tab with them.'
+      : 'If you want, I can add these items to your Grocery List tab.';
+  return {
+    capability: 'grocery.preview',
+    status: draft.normalizedItems.length > 0 ? 'previewed' : 'empty',
+    parsedItemCount: draft.normalizedItems.length,
+    items: draft.normalizedItems,
+    hasExistingList,
+    optionModes,
+    question,
+    proposedNextAction:
+      draft.normalizedItems.length > 0
+        ? buildGroceryChoiceNextStep({
+            optionModes,
+            question,
+            reply: question,
+            actionInputBase: { source: 'draft_chat_offer' },
+            choiceLabels: {
+              append: 'add this to the Grocery List tab',
+              replace: 'replace current list',
+            },
+          })
+        : null,
+  };
+}
+
+export async function writeGroceryListFromConversation(runtimeAction, context) {
+  const {
+    req,
+    name,
+    chatId,
+    prompt,
+    memories = [],
+    anthropic,
+    skipIncrement = false,
+    userMessageAlreadyPersisted = false,
+    kbModeEnabled = false,
+    runtimeManagedResponse = false,
+    deps = {},
+  } = context;
+  const persistedUserLine = !!userMessageAlreadyPersisted;
+
+  if (!skipIncrement) {
+    await deps.incrementUserMessageCountForSender?.(req);
+  }
+
+  const requestedGroceryMode = runtimeAction?.input?.mode || null;
+  const draft = await generateGroceryDraft(runtimeAction, context);
+  const {
+    existingGroceryItems,
+    conversationContextCompact,
+    normalizedItems,
+    runKeys,
+    likelyRemovedKeys,
+    draftChatOfferCommit,
+  } = draft;
   if (requestedGroceryMode == null && existingGroceryItems.length > 0 && normalizedItems.length > 0) {
     const optionModes =
       !draftChatOfferCommit && likelyRemovedKeys.size > 0
@@ -337,7 +363,7 @@ Where:
             chatId,
           })) ||
           "I found items already on your Grocery List tab. I can either replace that list with this week's ingredients or add these on top. Which do you want?");
-    let replyForStore = deps.combinePlannerDisambiguationWithRememberAck(disambigPrefix, question);
+    const replyForStore = question;
     if (!runtimeManagedResponse && !persistedUserLine) {
       await deps.addMessage?.(chatId, req.householdId, 'user', name, prompt);
     }
@@ -346,7 +372,7 @@ Where:
       deps.broadcastToChat?.(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
     }
     return {
-      capability: 'grocery.generate_and_commit',
+      capability: 'grocery.write',
       status: 'needs_mode_choice',
       question,
       reply: replyForStore,
@@ -384,7 +410,7 @@ Where:
   const groceryListWasUpdated = totalDbContentChanges > 0;
 
   const outcome = {
-    capability: 'grocery.generate_and_commit',
+    capability: 'grocery.write',
     status: 'committed',
     changed: groceryListWasUpdated,
     mode: effectiveGroceryMode,
@@ -403,7 +429,13 @@ Where:
 
   if (!runtimeManagedResponse) {
     await deps.addMessage?.(chatId, req.householdId, 'user', name, prompt);
-    await deps.addMessage?.(chatId, req.householdId, 'assistant', 'KitchenBot', buildLegacyGroceryReply(outcome));
+    const reply =
+      outcome.changed
+        ? 'I updated the grocery list.'
+        : Number(outcome.parsedItemCount || 0) > 0
+          ? "The grocery list already had those items, so there wasn't anything new to update."
+          : 'I was not able to build a grocery list from our conversation.';
+    await deps.addMessage?.(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
   }
 
   if (!runtimeManagedResponse) {
@@ -416,73 +448,4 @@ Where:
   }
 
   return outcome;
-}
-
-export async function runGrocerySharedCommandEffects(params) {
-  const {
-    req,
-    name,
-    chatId,
-    commandUserTextForPersistence,
-    routePrompt,
-    executePendingAction,
-    memories,
-    anthropic,
-    legacyCommandMode = false,
-    skipIncrement = false,
-    userMessageAlreadyPersisted = false,
-    smartModeEnabled = false,
-    legacyRememberAck = null,
-    legacyWeeklyPatchAck = null,
-    runtimeManagedResponse = false,
-    deps = {},
-  } = params;
-
-  const runtimeAction = {
-    capability: 'grocery.generate_and_commit',
-    input: {
-      mode: executePendingAction?.command === '!grocerylist' ? executePendingAction.mode : undefined,
-      source: executePendingAction?.command === '!grocerylist' ? executePendingAction.source : undefined,
-    },
-  };
-  const outcome = await executeGroceryGenerateAndCommit(runtimeAction, {
-    req,
-    name,
-    chatId,
-    prompt: commandUserTextForPersistence,
-    routePrompt,
-    executePendingAction,
-    memories,
-    anthropic,
-    legacyCommandMode,
-    skipIncrement,
-    userMessageAlreadyPersisted,
-    smartModeEnabled,
-    legacyRememberAck,
-    legacyWeeklyPatchAck,
-    runtimeManagedResponse,
-    deps,
-  });
-
-  if (outcome.status === 'needs_mode_choice') {
-    const optionModes = Array.isArray(outcome.optionModes) ? outcome.optionModes : [];
-    const pendingHeader = encodeURIComponent(
-      JSON.stringify({
-        type: 'grocery_mode_choice',
-        options: optionModes.map((mode) => ({ command: '!grocerylist', mode })),
-      })
-    );
-    return {
-      type: 'disambiguation',
-      reply: outcome.reply,
-      pendingHeader,
-      outcome,
-    };
-  }
-
-  return {
-    type: 'done',
-    reply: buildLegacyGroceryReply(outcome),
-    outcome,
-  };
 }

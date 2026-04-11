@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node kitchenbot.mjs",
     "dev": "node kitchenbot.mjs",
-    "test": "echo \"No tests configured\""
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"

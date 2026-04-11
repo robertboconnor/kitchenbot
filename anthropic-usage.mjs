@@ -83,7 +83,7 @@ export async function recordAnthropicUsageFromResponse(response, context = {}) {
     await insertAnthropicUsageLedgerRow({
       householdId,
       chatId: context.chatId != null ? Number(context.chatId) : null,
-      smartModeEnabled: !!context.smartModeEnabled,
+      runtimeEnabled: context.runtimeEnabled !== false,
       callSurface: String(context.callSurface ?? 'background'),
       callPurpose: String(context.callPurpose ?? 'unknown'),
       model: String(response?.model ?? context.model ?? 'unknown'),

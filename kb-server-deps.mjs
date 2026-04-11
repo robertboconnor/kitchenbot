@@ -1,0 +1,33 @@
+export function buildKbRuntimeDeps({
+  ANTHROPIC_KEY_USER_MESSAGE,
+  addMessage,
+  broadcastToChat,
+  clearChatRuntimeState,
+  getAnthropicClient,
+  buildKbContextPacket,
+  incrementUserMessageCountForSender,
+  isAnthropicSdkAuthOrKeyError,
+  mergeGroceryItemsFromAi,
+  normalizeGroceryItemsForPost,
+  normalizeInventoryNameKey,
+  pruneStaleGroceryItemsForChat,
+  stripStoredMessageContentForDisplay,
+  clearGroceryItems,
+}) {
+  return {
+    ANTHROPIC_KEY_USER_MESSAGE,
+    addMessage,
+    broadcastToChat,
+    clearChatRuntimeState,
+    getAnthropicClient,
+    buildKbContextPacket,
+    incrementUserMessageCountForSender,
+    isAnthropicSdkAuthOrKeyError,
+    mergeGroceryItemsFromAi,
+    normalizeGroceryItemsForPost,
+    normalizeInventoryNameKey,
+    pruneStaleGroceryItemsForChat,
+    stripStoredMessageContentForDisplay,
+    clearGroceryItems,
+  };
+}

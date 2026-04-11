@@ -4,34 +4,24 @@ import {
   listAllChats,
   touchChat,
   updateChatTitle,
-  updateChatTitleAndLock,
-  updateChatTitleAutoIfUnlocked,
   deleteChatById,
   addMessage,
   getMessages,
-  getMemories,
   clearMessages,
-  upsertMemory,
-  deleteMemory,
-  deleteSmartDurableMemory,
-  deleteLegacySeedMemories,
+  deleteKbMemory,
   addGroceryItems,
+  addPantryItems,
+  getPantryItems,
+  findPantryItemById,
   getGroceryItems,
   updateGroceryItemAmount,
   backfillGroceryItemSourceChatIfSafe,
   updateGroceryItem,
   deleteGroceryItem,
+  deletePantryItem,
   clearGroceryItems,
   pruneStaleGroceryItemsForChat,
   listAllHouseholdsSummary,
-  getUserComplimentState,
-  incrementUserMessageCount,
-  shouldTriggerCompliment,
-  recordCompliment,
-  selectComplimentAvoidingRecent,
-  setUserLoveBoost,
-  ensureUserComplimentStateRow,
-  updateHouseholdUserComplimentsEnabled,
   updateHouseholdUserChatColor,
   runMigrations,
   normalizeChatColor,
@@ -43,7 +33,6 @@ import {
   getHouseholdById,
   getHouseholdByKey,
   setHouseholdWebSearchEnabled,
-  setHouseholdSmartModeEnabled,
   listHouseholdUsers,
   getUserByHouseholdAndDisplayName,
   getHouseholdUserById,
@@ -56,64 +45,35 @@ import {
   verifyPin,
   getHouseholdMessageStats,
   getUserMessageCountsInHousehold,
-  getSmartDurableMemoryByTypeAndLabel,
-  getChatThreadContext,
-  upsertChatThreadContext,
-  listSmartDurableMemories,
-  saveSmartDurableMemory,
-  updateChatThreadScene,
-  replaceChatThreadScene,
-  updateWeeklyPlanDraft,
+  getKbMemoryByTypeAndLabel,
+  listKbMemories,
+  saveKbMemory,
+  getHouseholdDefaults,
+  saveHouseholdDefaults,
   clearChatRuntimeState,
-  setChatRuntimeState,
   getAnthropicUsageLedgerAllRows,
 } from './db.mjs';
+import { handleKbChatTurn } from './kb-runtime.mjs';
 import {
-  sanitizePendingAction,
-  appendPendingMarkerToAssistantContent,
-  buildPendingActionReply,
-  isPendingActionConfirmation,
-  groceryTabOfferTextMatchesForPending,
-} from './pending-state.mjs';
-import { decideCommandRoute, weeklyPlanDraftHasMeaningfulContent } from './interaction-engine.mjs';
-import { runSmartModeInterpreter as invokeSmartModeInterpreterModel } from './smart-mode-interpreter.mjs';
-import { handleSmartModeChatTurn } from './smart-chat-runtime.mjs';
-import { handleLegacyChatTurn } from './legacy-chat-runtime.mjs';
-import { executeSmartActions } from './smart-action-executor.mjs';
-import { runGrocerySharedCommandEffects as runGrocerySharedExecutorEffects, runWeeklyPlanGroceryDraftOfferResponse as runWeeklyPlanGroceryDraftOfferExecutorResponse } from './grocery-executor.mjs';
-import { interpretGrocerySkillFollowUp } from './grocery-smart-skill.mjs';
-import { runRememberSharedCommandEffects as runRememberSharedExecutorEffects } from './memory-executor.mjs';
-import {
-  listCapabilitiesForInterpreter,
-} from './capability-registry.mjs';
-import {
-  formatSmartGroceryPreviewArtifact,
-  generateSmartGroceryPreviewCommitReply,
-  formatSmartWeeklyPlanArtifact,
-  generateSmartGroceryModeChoiceReply,
-  generateSmartGroceryPreviewLead,
-  withSmartPlannerWeeklyPlanArtifact,
-} from './smart-artifact-renderers.mjs';
-import {
-  isDurableAutoMemoryCandidate as isSmartDurableAutoMemoryCandidate,
-  shouldApplyDurableAutoMemoryGuard as shouldApplySmartDurableAutoMemoryGuard,
-} from './smart-memory-policy.mjs';
-import {
-  buildSmartDurableMemoryRecordForStorage,
-  buildPersonSummaryFromNotes,
-  getSmartDurableMemoryPromptContext,
-  isMealGroceryPersonalizationTurn,
-  mergeSmartDurableMemoryForUpsert,
-  normalizeSmartDurablePersonNotes,
-  normalizeSmartDurableMemoryType,
-} from './smart-durable-memory.mjs';
+  buildPersonSummary,
+  buildMemoryRecordForStorage,
+  buildKbContextPacket,
+  mergeMemoryRecord,
+  normalizeMemoryType,
+  normalizePersonNotes,
+} from './kb-memory-store.mjs';
 import {
   createLoggedAnthropicMessage,
   finalizeLoggedAnthropicStream,
   estimateAnthropicLedgerCostUsd,
 } from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
-import { maybeAutoNameChatOnTurn, generateAutoChatTitle } from './chat-title-runtime.mjs';
+import {
+  createInventoryServices,
+  normalizeInventoryNameKey,
+} from './inventory-service.mjs';
+import { buildKbRuntimeDeps } from './kb-server-deps.mjs';
+import { registerKitchenInventoryRoutes } from './kitchen-inventory-routes.mjs';
 import 'dotenv/config';
 import os from 'os';
 import http from 'http';
@@ -124,14 +84,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import crypto from 'crypto';
 
 async function incrementUserMessageCountForSender(req) {
-  const uid = req.userId;
-  if (!Number.isFinite(uid)) return;
-  try {
-    await ensureUserComplimentStateRow(uid);
-    await incrementUserMessageCount(uid);
-  } catch (e) {
-    // ignore
-  }
+  void req;
 }
 
 const app = express();
@@ -176,6 +129,7 @@ async function seedInitialHouseholdFromEnvIfNeeded() {
     console.log('Seeded initial household from INITIAL_* environment variables.');
   } catch (e) {
     console.error('Initial household seeding failed:', e.message || e);
+    throw new Error(`Initial household seeding failed: ${e?.message || e}`);
   }
 }
 
@@ -185,20 +139,19 @@ async function getAnthropicClient(householdId) {
     throw new Error('Household not found.');
   }
   const webSearchEnabled = Number(h.web_search_enabled) === 1;
-  const smartModeEnabled = Number(h.smart_mode_enabled) === 1;
   const mode = h.anthropic_key_mode || 'shared';
   if (mode === 'household') {
     const k = h.anthropic_api_key && String(h.anthropic_api_key).trim();
     if (!k) {
       throw new Error('This household does not have an Anthropic API key configured.');
     }
-    return { client: new Anthropic({ apiKey: k }), webSearchEnabled, smartModeEnabled };
+    return { client: new Anthropic({ apiKey: k }), webSearchEnabled };
   }
   const shared = process.env.ANTHROPIC_API_KEY && String(process.env.ANTHROPIC_API_KEY).trim();
   if (!shared) {
     throw new Error('Shared Anthropic API key is not configured on this server.');
   }
-  return { client: new Anthropic({ apiKey: shared }), webSearchEnabled, smartModeEnabled };
+  return { client: new Anthropic({ apiKey: shared }), webSearchEnabled };
 }
 
 function normalizeUsageFilterBoolean(raw) {
@@ -207,6 +160,18 @@ function normalizeUsageFilterBoolean(raw) {
   if (s === 'enabled' || s === 'used' || s === 'true' || s === '1') return true;
   if (s === 'disabled' || s === 'not_used' || s === 'false' || s === '0') return false;
   return null;
+}
+
+function weeklyPlanDraftHasMeaningfulContent(draft) {
+  if (!draft || typeof draft !== 'object') return false;
+  const label = String(draft.label ?? '').trim();
+  const meals = Array.isArray(draft.meals) ? draft.meals.filter((m) => String(m).trim()) : [];
+  const notes = String(draft.notes ?? '').trim();
+  return (
+    (label && label.length > 0) ||
+    meals.length > 0 ||
+    (notes && notes.length > 0)
+  );
 }
 
 function classifyUsageBucket(callPurpose) {
@@ -331,6 +296,16 @@ function parseJsonObjectFromModelText(raw) {
   }
 }
 
+function createBoundInventoryServices() {
+  return createInventoryServices({
+    getAnthropicClient,
+    getGroceryItems,
+    updateGroceryItemAmount,
+    backfillGroceryItemSourceChatIfSafe,
+    addGroceryItems,
+  });
+}
+
 /** Compact line for system prompt; never dumps raw JSON. */
 function formatWeeklyPlanDraftForPrompt(draft) {
   if (!draft || typeof draft !== 'object') return '(none yet)';
@@ -347,448 +322,6 @@ function formatWeeklyPlanDraftForPrompt(draft) {
   if (meals.length) parts.push(`meals: ${meals.map((m, i) => `${i + 1}) ${String(m).trim()}`).join(' · ')}`);
   if (notes) parts.push(`notes: ${notes}`);
   return truncateSmartModeContext(parts.join(' | '), 1200) || '(none yet)';
-}
-
-/**
- * User-visible weekly plan from weeklyPlanDraft only (server-owned; no JSON, thread scene, grocery, plannerResume).
- */
-function formatWeeklyPlanDraftVisibleBlock(draft) {
-  if (!draft || typeof draft !== 'object') return '';
-  const label = String(draft.label ?? '').trim();
-  const meals = Array.isArray(draft.meals) ? draft.meals.map((m) => String(m).trim()).filter(Boolean) : [];
-  const notes = String(draft.notes ?? '').trim();
-  const hasMeals = meals.length > 0;
-  const hasLabel = label.length > 0;
-  const hasNotes = notes.length > 0;
-  if (!hasMeals && !hasLabel && !hasNotes) return '';
-  const lines = ['Weekly plan'];
-  if (hasLabel) {
-    lines.push(label);
-    lines.push('');
-  } else {
-    lines.push('');
-  }
-  if (hasMeals) {
-    for (let i = 0; i < meals.length; i++) {
-      lines.push(`${i + 1}. ${meals[i]}`);
-    }
-  }
-  if (hasNotes) {
-    if (hasMeals) lines.push('');
-    lines.push(`Notes: ${notes}`);
-  }
-  return lines.join('\n');
-}
-
-/** @param {string} baseText @param {string} block */
-function appendWeeklyPlanVisibleBlockToAssistantText(baseText, block) {
-  const b = String(block ?? '').trim();
-  if (!b) return baseText;
-  const base = String(baseText ?? '');
-  return base ? `${base}\n\n${b}` : b;
-}
-
-/** After planner weekly_plan_draft_patch, grocery disambiguation messages should still show the canonical plan. */
-function withPlannerWeeklyPlanVisibleBlock(plannerWeeklyPatchAck, draft, replyForStore) {
-  if (!plannerWeeklyPatchAck) return replyForStore;
-  if (!weeklyPlanDraftHasMeaningfulContent(draft ?? {})) return replyForStore;
-  const block = formatWeeklyPlanDraftVisibleBlock(draft);
-  return block ? appendWeeklyPlanVisibleBlockToAssistantText(replyForStore, block) : replyForStore;
-}
-
-async function buildSmartModeInterpreterContext(input) {
-  const {
-    prompt,
-    chatId,
-    householdId,
-    memoriesByKey,
-    allowedCapabilities,
-    includeWeeklyPlanArtifactContext = false,
-    runtimeProposedNextAction,
-    recoveredPending,
-    bodyExecutePending,
-    stripStoredMessageContentForDisplay,
-    smartModeEnabled: ctxSmartMode = true,
-  } = input;
-  const threadCtx = await getChatThreadContext(chatId, householdId);
-  const conv = await getMessages(chatId, householdId);
-  const lastUserMsg = [...conv].reverse().find((m) => m.role === 'user');
-  const lastAssistantMsg = [...conv].reverse().find((m) => m.role === 'assistant');
-  const previousUserMessageInThread = lastUserMsg
-    ? truncateSmartModeContext(
-        `${String(lastUserMsg.name ?? 'user')}: ${String(lastUserMsg.content ?? '')}`,
-        800
-      )
-    : null;
-  const lastAssistantVisible = lastAssistantMsg
-    ? truncateSmartModeContext(stripStoredMessageContentForDisplay(String(lastAssistantMsg.content ?? '')), 800)
-    : null;
-
-  const smartMemoryPromptContext = await getSmartDurableMemoryPromptContext(
-    householdId,
-    {
-      prompt,
-    },
-    { limit: 6 }
-  );
-  const householdMemoriesCompact = smartMemoryPromptContext.promptText || '(none)';
-
-  let recoveredPendingSummary = null;
-  if (recoveredPending && typeof recoveredPending === 'object') {
-    recoveredPendingSummary = {
-      command: recoveredPending.command,
-      mode: recoveredPending.mode ?? null,
-      key: recoveredPending.args?.key ?? null,
-    };
-  }
-
-  let bodyExecutePendingSummary = null;
-  if (bodyExecutePending != null) {
-    const s = sanitizePendingAction(bodyExecutePending);
-    bodyExecutePendingSummary = s
-      ? { command: s.command, mode: s.mode ?? null, key: s.args?.key ?? null }
-      : '[unparsed]';
-  }
-  const weeklyPlanDraftCompact = includeWeeklyPlanArtifactContext && weeklyPlanDraftHasMeaningfulContent(threadCtx.weeklyPlanDraft ?? {})
-    ? truncateSmartModeContext(formatWeeklyPlanDraftForPrompt(threadCtx.weeklyPlanDraft ?? {}), 1800)
-    : '(not injected)';
-  const weeklyPlanMealsIndexed =
-    includeWeeklyPlanArtifactContext && Array.isArray(threadCtx.weeklyPlanDraft?.meals)
-      ? threadCtx.weeklyPlanDraft.meals
-          .map((meal, index) => `${index + 1}. ${String(meal ?? '').trim()}`)
-          .filter((line) => !/^\d+\.\s*$/.test(line))
-          .join('\n')
-      : '';
-  const activeProposedNextActionSummary =
-    runtimeProposedNextAction && typeof runtimeProposedNextAction === 'object' && !Array.isArray(runtimeProposedNextAction)
-      ? {
-          active: true,
-          type: String(runtimeProposedNextAction.type ?? '').trim() || null,
-          actionCapability: String(runtimeProposedNextAction.action?.capability ?? '').trim() || null,
-          choices: Array.isArray(runtimeProposedNextAction.choices)
-            ? runtimeProposedNextAction.choices
-                .map((choice) => ({
-                  id: String(choice?.id ?? '').trim(),
-                  label: String(choice?.label ?? '').trim(),
-                }))
-                .filter((choice) => choice.id && choice.label)
-                .slice(0, 5)
-            : null,
-          question:
-            typeof runtimeProposedNextAction.question === 'string' && runtimeProposedNextAction.question.trim()
-              ? truncateSmartModeContext(runtimeProposedNextAction.question.trim(), 240)
-              : null,
-          visibleReplySummary:
-            typeof runtimeProposedNextAction.visibleReplySummary === 'string' &&
-            runtimeProposedNextAction.visibleReplySummary.trim()
-              ? truncateSmartModeContext(runtimeProposedNextAction.visibleReplySummary.trim(), 300)
-              : null,
-        }
-      : null;
-
-  return {
-    smartModeEnabled: !!ctxSmartMode,
-    allowedCapabilities: Array.isArray(allowedCapabilities) ? allowedCapabilities : listCapabilitiesForInterpreter(),
-    currentUserMessage: truncateSmartModeContext(prompt, 4000),
-    previousUserMessageInThread,
-    lastAssistantVisible,
-    weeklyPlanExists: includeWeeklyPlanArtifactContext && weeklyPlanDraftHasMeaningfulContent(threadCtx.weeklyPlanDraft ?? {}),
-    weeklyPlanDraftCompact,
-    weeklyPlanMealsIndexed: weeklyPlanMealsIndexed || '(none)',
-    householdMemoriesCompact,
-    hasActiveProposedNextAction: !!activeProposedNextActionSummary,
-    activeProposedNextActionSummary,
-    recoveredPendingSummary,
-    bodyExecutePendingSummary,
-  };
-}
-
-const THREAD_SCENE_AUTO_FIELD_MAX = {
-  mission: 320,
-  openLoop: 220,
-  activeFoodContext: 220,
-  planningHorizon: 80,
-  conversationMode: 60,
-};
-
-function projectThreadSceneForSmartPrompt(threadScene) {
-  const o = threadScene && typeof threadScene === 'object' && !Array.isArray(threadScene) ? threadScene : {};
-  const projected = {
-    mission: typeof o.mission === 'string' ? o.mission.trim() : '',
-    openLoop: typeof o.openLoop === 'string' ? o.openLoop.trim() : '',
-    activeFoodContext:
-      typeof o.activeFoodContext === 'string'
-        ? o.activeFoodContext.trim()
-        : typeof o.activeMeal === 'string'
-          ? o.activeMeal.trim()
-          : '',
-    planningHorizon: typeof o.planningHorizon === 'string' ? o.planningHorizon.trim() : '',
-    conversationMode: typeof o.conversationMode === 'string' ? o.conversationMode.trim() : '',
-  };
-  for (const [key, max] of Object.entries(THREAD_SCENE_AUTO_FIELD_MAX)) {
-    projected[key] = String(projected[key] ?? '').slice(0, max);
-  }
-  return Object.fromEntries(Object.entries(projected).filter(([, value]) => String(value ?? '').trim() !== ''));
-}
-
-function formatThreadSceneForSmartPrompt(threadScene, maxChars = 1000) {
-  const projected = projectThreadSceneForSmartPrompt(threadScene);
-  return Object.keys(projected).length === 0
-    ? '(empty)'
-    : truncateSmartModeContext(JSON.stringify(projected), maxChars);
-}
-
-function pickPriorThreadSceneForAutoUpdater(threadScene) {
-  const projected = projectThreadSceneForSmartPrompt(threadScene);
-  return {
-    mission: typeof projected.mission === 'string' ? projected.mission : '',
-    openLoop: typeof projected.openLoop === 'string' ? projected.openLoop : '',
-    activeFoodContext: typeof projected.activeFoodContext === 'string' ? projected.activeFoodContext : '',
-    planningHorizon: typeof projected.planningHorizon === 'string' ? projected.planningHorizon : '',
-    conversationMode: typeof projected.conversationMode === 'string' ? projected.conversationMode : '',
-  };
-}
-
-function buildRecentConversationSnippetForSceneUpdater(recentConversation, maxChars = 3500) {
-  const lines = [];
-  let total = 0;
-  const slice = recentConversation.slice(-12);
-  for (const m of slice) {
-    const role = m.role === 'user' ? 'user' : 'assistant';
-    const text =
-      m.role === 'user'
-        ? `${String(m.name ?? 'user')}: ${String(m.content ?? '')}`
-        : stripStoredMessageContentForDisplay(String(m.content ?? ''));
-    const line = `[${role}] ${truncateSmartModeContext(text, 900)}`;
-    if (total + line.length > maxChars) break;
-    lines.push(line);
-    total += line.length + 1;
-  }
-  return lines.join('\n');
-}
-
-function validateThreadSceneAutoPatch(parsed) {
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const ALLOWED = new Set(['mission', 'openLoop', 'activeFoodContext', 'planningHorizon', 'conversationMode', 'activeMeal']);
-  const out = {};
-  for (const key of Object.keys(parsed)) {
-    if (!ALLOWED.has(key)) continue;
-    const normalizedKey = key === 'activeMeal' ? 'activeFoodContext' : key;
-    const v = parsed[key];
-    if (v === null || v === undefined) {
-      out[normalizedKey] = '';
-    } else if (typeof v === 'string') {
-      out[normalizedKey] = v.trim().slice(0, THREAD_SCENE_AUTO_FIELD_MAX[normalizedKey]);
-    } else if (typeof v === 'number' && Number.isFinite(v)) {
-      out[normalizedKey] = String(v).slice(0, THREAD_SCENE_AUTO_FIELD_MAX[normalizedKey]);
-    } else if (typeof v === 'boolean') {
-      out[normalizedKey] = v ? 'true' : '';
-    } else {
-      return null;
-    }
-  }
-  if (Object.keys(out).length === 0) return null;
-  return out;
-}
-
-/** Lightweight: user/assistant text suggests explicit pivot away from current thread work. */
-function threadScenePivotAbandonHint(combinedText) {
-  const s = String(combinedText ?? '');
-  return /\b(?:never mind|ignore that|forget that|changed my mind|stop|cancel)\b/i.test(s) ||
-    /\blet(?:'|’)?s do something else\b/i.test(s) ||
-    /\bwe(?:'|’)?re done with that\b/i.test(s) ||
-    /\bwe are done with that\b/i.test(s);
-}
-
-/**
- * Best-effort LLM merge of compact Smart thread memory only (never lastAction or other server keys).
- * Swallows all errors; does not block the HTTP response when invoked without await.
- * @param {object} params — must include smartModeEnabled; no-ops when false (Smart Mode off).
- */
-async function runThreadSceneAutoUpdaterAfterNormalChat(anthropic, params) {
-  if (!params.smartModeEnabled) return;
-  try {
-    const {
-      chatId,
-      householdId,
-      priorThreadScene,
-      routePrompt,
-      finalAssistantReply,
-      threadMealPlanSummary,
-      threadGrocerySummary,
-      householdMemoriesCompact,
-      recentConversationForContext,
-      trustedActionSummary,
-    } = params;
-    const priorFocus = pickPriorThreadSceneForAutoUpdater(priorThreadScene);
-    const snippet = buildRecentConversationSnippetForSceneUpdater(recentConversationForContext);
-    const payload = {
-      priorThreadScene: priorFocus,
-      threadMealPlanSummary: truncateSmartModeContext(String(threadMealPlanSummary ?? ''), 900),
-      threadGrocerySummary: truncateSmartModeContext(String(threadGrocerySummary ?? ''), 900),
-      householdMemoriesCompact: truncateSmartModeContext(String(householdMemoriesCompact ?? ''), 4000),
-      currentUserMessage: truncateSmartModeContext(String(routePrompt ?? ''), 4000),
-      finalAssistantReply: truncateSmartModeContext(String(finalAssistantReply ?? ''), 6000),
-      trustedActionSummary:
-        trustedActionSummary != null && String(trustedActionSummary).trim() !== ''
-          ? truncateSmartModeContext(String(trustedActionSummary), 500)
-          : null,
-      recentConversationSnippet: snippet,
-    };
-    const system = `You output ONLY one JSON object (no markdown, no code fences, no commentary).
-
-Allowed keys ONLY: "mission", "openLoop", "activeFoodContext", "planningHorizon", "conversationMode". Each value must be a string or null.
-- Short, practical strings; ground them in the supplied inputs only. Do not invent specifics.
-- Do NOT output arrays, nested objects, or any keys other than mission, openLoop, activeFoodContext, planningHorizon, conversationMode.
-- Do NOT output or guess lastAction, grocery counts, remember keys, or other server metadata.
-- The goal is a compact, current throughline for this chat, not a running scrapbook of every topic the user ever mentioned.
-- When the chat pivots, overwrite stale context with the newer throughline instead of carrying everything forward.
-
-Clearing rules (be conservative):
-- Finishing a subtask (e.g. a command succeeded) usually does NOT erase the thread’s overall mission. Do NOT clear the whole compact thread scene just because a command completed.
-- A successful command often resolves one open loop; you may clear or update openLoop when that step is clearly done. Do not assume the whole thread goal vanished.
-- Preserve mission unless the user clearly pivots, abandons the topic, or the broader goal is clearly complete. When uncertain, keep prior mission.
-- Preserve activeFoodContext when it still fits prior scene, meal/grocery summaries, or recent context; clear only with affirmative evidence it no longer applies.
-- Preserve planningHorizon and conversationMode when they still fit; clear them when the thread clearly pivots away.
-- Only clear a field when you have affirmative evidence it no longer applies; when uncertain, preserve prior values (re-output prior strings from priorThreadScene when needed).
-
-Field meanings:
-- mission: the thread’s overall goal or theme, or "" only when clearly none / abandoned.
-- openLoop: the next unresolved step or question, or "" when resolved or N/A.
-- activeFoodContext: current dish / ingredient / meal / event food focus if clearly implied, or "".
-- planningHorizon: compact timing scope like "tonight", "tomorrow", "this week", "holiday", or "".
-- conversationMode: one short label like "planning", "shopping", "cooking", "hosting", "advice", or "".`;
-
-    const callPurpose = 'thread_scene_auto_update';
-    const res = await createLoggedAnthropicMessage(anthropic, {
-      model: resolveAnthropicModelForCallPurpose(callPurpose),
-      max_tokens: 512,
-      system,
-      messages: [
-        {
-          role: 'user',
-          content: `Infer updated thread working state from this turn.\n\nContext (JSON):\n${JSON.stringify(payload)}`,
-        },
-      ],
-    }, {
-      householdId,
-      chatId,
-      smartModeEnabled: !!params.smartModeEnabled,
-      callSurface: 'background',
-      callPurpose,
-      webSearchEnabledAtCall: false,
-      usedWebSearchTool: false,
-    });
-    const blocks = res.content.filter((b) => b.type === 'text');
-    const raw = blocks.map((b) => b.text).join('\n').trim();
-    const parsed = parseJsonObjectFromModelText(raw);
-    const patch = validateThreadSceneAutoPatch(parsed);
-    if (!patch) return;
-    patch.activeMeal = '';
-
-    const trusted =
-      trustedActionSummary != null && String(trustedActionSummary).trim() !== '';
-
-    if (trusted) {
-      const priorMissionTrim = String(priorFocus.mission ?? '').trim();
-      if (
-        priorMissionTrim !== '' &&
-        Object.prototype.hasOwnProperty.call(patch, 'mission') &&
-        String(patch.mission ?? '').trim() === ''
-      ) {
-        const combinedTurn = `${String(routePrompt ?? '')}\n${String(finalAssistantReply ?? '')}`;
-        if (!threadScenePivotAbandonHint(combinedTurn)) {
-          patch.mission = priorFocus.mission;
-        }
-      }
-    }
-
-    const merged = {
-      mission: Object.prototype.hasOwnProperty.call(patch, 'mission') ? patch.mission : priorFocus.mission,
-      openLoop: Object.prototype.hasOwnProperty.call(patch, 'openLoop') ? patch.openLoop : priorFocus.openLoop,
-      activeFoodContext: Object.prototype.hasOwnProperty.call(patch, 'activeFoodContext')
-        ? patch.activeFoodContext
-        : priorFocus.activeFoodContext,
-      planningHorizon: Object.prototype.hasOwnProperty.call(patch, 'planningHorizon')
-        ? patch.planningHorizon
-        : priorFocus.planningHorizon,
-      conversationMode: Object.prototype.hasOwnProperty.call(patch, 'conversationMode')
-        ? patch.conversationMode
-        : priorFocus.conversationMode,
-    };
-    const hadPriorContent = ['mission', 'openLoop', 'activeFoodContext', 'planningHorizon', 'conversationMode'].some(
-      (k) => String(priorFocus[k] ?? '').trim() !== ''
-    );
-    const mergedAllEmpty = ['mission', 'openLoop', 'activeFoodContext', 'planningHorizon', 'conversationMode'].every(
-      (k) => String(merged[k] ?? '').trim() === ''
-    );
-    if (trusted && hadPriorContent && mergedAllEmpty) {
-      console.warn(
-        'Thread scene auto-update: rejected patch that would clear the compact thread scene after command success'
-      );
-      return;
-    }
-
-    await updateChatThreadScene(chatId, householdId, patch);
-  } catch (e) {
-    console.error('Thread scene auto-update failed:', e?.message || e);
-  }
-}
-
-function validateWeeklyPlanDraftModelOutput(parsed) {
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  if (parsed.no_update === true) return { noUpdate: true };
-  const patch = {};
-  if (Object.prototype.hasOwnProperty.call(parsed, 'label') && typeof parsed.label === 'string') {
-    patch.label = parsed.label;
-  }
-  if (Object.prototype.hasOwnProperty.call(parsed, 'meals') && Array.isArray(parsed.meals)) {
-    patch.meals = parsed.meals;
-  }
-  if (Object.prototype.hasOwnProperty.call(parsed, 'mealEdits') && Array.isArray(parsed.mealEdits)) {
-    patch.mealEdits = parsed.mealEdits;
-  }
-  if (Object.prototype.hasOwnProperty.call(parsed, 'notes') && typeof parsed.notes === 'string') {
-    patch.notes = parsed.notes;
-  }
-  if (Object.prototype.hasOwnProperty.call(parsed, 'status')) {
-    const st = String(parsed.status ?? '').trim().toLowerCase();
-    if (st === 'empty') patch.status = st;
-  }
-  if (Object.keys(patch).length === 0) return null;
-  return { noUpdate: false, patch };
-}
-
-/** Heuristic: attach Anthropic web search only when the user message likely needs live web context. */
-function shouldEnableWebSearchForPrompt(prompt) {
-  const s = String(prompt ?? '').trim();
-  if (!s) return false;
-
-  if (/https?:\/\/\S|www\.\S/i.test(s)) return true;
-
-  if (
-    /\b(?:current|latest|today|tonight|right now|this week|this year|live|breaking|as of|updated|recently|up to date|up-to-date|news|headlines)\b/i.test(
-      s
-    )
-  ) {
-    return true;
-  }
-
-  if (/\b(?:according to|per the|via)\s+[A-Z]/.test(s)) return true;
-
-  if (/\b(?:from|on|at)\s+(?:the\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/.test(s)) return true;
-
-  if (/\b(?:from|on)\s+(?:the\s+)?[A-Z][a-zA-Z]+(?:'s)?\s+(?:recipe|recipes|article|articles|guide|page|post)\b/.test(s)) {
-    return true;
-  }
-
-  if (
-    /\b[A-Z][a-z]+\s+[A-Z][a-z]+\b[\s\S]{0,240}\b(?:recipe|recipes|article|articles)\b/i.test(s)
-  ) {
-    return true;
-  }
-
-  return false;
 }
 
 async function requireHousehold(req, res, next) {
@@ -809,7 +342,7 @@ async function requireHousehold(req, res, next) {
 
 const COOKIE_NAME = 'kitchenbot_auth';
 const COOKIE_SECRET = process.env.KITCHENBOT_SECRET;
-const AUTH_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days
+const AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 if (!COOKIE_SECRET) {
   throw new Error('Missing KITCHENBOT_SECRET');
 }
@@ -1072,60 +605,6 @@ async function resolveAnthropicTargetHouseholdId(req, res, rawHouseholdId) {
   return req.householdId;
 }
 
-function normalizeRememberKey(raw) {
-  let s = String(raw ?? '').trim().toLowerCase();
-  s = s.replace(/\s+/g, ' ');
-  s = s.replace(/ /g, '_');
-  return s;
-}
-
-/** Strip outer backticks and one layer of matching surrounding quotes (wrapper-only; preserves inner content). */
-function stripOuterFormattingWrappers(text) {
-  let s = String(text ?? '').trim();
-  while (s.length >= 2 && s.startsWith('`') && s.endsWith('`')) {
-    s = s.slice(1, -1).trim();
-  }
-  if (s.length >= 2) {
-    const a = s[0];
-    const b = s[s.length - 1];
-    if ((a === '"' || a === "'") && a === b) {
-      s = s.slice(1, -1).trim();
-    }
-  }
-  return s;
-}
-
-/** Normalize remember key before DB persist (explicit !remember, pending, Settings). */
-function normalizeRememberKeyForStorage(raw) {
-  return normalizeRememberKey(stripOuterFormattingWrappers(String(raw ?? '')));
-}
-
-/** Normalize remember value before DB persist. */
-function normalizeRememberValueForStorage(raw) {
-  return stripOuterFormattingWrappers(String(raw ?? ''));
-}
-
-async function upsertHouseholdMemory(householdId, rawKey, rawValue) {
-  const key = normalizeRememberKeyForStorage(rawKey);
-  const value = normalizeRememberValueForStorage(rawValue);
-  await upsertMemory(householdId, key, value);
-}
-
-const THREAD_SCENE_REMEMBER_PREVIEW_MAX = 120;
-
-function threadSceneRememberValuePreview(value) {
-  const s = String(value ?? '');
-  if (s.length <= THREAD_SCENE_REMEMBER_PREVIEW_MAX) return s;
-  return s.slice(0, THREAD_SCENE_REMEMBER_PREVIEW_MAX - 1) + '…';
-}
-
-/** Trusted server-owned thread scene patch only; never throws upward. */
-function safeUpdateThreadScene(chatId, householdId, patch) {
-  return updateChatThreadScene(chatId, householdId, patch).catch((e) => {
-    console.error('safeUpdateThreadScene failed:', e?.message || e);
-  });
-}
-
 /** Strip hidden KitchenBot control markers from model text before streaming or persisting. */
 function stripKitchenBotHiddenMarkers(text) {
   let s = String(text ?? '').replace(/\[\[KB_[A-Z0-9_]+\]\]/g, '');
@@ -1139,735 +618,6 @@ function stripStoredMessageContentForDisplay(content) {
   return stripKitchenBotHiddenMarkers(String(content ?? ''));
 }
 
-/** Remove model-authored lines that duplicate the backend mixed-memory offer (narrow; only obvious offer/save dupes). */
-function stripModelAuthoredMemoryOfferLines(text) {
-  const lines = String(text ?? '').split('\n');
-  const out = [];
-  for (const line of lines) {
-    const t = line.trim();
-    if (!t) {
-      out.push(line);
-      continue;
-    }
-    if (/^If you want, I can save .+ so I remember it next time too\.?$/i.test(t)) continue;
-    if (/^Want me to save that as a household preference/i.test(t)) continue;
-    if (/^Want me to save the favorite /i.test(t)) continue;
-    if (/^If you want, I can save your tone preference /i.test(t)) continue;
-    if (/^If you want, I can save this \(/i.test(t)) continue;
-    if (/^If you want, I can save that \(/i.test(t)) continue;
-    if (/^Would you like me to save\b/i.test(t)) continue;
-    if (/^just confirm and I['']ll save it\.?$/i.test(t)) continue;
-    if (/^I can note that\b/i.test(t) && /\b(save it|save that|household memory|for future)\b/i.test(t)) continue;
-    out.push(line);
-  }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
-}
-
-/**
- * When no [[KB_OFFER_GROCERY_UPDATE]] was emitted, drop model lines that imply a real app grocery action or confirmable pending.
- * Also strips invitation-style grocery/shopping-list questions so users are not prompted to say "yes" with nothing to confirm.
- */
-function stripFakeGroceryOperationalLines(text) {
-  const lines = String(text ?? '').split('\n');
-  const out = [];
-  for (const line of lines) {
-    const t = line.trim();
-    // Tail uses \s+ so NBSP/other Unicode spaces between "Grocery", "List", and "tab" still match (model output).
-    const stripGroceryTabCtaLine =
-      /^If you(?:(?:'|\u2019)d like| want), I can(?:\s+also|\s+just)?\s+(?:add this to|add .+ to|update) (?:the )?Grocery\s+List\s+tab/i;
-    if (/^That's a command-backed action/i.test(t)) continue;
-    if (/^Want me to do that now\?/i.test(t)) continue;
-    if (/\bSay\s+yes\s+and\s+i(?:'|')ll\s+add\s+it\b/i.test(t)) continue;
-    if (/^I can run !grocerylist for you/i.test(t)) continue;
-    // Fake tab CTA: same opening as system prompt ("If you want,") plus small model drift ("If you'd like", "I can also add …").
-    if (stripGroceryTabCtaLine.test(t)) continue;
-    // False declarative tab writes when no real pending/execute path (caller only invokes this when no grocery pending).
-    if (
-      /^I(?:'|\u2019)?ll add\b.+\bto(?:\s+your|\s+the)?\s+Grocery\s+List\s+tab\s+now\b/i.test(t) ||
-      /^I(?:'|\u2019)?m adding\b.+\bto(?:\s+your|\s+the)?\s+Grocery\s+List\s+tab\s+now\b/i.test(t) ||
-      /^I will add\b.+\bto(?:\s+your|\s+the)?\s+Grocery\s+List\s+tab\s+now\b/i.test(t)
-    ) {
-      continue;
-    }
-    // Narrow CTA / confirmation invites (must mention grocery or shopping list); short lines only
-    if (t.length <= 320 && /\b(?:grocery|shopping)\s+list\b/i.test(t)) {
-      const asks = /\?\s*$/.test(t);
-      if (asks) {
-        if (
-          /\b(?:do you want|would you like)\s+(?:a\s+|the\s+|me\s+to\s+)?(?:a\s+)?(?:grocery|shopping)\s+list\b/i.test(t) ||
-          /\b(?:do you want|would you like)\s+me\s+to\b.*\b(?:grocery|shopping)\s+list\b/i.test(t) ||
-          /^want me to\b.*\b(?:grocery|shopping)\s+list\b/i.test(t) ||
-          /^(?:should i|can i|could i|shall i)\b.*\b(?:grocery|shopping)\s+list\b/i.test(t)
-        ) {
-          continue;
-        }
-      } else if (
-        /^want me to\s+(?:make|build|create|put together|add)\s+(?:a\s+|the\s+)?(?:grocery|shopping)\s+list\b/i.test(t) ||
-        /^let me know if\b.*\b(?:grocery|shopping)\s+list\b/i.test(t)
-      ) {
-        continue;
-      }
-    }
-    out.push(line);
-  }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
-}
-
-/**
- * When no [[KB_PENDING]] memory action is attached to this stream, drop model lines that invite
- * confirming a household-memory save (same trust model as stripFakeGroceryOperationalLines).
- */
-function stripFakeMemoryPendingOfferLines(text) {
-  const lines = String(text ?? '').split('\n');
-  const out = [];
-  for (const line of lines) {
-    const t = line.trim();
-    if (!t) {
-      out.push(line);
-      continue;
-    }
-    if (/^If you(?:'d)? like me to save it to household memory/i.test(t)) continue;
-    if (/^If you want, I can save .+ to household memory/i.test(t)) continue;
-    if (/^Would you like me to save .+ household memory/i.test(t)) continue;
-    if (/^Would you like me to save .+ to household memory/i.test(t)) continue;
-    if (/^If you confirm, I can save .+ household memory/i.test(t)) continue;
-    if (/^If you confirm, I can save .+ to household memory/i.test(t)) continue;
-    if (/^If you want this saved to household memory/i.test(t)) continue;
-    if (/^If you want that saved to household memory/i.test(t)) continue;
-    if (/^Want me to save .+ to household memory/i.test(t)) continue;
-    out.push(line);
-  }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
-}
-
-/** Minimal safety net for normal chat streaming: never persist fake saved-memory claims. */
-function scrubUnsavedMemoryClaimsInNormalChatReply(text) {
-  let s = String(text ?? '');
-  const ap = "['\u2019]";
-  s = s.replace(new RegExp(`\\bI${ap}ve noted that\\b`, 'gi'), 'You mentioned that');
-  s = s.replace(new RegExp(`\\bI${ap}ve noted\\b`, 'gi'), 'For this reply');
-  s = s.replace(new RegExp(`\\bI${ap}ll keep that in mind for future meals\\b`, 'gi'), 'For this reply only');
-  s = s.replace(new RegExp(`\\bI${ap}ll keep that in mind\\b`, 'gi'), 'For this reply only');
-  s = s.replace(new RegExp(`\\bI${ap}ll remember that next time\\b`, 'gi'), 'If you confirm saving it, I can remember that next time');
-  s = s.replace(new RegExp(`\\bI${ap}ll remember that for future\\b`, 'gi'), 'If you confirm saving it, I can remember that for future chats');
-  s = s.replace(new RegExp(`\\bI${ap}ve updated\\b[^.\\n]{0,120}preferences\\b`, 'gi'), 'I can update preferences if you confirm a save');
-  s = s.replace(new RegExp(`\\bI${ap}ve updated\\b`, 'gi'), 'I can offer to update');
-  s = s.replace(/\bI saved memory\b/gi, 'I can save to memory if you confirm');
-  s = s.replace(/\bI updated memory\b/gi, 'I can update memory if you confirm');
-  return s;
-}
-
-/** Merge a new memory fragment into an existing value; prefer semicolons between distinct facts (no comma-spliced dumps). */
-function mergeMemoryValuesForUpsert(existingRaw, incomingRaw) {
-  const existing = String(existingRaw ?? '').trim();
-  const incoming = String(incomingRaw ?? '').trim();
-  if (!incoming) return existing;
-  if (!existing) return incoming;
-  if (existing.toLowerCase() === incoming.toLowerCase()) return existing;
-  return `${existing}; ${incoming}`;
-}
-
-/**
- * When AI or NL proposes a value for a key that already exists, merge or reject duplicates.
- * @returns {string | null} null = skip offer / no change
- */
-function mergeMemoryProposalWithExisting(existingRaw, proposedRaw) {
-  const existing = String(existingRaw ?? '').trim();
-  const proposed = String(proposedRaw ?? '').trim();
-  if (!proposed) return null;
-  if (!existing) return proposed;
-  if (proposed.toLowerCase() === existing.toLowerCase()) return null;
-  if (proposed.toLowerCase().includes(existing.toLowerCase())) return proposed;
-  if (existing.toLowerCase().includes(proposed.toLowerCase()) && proposed.length >= 4) return null;
-  return mergeMemoryValuesForUpsert(existing, proposed);
-}
-
-/** Heuristic: leading clause before "remember that" looks like a non-memory primary ask. */
-function looksLikePrimaryNonMemoryTaskClause(beforeText) {
-  const t = String(beforeText ?? '').trim().toLowerCase();
-  if (t.length < 10) return false;
-  return (
-    /\b(generate|create|make|build|draft|write|plan|help\s+me|suggest|give\s+me|what\s+should\s+i|can\s+you\s+|how\s+do\s+i|explain|compare)\b/.test(t) ||
-    /\b(meal\s*plan|recipe|menu|grocery|shopping\s*list|week(?:'s)?\s+meals|dinners?|breakfast|lunch)\b/.test(t) ||
-    /\b(planning|plan)\s+(?:meals?|for)\b/.test(t) ||
-    /\bfor\s+this\s+week\b/.test(t)
-  );
-}
-
-/**
- * Merge a new preference fragment into an existing key when present in the memories map.
- * @param {Map<string, string>} memoriesByKey
- */
-function mergeIntoExistingPreferenceKey(prefKey, fragment, memoriesByKey) {
-  const k = normalizeRememberKey(prefKey);
-  const frag = String(fragment ?? '').trim();
-  if (!k || !frag) return null;
-  if (memoriesByKey.has(k)) {
-    const merged = mergeMemoryProposalWithExisting(String(memoriesByKey.get(k) ?? ''), frag);
-    if (merged === null) return { key: k, value: String(memoriesByKey.get(k) ?? '') };
-    return { key: k, value: merged };
-  }
-  return { key: k, value: frag };
-}
-
-function mergeIntoHouseholdStaples(listFragment, memoriesByKey) {
-  const k = normalizeRememberKey('household_staples');
-  const frag = String(listFragment ?? '').trim().replace(/^[:,]\s*/, '');
-  if (!frag) return null;
-  if (memoriesByKey.has(k)) {
-    return { key: k, value: mergeMemoryValuesForUpsert(String(memoriesByKey.get(k) ?? ''), frag) };
-  }
-  return { key: k, value: frag };
-}
-
-/** AI or bad parsers sometimes emit sentence-shaped keys; never store those as-is. */
-function isSentenceLikeRememberKey(k) {
-  const s = String(k ?? '').trim();
-  if (!s) return true;
-  if (s.length > 48) return true;
-  const parts = s.split('_');
-  if (parts.length > 5) return true;
-  if (/^(that|our|my|the|remember|we|if|when|your)_/.test(s)) return true;
-  return false;
-}
-
-/**
- * Deterministic key/value from NL memory payload; prefers existing household keys when relevant.
- * `saved_note` is only used when the fact does not fit a stable category and existing-key hints.
- * @param {Map<string, string>} memoriesByKey
- * @returns {null | { key: string, value: string }}
- */
-function inferRememberKeyAndValueFromPayload(payload, memoriesByKey = new Map()) {
-  let p = String(payload ?? '').trim();
-  if (!p) return null;
-  p = p.slice(0, 500);
-
-  let m = p.match(/\b(?:your\s+)?(?:writing\s+)?tone\s+should\s+be\s+(.+)$/i);
-  if (m) return { key: normalizeRememberKey('tone'), value: m[1].trim() };
-  m = p.match(/\b(?:your\s+)?(?:writing\s+)?tone\s+is\s+(.+)$/i);
-  if (m) return { key: normalizeRememberKey('tone'), value: m[1].trim() };
-  m = p.match(/\b(?:writing\s+)?style\s+should\s+be\s+(.+)$/i);
-  if (m) return { key: normalizeRememberKey('tone'), value: m[1].trim() };
-
-  m = p.match(/\bfavorite\s+(food|pasta|meal)\s+(?:is|should\s+be)\s+(.+)$/i);
-  if (m) return { key: normalizeRememberKey(`favorite_${m[1]}`), value: m[2].trim() };
-  m = p.match(/\bfavorite\s+(food|pasta|meal)\s+(.+)$/i);
-  if (m) return { key: normalizeRememberKey(`favorite_${m[1]}`), value: m[2].trim() };
-
-  m = p.match(/^([A-Za-z][a-z]{1,24})\s+does\s+not\s+like\s+(.+)$/i);
-  if (!m) m = p.match(/^([A-Za-z][a-z]{1,24})\s+doesn't\s+like\s+(.+)$/i);
-  if (m) {
-    const name = m[1].toLowerCase();
-    const thing = m[2].trim();
-    if (name && thing) {
-      return mergeIntoExistingPreferenceKey(`${name}_preferences`, `doesn't like ${thing}`, memoriesByKey);
-    }
-  }
-
-  m = p.match(/^that\s+([a-z][a-z0-9]{1,23})\s+loves\s+(.+)$/i);
-  if (!m) m = p.match(/^([a-z][a-z0-9]{1,23})\s+loves\s+(.+)$/i);
-  if (m) {
-    const name = m[1].toLowerCase();
-    const thing = m[2].trim();
-    if (name && thing) {
-      return mergeIntoExistingPreferenceKey(`${name}_preferences`, `loves ${thing}`, memoriesByKey);
-    }
-  }
-
-  m = p.match(/^that\s+([a-z][a-z0-9]{1,23})\s+hates\s+(.+)$/i);
-  if (!m) m = p.match(/^([a-z][a-z0-9]{1,23})\s+hates\s+(.+)$/i);
-  if (m) {
-    const name = m[1].toLowerCase();
-    const thing = m[2].trim();
-    if (name && thing) {
-      return mergeIntoExistingPreferenceKey(`${name}_preferences`, `hates ${thing}`, memoriesByKey);
-    }
-  }
-
-  m = p.match(/^our\s+child(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
-  if (!m) m = p.match(/^our\s+kid(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
-  if (!m) m = p.match(/^that\s+our\s+child(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
-  if (!m) m = p.match(/^that\s+our\s+kid(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
-  if (m) {
-    const v = m[1].trim();
-    if (v) {
-      const k = normalizeRememberKey('child_name');
-      return { key: k, value: v };
-    }
-  }
-
-  m = p.match(
-    /^that\s+our\s+household\s+always\s+has\s+(?:these\s+)?(?:items?|ingredients?)\s*:?\s*(.+)$/i
-  );
-  if (!m) m = p.match(/^our\s+household\s+always\s+has\s+(?:these\s+)?(?:items?|ingredients?)\s*:?\s*(.+)$/i);
-  if (!m) {
-    m = p.match(
-      /^that\s+our\s+kitchen\s+always\s+has\s+(?:these\s+)?(?:items?|ingredients?)\s*:?\s*(.+)$/i
-    );
-  }
-  if (!m) m = p.match(/^our\s+kitchen\s+always\s+has\s+(?:these\s+)?(?:items?|ingredients?)\s*:?\s*(.+)$/i);
-  if (!m) m = p.match(/^we\s+always\s+have\s+(.+)$/i);
-  if (m) {
-    const list = m[1].trim().replace(/^[:,]\s*/, '');
-    if (list) return mergeIntoHouseholdStaples(list, memoriesByKey);
-  }
-
-  if (memoriesByKey.has('household_staples') && looksLikeStaplesListFragment(p)) {
-    return mergeIntoHouseholdStaples(p, memoriesByKey);
-  }
-
-  if (memoriesByKey.has('child_name') && looksLikeChildNameUpdatePayload(p)) {
-    const v = extractChildNameFromPayload(p);
-    if (v) return { key: normalizeRememberKey('child_name'), value: v };
-  }
-
-  return { key: normalizeRememberKey('saved_note'), value: p };
-}
-
-/** Comma- or "and"-separated pantry-style list without a stronger pattern match. */
-function looksLikeStaplesListFragment(p) {
-  const t = String(p ?? '').trim().toLowerCase();
-  if (t.length < 8) return false;
-  if (/\b(olive\s+oil|vegetable\s+oil|salt|pepper|vinegar|ketchup|flour|sugar|butter)\b/.test(t)) {
-    return true;
-  }
-  return /,/.test(t) && t.split(',').length >= 2;
-}
-
-function looksLikeChildNameUpdatePayload(p) {
-  return /\bchild(?:'s|\u2019s)?\s+name\s+is\b/i.test(p) || /\bkid(?:'s|\u2019s)?\s+name\s+is\b/i.test(p);
-}
-
-function extractChildNameFromPayload(p) {
-  const m = String(p).match(/\b(?:child|kid)(?:'s|\u2019s)?\s+name\s+is\s+(.+)$/i);
-  return m ? m[1].trim().replace(/[.!?]+$/, '') : null;
-}
-
-/**
- * Extract memory payload from obvious NL phrases, or signal mixed intent (skip memory pending).
- * @returns {{ payload: string } | { mixed: true } | null}
- */
-function tryExtractNaturalLanguageRememberPayload(raw) {
-  const s = String(raw ?? '').trim();
-
-  const subordinate = s.match(/^(.{20,}?)\bremember(?:ing)?\s+that\s+(.+)$/is);
-  if (subordinate) {
-    const before = subordinate[1].trim();
-    const payload = subordinate[2].trim();
-    if (looksLikePrimaryNonMemoryTaskClause(before)) {
-      return { mixed: true };
-    }
-    if (payload) return { payload };
-  }
-
-  const anchoredPatterns = [
-    /^(?:please\s+)?remember\s+that\s+(.*)$/is,
-    /^(?:please\s+)?save\s+(?:this|it|that)\s+to\s+(?:household\s+)?memory\b[.:\s]*(?:[-—]\s*)?(.*)$/is,
-    /^(?:please\s+)?write\s+(?:this|it|that)\s+to\s+(?:household\s+)?memory\b[.:\s]*(?:[-—]\s*)?(.*)$/is,
-    /^(?:please\s+)?don['']t\s+forget\s+that\s+(.*)$/is,
-  ];
-  for (const re of anchoredPatterns) {
-    const m = s.match(re);
-    if (!m) continue;
-    let payload = (m[1] ?? '').trim();
-    if (payload) return { payload };
-    const stripped = s.replace(re, '').trim();
-    if (stripped) return { payload: stripped };
-  }
-  return null;
-}
-
-/** @returns {null | { key: string, value: string } | { error: string }} */
-function parseMemoryCommand(prompt) {
-  const trimmed = String(prompt ?? '').trim();
-  if (!/^!remember(\s|$)/i.test(trimmed)) return null;
-  const rest = trimmed.replace(/^!remember\s*/i, '').trim();
-  const eq = rest.indexOf('=');
-  if (eq === -1) {
-    return { error: 'Usage: !remember <key> = <value>' };
-  }
-  const rawKey = rest.slice(0, eq);
-  const rawVal = rest.slice(eq + 1);
-  const key = normalizeRememberKeyForStorage(rawKey);
-  const value = normalizeRememberValueForStorage(rawVal);
-  if (!key) {
-    return { error: 'Memory key cannot be empty.' };
-  }
-  if (!value) {
-    return { error: 'Memory value cannot be empty.' };
-  }
-  return { key, value };
-}
-
-function isMemoriesCommand(prompt) {
-  return prompt === '!memories';
-}
-
-/**
- * Private chat commands: reply goes only to the HTTP client (sender). No server-side
- * persistence for these exchanges and no broadcastToChat — other household members see no trace.
- * Shared commands use isSharedChatCommand (see below).
- */
-function isPrivateChatCommand(prompt) {
-  const p = String(prompt ?? '').trim();
-  if (p === '!help') return true;
-  if (isMemoriesCommand(p)) return true;
-  if (/^!love(?:\s|$)/.test(p)) return true;
-  return false;
-}
-
-function isGroceryListCommand(prompt) {
-  return String(prompt ?? '').trim() === '!grocerylist';
-}
-
-/** Shared chat commands: !remember (non-null memoryParsed) and !grocerylist — addMessage + broadcastToChat. */
-function isSharedChatCommand(prompt, memoryParsed) {
-  if (memoryParsed != null) return true;
-  if (isGroceryListCommand(prompt)) return true;
-  return false;
-}
-
-function getHelpReply() {
-  return [
-    'Memories & grocery',
-    '• !remember `<key>` = `<value>` — Save a memory',
-    '• !memories — List all memories',
-    '• !grocerylist — Build grocery list from this chat',
-    '',
-    '• !rename — Have KitchenBot choose a new name for this chat based on the chat context',
-    '• !rename `<string>` — Rename this chat manually',
-    '',
-    'Love & compliments',
-    '• !love `<display name>` — Temporarily boost that person\'s compliment chances',
-    '',
-    '• !help — Show this message',
-  ].join('\n');
-}
-
-/**
- * Follow-up preference lines only when `<name>_preferences` already exists (e.g. "also elle loves capers").
- * @param {Map<string, string>} memoriesByKey
- */
-function tryFollowUpPreferencePendingFromMemories(raw, memoriesByKey) {
-  if (!memoriesByKey || memoriesByKey.size === 0) return null;
-  const s = String(raw ?? '').trim();
-  if (s.length > 240) return null;
-  if (/\bremember(?:ing)?\s+that\b/i.test(s)) return null;
-
-  let m = s.match(/^\s*(?:also\s+)?([A-Za-z][a-z]{1,24})\s+(loves|likes)\s+(.+)$/i);
-  if (m) {
-    const nameRaw = m[1];
-    const verb = String(m[2] ?? '').toLowerCase();
-    const thing = String(m[3] ?? '').trim();
-    if (!thing) return null;
-    const key = normalizeRememberKey(`${nameRaw}_preferences`);
-    if (!memoriesByKey.has(key)) return null;
-    const existing = String(memoriesByKey.get(key) ?? '');
-    const fragment = verb === 'loves' ? `loves ${thing}` : `likes ${thing}`;
-    const merged = mergeMemoryProposalWithExisting(existing, fragment);
-    if (merged === null) return null;
-    return sanitizePendingAction({ command: '!remember', args: { key, value: merged } });
-  }
-
-  m = s.match(/^\s*(?:also\s+)?([A-Za-z][a-z]{1,24})\s+doesn['\u2019]t\s+like\s+(.+)$/i);
-  if (!m) m = s.match(/^\s*(?:also\s+)?([A-Za-z][a-z]{1,24})\s+does\s+not\s+like\s+(.+)$/i);
-  if (m) {
-    const nameRaw = m[1];
-    const thing = String(m[2] ?? '').trim();
-    if (!thing) return null;
-    const key = normalizeRememberKey(`${nameRaw}_preferences`);
-    if (!memoriesByKey.has(key)) return null;
-    const existing = String(memoriesByKey.get(key) ?? '');
-    const fragment = `doesn't like ${thing}`;
-    const merged = mergeMemoryProposalWithExisting(existing, fragment);
-    if (merged === null) return null;
-    return sanitizePendingAction({ command: '!remember', args: { key, value: merged } });
-  }
-
-  m = s.match(/^\s*(?:also\s+)?([A-Za-z][a-z]{1,24})\s+dislikes\s+(.+)$/i);
-  if (m) {
-    const nameRaw = m[1];
-    const thing = String(m[2] ?? '').trim();
-    if (!thing) return null;
-    const key = normalizeRememberKey(`${nameRaw}_preferences`);
-    if (!memoriesByKey.has(key)) return null;
-    const existing = String(memoriesByKey.get(key) ?? '');
-    const fragment = `dislikes ${thing}`;
-    const merged = mergeMemoryProposalWithExisting(existing, fragment);
-    if (merged === null) return null;
-    return sanitizePendingAction({ command: '!remember', args: { key, value: merged } });
-  }
-
-  return null;
-}
-
-/**
- * True when this thread already has a concrete grocery draft: persisted thread summary from a prior
- * !grocerylist run, a visible grocery-offer line in recent assistant text, or list-like assistant output.
- */
-function threadHasConcreteGroceryDraftForFollowUp(threadGrocerySummary, recentAssistantContents) {
-  if (String(threadGrocerySummary ?? '').trim().length > 0) return true;
-  const blob = recentAssistantContents.map((c) => stripKitchenBotHiddenMarkers(String(c ?? ''))).join('\n\n');
-  if (/If you want, I can (?:add this to|update) (?:the )?Grocery List tab/i.test(blob)) {
-    return true;
-  }
-  const lines = blob.split(/\n/).map((l) => l.trim()).filter(Boolean);
-  let score = 0;
-  for (const line of lines) {
-    if (/^\d+[\.\)]\s+\S/.test(line)) score++;
-    if (/^[-*•]\s+\S/.test(line)) score++;
-    if (/\|[^|]+\|[^|]+/.test(line)) score += 2;
-  }
-  return score >= 3;
-}
-
-/**
- * Deictic "add this to the tab/list" follow-ups — only after a draft exists (see threadHasConcreteGroceryDraftForFollowUp).
- * @returns {ReturnType<typeof sanitizePendingAction> | null}
- */
-function tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft) {
-  if (!hasGroceryDraft) return null;
-  const lower = String(raw ?? '').trim().toLowerCase();
-  // Only treat deictic tab/list phrasing as a grocery action when a concrete draft exists (thread summary, offer line, or list-like assistant output).
-  const deictic =
-    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+(?:to|on|into)\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower) ||
-    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
-    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?tab\b/.test(lower) ||
-    /\bcan\s+you\s+add\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)(?:\s+for\s+me)?\b/.test(lower) ||
-    /\bcan\s+you\s+add\s+(?:this|these|those|it|them)\s+to\s+the\s+tab\b/.test(lower) ||
-    /\bupdate\s+(?:the\s+)?grocery\s+list\s+tab\s+with\s+(?:this|that|these|those)\b/.test(lower) ||
-    /\bput\s+(?:this|these|those|it|them)\s+on\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower) ||
-    /\bmake\s+a\s+grocery\s+list\s+from\s+this\b/.test(lower) ||
-    /\bturn\s+this\s+into\s+(?:a\s+)?grocery\s+list\b/.test(lower);
-  if (!deictic) return null;
-  return sanitizePendingAction({ command: '!grocerylist' });
-}
-
-/**
- * @param {object} [intentOpts]
- * @param {boolean} [intentOpts.hasGroceryDraft]
- * @param {boolean} [intentOpts.smartModeEnabled] when true, grocery NL pending can match despite draft-suppression / meal-ideation blockers (still requires strong grocery phrasing)
- */
-function detectCommandIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(), intentOpts = {}) {
-  const raw = String(prompt ?? '').trim();
-  if (!raw) return { pendingAction: null, action: null };
-  if (raw.startsWith('!')) return { pendingAction: null, action: null };
-
-  const followUpFirst = tryFollowUpPreferencePendingFromMemories(raw, memoriesByKey);
-  if (followUpFirst) {
-    return {
-      pendingAction: followUpFirst,
-      action: { capability: 'memory.save', input: { key: followUpFirst.args.key, value: followUpFirst.args.value } },
-    };
-  }
-
-  const hasGroceryDraft = !!intentOpts.hasGroceryDraft;
-  const groceryFollow = tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft);
-  if (groceryFollow) {
-    return {
-      pendingAction: groceryFollow,
-      action: { capability: 'grocery.generate_and_commit', input: {} },
-    };
-  }
-
-  const lower = raw.toLowerCase();
-
-  const hasMealIdeationLanguage =
-    /\bhelp me think of\b/.test(lower) ||
-    /\bwhat should i make\b/.test(lower) ||
-    /\bmeal ideas?\b/.test(lower) ||
-    /\bplan meals?\b/.test(lower) ||
-    /\beasy meals?\b/.test(lower) ||
-    /\bdinners?\s+for\s+this\s+week\b/.test(lower);
-
-  // Grocery: draft-first — do not escalate NL to pending !grocerylist for list-for-recipe / format / show-me drafting.
-  const groceryDraftSuppression =
-    /\bshopping\s+list\s+for\b/.test(lower) ||
-    /\bgrocery\s+list\s+for\b/.test(lower) ||
-    /\bingredients\s+for\b/.test(lower) ||
-    /\bin\s+grocery\s+list\s+format\b/.test(lower) ||
-    /\bmake\s+something\s+up\b/.test(lower) ||
-    /\b(don't|do\s+not)\s+run\s+a\s+web\s+search\b/.test(lower) ||
-    /\bshow\s+me\b/.test(lower) ||
-    /\bwhat\s+would\s+i\s+need\b/.test(lower) ||
-    /\bwhat\s+ingredients\s+would\s+i\s+need\b/.test(lower);
-
-  const strongGroceryAppAction =
-    /\brun\s+!grocerylist\b/.test(lower) ||
-    /\b(?:add|put|push)\s+(?:this|these|those|it|them)\s+(?:to|on|into)\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower) ||
-    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
-    /\bupdate\s+(?:the\s+)?(?:grocery\s+list|grocery\s+list\s+tab)\b/.test(lower) ||
-    /\bcan\s+you\s+(?:add|update)\s+(?:this|these|those|it|them)?\s*(?:to|on)?\s*(?:the\s+)?(?:grocery\s+list(?:\s+for\s+me)?|grocery\s+list\s+tab)\b/.test(lower) ||
-    /\bcan\s+you\s+update\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
-    /\bput\s+(?:this|these|those|it|them)\s+on\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower);
-
-  const smartMode = !!intentOpts.smartModeEnabled;
-  const groceryNlBlockedByDraftOrMeal =
-    !smartMode && (groceryDraftSuppression || hasMealIdeationLanguage);
-  if (!groceryNlBlockedByDraftOrMeal && strongGroceryAppAction) {
-    return {
-      pendingAction: { command: '!grocerylist' },
-      action: { capability: 'grocery.generate_and_commit', input: {} },
-    };
-  }
-
-  const s = lower.trim();
-  const wantsHelpMenu =
-    /^help\s*[!?.]*$/.test(s) ||
-    /^what can you do\s*[!?.]*$/.test(s) ||
-    /\bhelp menu\b/.test(s) ||
-    /\bshow help\b/.test(s) ||
-    /\bshow\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
-    /\blist\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
-    /\bwhat\s+commands?\b/.test(s);
-  if (wantsHelpMenu) {
-    return { pendingAction: { command: '!help' }, action: { capability: 'help.show', input: {} } };
-  }
-
-  const renameManual = raw.match(/\brename(?:\s+this)?\s+chat\s+to\s+["“]?(.+?)["”]?\s*$/i);
-  if (renameManual) {
-    const title = String(renameManual[1] ?? '').trim().slice(0, 200);
-    if (title) {
-      return {
-        pendingAction: { command: '!rename', mode: 'manual', args: { title } },
-        action: { capability: 'chat.rename', input: { mode: 'manual', args: { title } } },
-      };
-    }
-  }
-  if (/\brename(?:\s+this)?\s+chat\b/i.test(raw)) {
-    return { pendingAction: { command: '!rename', mode: 'auto' }, action: { capability: 'chat.rename', input: { mode: 'auto' } } };
-  }
-
-  const rememberMatch = raw.match(/\bremember\b\s+([a-zA-Z0-9 _-]{1,60})\s*(?:=|:|\bis\b)\s*(.+)$/i);
-  if (rememberMatch) {
-    const key = normalizeRememberKey(rememberMatch[1]);
-    const value = String(rememberMatch[2] ?? '').trim();
-    if (key && value) {
-      return {
-        pendingAction: { command: '!remember', args: { key, value } },
-        action: { capability: 'memory.save', input: { key, value } },
-      };
-    }
-  }
-
-  const nlRemember = tryExtractNaturalLanguageRememberPayload(raw);
-  if (nlRemember && 'mixed' in nlRemember && nlRemember.mixed) {
-    return { pendingAction: null, action: null };
-  }
-  if (nlRemember && 'payload' in nlRemember) {
-    const inferred = inferRememberKeyAndValueFromPayload(nlRemember.payload, memoriesByKey);
-    if (inferred?.key && inferred?.value) {
-      return {
-        pendingAction: { command: '!remember', args: { key: inferred.key, value: inferred.value } },
-        action: { capability: 'memory.save', input: { key: inferred.key, value: inferred.value } },
-      };
-    }
-  }
-  return { pendingAction: null, action: null };
-}
-
-function detectSmartActionIntentFromNaturalLanguage(prompt, memoriesByKey = new Map(), intentOpts = {}) {
-  const raw = String(prompt ?? '').trim();
-  if (!raw || raw.startsWith('!')) return null;
-
-  const followUpFirst = tryFollowUpPreferencePendingFromMemories(raw, memoriesByKey);
-  if (followUpFirst) {
-    return { capability: 'memory.save', input: { key: followUpFirst.args.key, value: followUpFirst.args.value } };
-  }
-
-  const hasGroceryDraft = !!intentOpts.hasGroceryDraft;
-  const groceryFollow = tryGroceryTabDeicticFollowUpPending(raw, hasGroceryDraft);
-  if (groceryFollow) {
-    return { capability: 'grocery.generate_and_commit', input: {} };
-  }
-
-  const lower = raw.toLowerCase();
-  const strongGroceryAppAction =
-    /\brun\s+!grocerylist\b/.test(lower) ||
-    /\b(?:add|put|push)\s+(?:this|these|those|it|them)\s+(?:to|on|into)\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower) ||
-    /\b(?:add|put)\s+(?:this|these|those|it|them)\s+to\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
-    /\bupdate\s+(?:the\s+)?(?:grocery\s+list|grocery\s+list\s+tab)\b/.test(lower) ||
-    /\bcan\s+you\s+(?:add|update)\s+(?:this|these|those|it|them)?\s*(?:to|on)?\s*(?:the\s+)?(?:grocery\s+list(?:\s+for\s+me)?|grocery\s+list\s+tab)\b/.test(lower) ||
-    /\bcan\s+you\s+update\s+(?:the\s+)?grocery\s+list\s+tab\b/.test(lower) ||
-    /\bput\s+(?:this|these|those|it|them)\s+on\s+(?:the\s+)?(?:grocery\s+list|shopping\s+list)\b/.test(lower);
-  if (strongGroceryAppAction) {
-    return { capability: 'grocery.generate_and_commit', input: {} };
-  }
-
-  const s = lower.trim();
-  const wantsHelpMenu =
-    /^help\s*[!?.]*$/.test(s) ||
-    /^what can you do\s*[!?.]*$/.test(s) ||
-    /\bhelp menu\b/.test(s) ||
-    /\bshow help\b/.test(s) ||
-    /\bshow\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
-    /\blist\s+(?:me\s+)?(?:the\s+)?commands?\b/.test(s) ||
-    /\bwhat\s+commands?\b/.test(s);
-  if (wantsHelpMenu) {
-    return { capability: 'help.show', input: {} };
-  }
-
-  const renameManual = raw.match(/\brename(?:\s+this)?\s+chat\s+to\s+["“]?(.+?)["”]?\s*$/i);
-  if (renameManual) {
-    const title = String(renameManual[1] ?? '').trim().slice(0, 200);
-    if (title) {
-      return { capability: 'chat.rename', input: { mode: 'manual', args: { title } } };
-    }
-  }
-  if (/\brename(?:\s+this)?\s+chat\b/i.test(raw)) {
-    return { capability: 'chat.rename', input: { mode: 'auto' } };
-  }
-
-  const rememberMatch = raw.match(/\bremember\b\s+([a-zA-Z0-9 _-]{1,60})\s*(?:=|:|\bis\b)\s*(.+)$/i);
-  if (rememberMatch) {
-    const key = normalizeRememberKey(rememberMatch[1]);
-    const value = String(rememberMatch[2] ?? '').trim();
-    if (key && value) {
-      return { capability: 'memory.save', input: { key, value } };
-    }
-  }
-
-  const nlRemember = tryExtractNaturalLanguageRememberPayload(raw);
-  if (nlRemember && 'mixed' in nlRemember && nlRemember.mixed) {
-    return null;
-  }
-  if (nlRemember && 'payload' in nlRemember) {
-    const inferred = inferRememberKeyAndValueFromPayload(nlRemember.payload, memoriesByKey);
-    if (inferred?.key && inferred?.value) {
-      return { capability: 'memory.save', input: { key: inferred.key, value: inferred.value } };
-    }
-  }
-
-  return null;
-}
-
-function buildLegacyCommandGuidanceReply(pendingAction) {
-  const action = sanitizePendingAction(pendingAction);
-  if (!action) return 'I can help with chat here, and app changes happen through the explicit commands.';
-
-  if (action.command === '!grocerylist') {
-    return "I can't update the Grocery List from a normal chat message, but you can type `!grocerylist` and I'll build it there.";
-  }
-  if (action.command === '!remember') {
-    const key = String(action.args?.key ?? '').trim();
-    const value = String(action.args?.value ?? '').trim();
-    if (key && value) {
-      return `I can't save that to household memory from a normal chat message, but you can type \`!remember ${key} = ${value}\`.`;
-    }
-    return "I can't save that to household memory from a normal chat message, but you can type `!remember key = value`.";
-  }
-  if (action.command === '!rename') {
-    const title = String(action.args?.title ?? '').trim();
-    if (title) {
-      return `I can't rename the chat from a normal chat message, but you can type \`!rename ${title}\`.`;
-    }
-    return "I can't rename the chat from a normal chat message, but you can type `!rename`.";
-  }
-  if (action.command === '!help') {
-    return 'You can type `!help` any time to see the commands I support.';
-  }
-  return 'That kind of app change needs an explicit command here.';
-}
 
 
 function parseThreadGrocerySummaryKeys(summaryText) {
@@ -1885,35 +635,11 @@ function parseThreadGrocerySummaryKeys(summaryText) {
     if (!candidate) continue;
     candidate = candidate.replace(/\(.*?\)/g, '').trim();
     if (!candidate) continue;
-    const k = normalizeGroceryNameKey(candidate);
+    const k = normalizeInventoryNameKey(candidate);
     if (k) keys.add(k);
   }
   return keys;
 }
-
-const compliments = [
-  "you have a cute butt",
-  "you are an awesome mother",
-  "you look great today",
-  "you have excellent taste in food",
-  "you make this house run",
-  "you are extremely charming",
-  "you are ridiculously thoughtful",
-  "you are the hottest dog-walker in the neighborhood"
-];
-
-const complimentTemplates = [
-  "Oh and %s.",
-  "Also, %s.",
-  "By the way, %s.",
-  "Quick aside: %s.",
-  "Unrelated, but %s.",
-  "%s btw.",
-  "Small note: %s.",
-  "And just so you know, %s.",
-  "Before I forget: %s.",
-  "One more thing — %s."
-];
 
 app.use(express.json());
 app.use(express.static('public'));
@@ -2037,7 +763,7 @@ app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdmin
       householdId: Number(row.household_id),
       householdName: householdNameById.get(Number(row.household_id)) || `Household ${row.household_id}`,
       chatId: row.chat_id != null ? Number(row.chat_id) : null,
-      smartModeEnabled: Number(row.smart_mode_enabled) === 1,
+      runtimeEnabled: Number(row.runtime_enabled ?? 1) === 1,
       callSurface: row.call_surface,
       callPurpose: row.call_purpose,
       bucket: classifyUsageBucket(row.call_purpose),
@@ -2839,8 +1565,10 @@ app.get('/', (req, res) => {
         .tab-button {
           flex: 1;
           justify-content: center;
+          white-space: nowrap;
           border-radius: 999px;
           font-size: 13px;
+          line-height: 1.1;
           padding-block: 7px;
           border: 1px solid rgba(148, 163, 184, 0.7);
           background: rgba(255, 255, 255, 0.7);
@@ -3029,6 +1757,7 @@ app.get('/', (req, res) => {
         }
 
         #settings-panel input[type='text'],
+        #settings-panel input[type='number'],
         #settings-panel input[type='password'],
         #settings-panel select {
           padding: 9px 12px;
@@ -3036,6 +1765,17 @@ app.get('/', (req, res) => {
           border: 1px solid var(--border-subtle);
           font-size: 14px;
           background: rgba(255, 255, 255, 0.95);
+        }
+
+        #settings-panel input[type='number'] {
+          appearance: textfield;
+          -moz-appearance: textfield;
+        }
+
+        #settings-panel input[type='number']::-webkit-outer-spin-button,
+        #settings-panel input[type='number']::-webkit-inner-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
         }
 
         #settings-panel label {
@@ -3245,7 +1985,6 @@ app.get('/', (req, res) => {
           gap: 6px;
           width: 100%;
         }
-
 
         .settings-user-inline-controls label,
         .settings-user-inline-controls span {
@@ -3495,7 +2234,8 @@ app.get('/', (req, res) => {
           font-size: 14px;
         }
 
-        #grocery-sections {
+        #grocery-sections,
+        #pantry-sections {
           display: flex;
           flex-direction: column;
           gap: 12px;
@@ -3532,6 +2272,19 @@ app.get('/', (req, res) => {
           display: flex;
           align-items: center;
           gap: 6px;
+          min-width: 0;
+          flex: 1;
+        }
+
+        .g-text-wrap {
+          min-width: 0;
+        }
+
+        .g-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-left: auto;
         }
 
         .g-item input[type='checkbox'] {
@@ -3986,7 +2739,7 @@ app.get('/', (req, res) => {
         <button id="menu-button" aria-label="Open chat history">☰</button>
         <div id="tab-bar" class="tab-bar">
           <button id="tab-chat" class="tab-button tab-active">Chat</button>
-          <button id="tab-groceries" class="tab-button">Grocery List</button>
+          <button id="tab-groceries" class="tab-button">Kitchen</button>
           <button id="tab-settings" type="button" class="tab-button" style="display: none;">Settings</button>
         </div>
       </div>
@@ -4073,52 +2826,110 @@ app.get('/', (req, res) => {
         <div id="typing-indicator" aria-live="polite"></div>
 
         <div id="grocery-panel" class="panel" style="display:none;">
-          <div id="grocery-manual-add">
-            <label for="grocery-add-name" style="font-size:13px;color:var(--text-soft);">Add item</label>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;">
-              <input id="grocery-add-name" type="text" placeholder="Item name" autocomplete="off" style="min-width:140px;flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:14px;" />
-              <input id="grocery-add-amount" type="text" placeholder="Amount (optional)" autocomplete="off" style="min-width:100px;padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:14px;" />
-              <label for="grocery-add-section" style="font-size:13px;color:var(--text-soft);">Section</label>
-              <select id="grocery-add-section" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:14px;">
-                <option value="produce">Produce</option>
-                <option value="meat">Meat</option>
-                <option value="dairy">Dairy</option>
-                <option value="frozen">Frozen</option>
-                <option value="dry">Dry</option>
-                <option value="other" selected>Other</option>
-              </select>
-              <button type="button" id="grocery-add-submit">Add</button>
+          <div id="grocery-subtabs" style="display:flex;gap:8px;margin-bottom:14px;">
+            <button id="grocery-subtab-list" type="button" class="settings-subtab-btn settings-subtab-active">Grocery List</button>
+            <button id="grocery-subtab-pantry" type="button" class="settings-subtab-btn">Pantry</button>
+          </div>
+          <div id="grocery-subview-list" class="grocery-subview">
+            <div id="grocery-manual-add">
+              <label for="grocery-add-name" style="font-size:13px;color:var(--text-soft);">Add item</label>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;">
+                <input id="grocery-add-name" type="text" placeholder="Item name" autocomplete="off" style="min-width:140px;flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:14px;" />
+                <input id="grocery-add-amount" type="text" placeholder="Amount (optional)" autocomplete="off" style="min-width:100px;padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:14px;" />
+                <label for="grocery-add-section" style="font-size:13px;color:var(--text-soft);">Section</label>
+                <select id="grocery-add-section" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:14px;">
+                  <option value="" selected>Auto</option>
+                  <option value="produce">Produce</option>
+                  <option value="meat">Meat</option>
+                  <option value="dairy">Dairy</option>
+                  <option value="frozen">Frozen</option>
+                  <option value="dry">Dry</option>
+                  <option value="other">Other</option>
+                </select>
+                <button type="button" id="grocery-add-submit">Add</button>
+              </div>
+            </div>
+            <div id="grocery-sections">
+              <div class="g-section" data-section="produce">
+                <h3>Produce</h3>
+                <ul class="g-list" id="g-list-produce"></ul>
+              </div>
+              <div class="g-section" data-section="meat">
+                <h3>Meat</h3>
+                <ul class="g-list" id="g-list-meat"></ul>
+              </div>
+              <div class="g-section" data-section="dairy">
+                <h3>Dairy</h3>
+                <ul class="g-list" id="g-list-dairy"></ul>
+              </div>
+              <div class="g-section" data-section="frozen">
+                <h3>Frozen</h3>
+                <ul class="g-list" id="g-list-frozen"></ul>
+              </div>
+              <div class="g-section" data-section="dry">
+                <h3>Dry Goods</h3>
+                <ul class="g-list" id="g-list-dry"></ul>
+              </div>
+              <div class="g-section" data-section="other">
+                <h3>Other</h3>
+                <ul class="g-list" id="g-list-other"></ul>
+              </div>
+            </div>
+            <div id="grocery-actions">
+              <button id="grocery-refresh">Refresh list</button>
+              <button id="grocery-clear">Clear list</button>
             </div>
           </div>
-          <div id="grocery-sections">
-            <div class="g-section" data-section="produce">
-              <h3>Produce</h3>
-              <ul class="g-list" id="g-list-produce"></ul>
+          <div id="grocery-subview-pantry" class="grocery-subview" style="display:none;">
+            <div id="pantry-manual-add">
+              <label for="pantry-add-name" style="font-size:13px;color:var(--text-soft);">Add pantry item</label>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;">
+                <input id="pantry-add-name" type="text" placeholder="Item name" autocomplete="off" style="min-width:140px;flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:14px;" />
+                <input id="pantry-add-amount" type="text" placeholder="Amount (optional)" autocomplete="off" style="min-width:100px;padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:14px;" />
+                <label for="pantry-add-section" style="font-size:13px;color:var(--text-soft);">Section</label>
+                <select id="pantry-add-section" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:14px;">
+                  <option value="" selected>Auto</option>
+                  <option value="spices_herbs">Spices & Herbs</option>
+                  <option value="oils_vinegars">Oils, Vinegars & Cooking Liquids</option>
+                  <option value="baking">Baking</option>
+                  <option value="sweeteners">Sweeteners</option>
+                  <option value="condiments_sauces">Condiments & Sauces</option>
+                  <option value="pasta_grains_dry_goods">Pasta, Grains & Dry Goods</option>
+                  <option value="other_pantry">Other Pantry</option>
+                </select>
+                <button type="button" id="pantry-add-submit">Add</button>
+              </div>
             </div>
-            <div class="g-section" data-section="meat">
-              <h3>Meat</h3>
-              <ul class="g-list" id="g-list-meat"></ul>
+            <div id="pantry-sections">
+              <div class="g-section" data-section="spices_herbs">
+                <h3>Spices & Herbs</h3>
+                <ul class="g-list" id="p-list-spices_herbs"></ul>
+              </div>
+              <div class="g-section" data-section="oils_vinegars">
+                <h3>Oils, Vinegars & Cooking Liquids</h3>
+                <ul class="g-list" id="p-list-oils_vinegars"></ul>
+              </div>
+              <div class="g-section" data-section="baking">
+                <h3>Baking</h3>
+                <ul class="g-list" id="p-list-baking"></ul>
+              </div>
+              <div class="g-section" data-section="sweeteners">
+                <h3>Sweeteners</h3>
+                <ul class="g-list" id="p-list-sweeteners"></ul>
+              </div>
+              <div class="g-section" data-section="condiments_sauces">
+                <h3>Condiments & Sauces</h3>
+                <ul class="g-list" id="p-list-condiments_sauces"></ul>
+              </div>
+              <div class="g-section" data-section="pasta_grains_dry_goods">
+                <h3>Pasta, Grains & Dry Goods</h3>
+                <ul class="g-list" id="p-list-pasta_grains_dry_goods"></ul>
+              </div>
+              <div class="g-section" data-section="other_pantry">
+                <h3>Other Pantry</h3>
+                <ul class="g-list" id="p-list-other_pantry"></ul>
+              </div>
             </div>
-            <div class="g-section" data-section="dairy">
-              <h3>Dairy</h3>
-              <ul class="g-list" id="g-list-dairy"></ul>
-            </div>
-            <div class="g-section" data-section="frozen">
-              <h3>Frozen</h3>
-              <ul class="g-list" id="g-list-frozen"></ul>
-            </div>
-            <div class="g-section" data-section="dry">
-              <h3>Dry Goods</h3>
-              <ul class="g-list" id="g-list-dry"></ul>
-            </div>
-            <div class="g-section" data-section="other">
-              <h3>Other</h3>
-              <ul class="g-list" id="g-list-other"></ul>
-            </div>
-          </div>
-          <div id="grocery-actions">
-            <button id="grocery-refresh">Refresh list</button>
-            <button id="grocery-clear">Clear list</button>
           </div>
         </div>
 
@@ -4167,7 +2978,7 @@ app.get('/', (req, res) => {
                 <div class="settings-card-header">
                   <div>
                     <h3>Users</h3>
-                    <p class="settings-card-subtitle">Manage who can access this household and adjust their role, PIN, chat color, and compliments setting.</p>
+                    <p class="settings-card-subtitle">Manage who can access this household and adjust their role, PIN, and chat color.</p>
                   </div>
                 </div>
                 <div id="my-settings-users-list"></div>
@@ -4188,61 +2999,62 @@ app.get('/', (req, res) => {
                 <div class="settings-card-header">
                   <div>
                     <h3>Memory</h3>
-                    <p class="settings-card-subtitle">Legacy household memory applies to every chat. Smart durable memory is richer, user-editable, and only used when Smart Mode is on.</p>
+                    <p class="settings-card-subtitle">KitchenBot uses these saved notes across chats when they are relevant.</p>
                   </div>
                 </div>
-                <div style="display:flex; flex-direction:column; gap: 16px;">
-                  <div id="my-settings-smart-memories-wrap" style="display: none;">
-                    <h4 style="margin:0 0 6px;">Smart durable memory</h4>
+                <div class="settings-split-grid">
+                  <div id="my-settings-household-defaults-wrap">
+                    <h4 style="margin:0 0 6px;">Household defaults</h4>
                     <p class="settings-section-note">
-                      KitchenBot uses this to remember people and household preferences across Smart Mode chats.
+                      KitchenBot treats these as your household's default assumptions for dinner ideas and weeknight cooking.
                     </p>
-                    <div class="settings-memory-viewer">
-                      <div id="my-settings-smart-memories-list" style="font-size: 13px;"></div>
-                    </div>
-                    <div id="my-settings-smart-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin: 8px 0 0;"></div>
                     <div class="settings-memory-editor" style="margin-top: 12px;">
                       <div class="settings-form-row" style="margin-bottom:8px;">
                         <div class="settings-form-field" style="max-width: 180px;">
-                          <label for="my-settings-smart-memory-type">Save under</label>
-                          <select id="my-settings-smart-memory-type">
+                          <label for="my-settings-defaults-portions">Default dinner portions</label>
+                          <input id="my-settings-defaults-portions" type="number" min="1" max="24" step="1" autocomplete="off" placeholder="4" />
+                        </div>
+                        <div class="settings-form-field" style="max-width: 220px;">
+                          <label for="my-settings-defaults-style">Weeknight cooking style</label>
+                          <select id="my-settings-defaults-style">
+                            <option value="">No default</option>
+                            <option value="easy">easy</option>
+                            <option value="normal">normal</option>
+                            <option value="ambitious">ambitious</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div class="settings-actions-row">
+                        <button type="button" id="my-settings-defaults-save">Save defaults</button>
+                        <span id="my-settings-defaults-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="my-settings-entity-memories-wrap" style="display: none;">
+                    <h4 style="margin:0 0 6px;">People and household memory</h4>
+                    <p class="settings-section-note">
+                      KitchenBot uses this to remember people and household preferences across chats.
+                    </p>
+                    <div class="settings-memory-viewer">
+                      <div id="my-settings-entity-memories-list" style="font-size: 13px;"></div>
+                    </div>
+                    <div id="my-settings-entity-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin: 8px 0 0;"></div>
+                    <div class="settings-memory-editor" style="margin-top: 12px;">
+                      <div class="settings-form-row" style="margin-bottom:8px;">
+                        <div class="settings-form-field" style="max-width: 180px;">
+                          <label for="my-settings-memory-type">Save under</label>
+                          <select id="my-settings-memory-type">
                             <option value="person">person</option>
                             <option value="household_note">household_note</option>
                           </select>
                         </div>
                         <div class="settings-form-field" style="max-width: 220px;">
-                          <label for="my-settings-smart-memory-label">Person or label</label>
-                          <input id="my-settings-smart-memory-label" type="text" autocomplete="off" placeholder="e.g. Elle or concise recipes" />
+                          <label for="my-settings-memory-label">Person or label</label>
+                          <input id="my-settings-memory-label" type="text" autocomplete="off" placeholder="e.g. Elle or concise recipes" />
                         </div>
                         <div class="settings-form-field">
-                          <label for="my-settings-smart-memory-summary">Preference or note</label>
-                          <input id="my-settings-smart-memory-summary" type="text" autocomplete="off" placeholder="What KitchenBot should remember" />
-                        </div>
-                      </div>
-                      <div class="settings-actions-row">
-                        <button type="button" id="my-settings-smart-memory-save">Save</button>
-                        <button type="button" id="my-settings-smart-memory-cancel-edit" style="display: none;">Cancel</button>
-                      </div>
-                    </div>
-                  </div>
-                  <div id="my-settings-memories-wrap">
-                    <h4 style="margin:0 0 6px;">Legacy memories</h4>
-                    <p class="settings-section-note">
-                      These entries are included in chat context for everyone in this household.
-                    </p>
-                    <div class="settings-memory-viewer">
-                      <div id="my-settings-memories-list" style="font-size: 13px;"></div>
-                    </div>
-                    <div id="my-settings-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin: 8px 0 0;"></div>
-                    <div class="settings-memory-editor" style="margin-top: 12px;">
-                      <div class="settings-form-row" style="margin-bottom:8px;">
-                        <div class="settings-form-field" style="max-width: 220px;">
-                          <label for="my-settings-memory-key">Key</label>
-                          <input id="my-settings-memory-key" type="text" autocomplete="off" placeholder="e.g. dietary_notes" />
-                        </div>
-                        <div class="settings-form-field">
-                          <label for="my-settings-memory-value">Value</label>
-                          <input id="my-settings-memory-value" type="text" autocomplete="off" placeholder="Value" />
+                          <label for="my-settings-memory-summary">Preference or note</label>
+                          <input id="my-settings-memory-summary" type="text" autocomplete="off" placeholder="What KitchenBot should remember" />
                         </div>
                       </div>
                       <div class="settings-actions-row">
@@ -4401,7 +3213,7 @@ app.get('/', (req, res) => {
                 <div class="settings-card-header">
                   <div>
                     <h3>Household feature flags</h3>
-                    <p class="settings-card-subtitle">Adjust the two household-specific capability toggles that affect live model behavior.</p>
+                    <p class="settings-card-subtitle">Adjust the household-specific capability toggle that affects live model behavior.</p>
                   </div>
                 </div>
                 <div class="settings-inline-banner" style="margin-bottom: 12px;">
@@ -4415,19 +3227,6 @@ app.get('/', (req, res) => {
                   <div class="settings-actions-row" style="margin-top: 8px;">
                     <button type="button" id="admin-web-search-save">Save web search setting</button>
                     <span id="admin-web-search-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
-                  </div>
-                </div>
-                <div class="settings-inline-banner">
-                  <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px;">
-                    For the <strong>selected</strong> household only: Smart Mode enables the more agentic KitchenBot behavior while preserving the same underlying app permissions.
-                  </p>
-                  <label style="display: flex; align-items: flex-start; gap: 8px;">
-                    <input type="checkbox" id="admin-smart-mode-enabled" style="margin-top: 3px;" />
-                    <span>Enable Smart Mode for this household</span>
-                  </label>
-                  <div class="settings-actions-row" style="margin-top: 8px;">
-                    <button type="button" id="admin-smart-mode-save">Save Smart Mode</button>
-                    <span id="admin-smart-mode-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
                   </div>
                 </div>
               </section>
@@ -4453,7 +3252,7 @@ app.get('/', (req, res) => {
         </div>
 
         <div id="input-area">
-          <textarea id="prompt" placeholder="Ask KitchenBot or type !help" rows="1"></textarea>
+          <textarea id="prompt" placeholder="Ask KitchenBot" rows="1"></textarea>
           <button id="send" type="button" aria-label="Send">↑</button>
         </div>
       </div>
@@ -4486,10 +3285,18 @@ app.get('/', (req, res) => {
         const inputArea = document.getElementById('input-area');
         const groceryRefreshButton = document.getElementById('grocery-refresh');
         const groceryClearButton = document.getElementById('grocery-clear');
+        const grocerySubtabList = document.getElementById('grocery-subtab-list');
+        const grocerySubtabPantry = document.getElementById('grocery-subtab-pantry');
+        const grocerySubviewList = document.getElementById('grocery-subview-list');
+        const grocerySubviewPantry = document.getElementById('grocery-subview-pantry');
         const groceryAddName = document.getElementById('grocery-add-name');
         const groceryAddAmount = document.getElementById('grocery-add-amount');
         const groceryAddSection = document.getElementById('grocery-add-section');
         const groceryAddSubmit = document.getElementById('grocery-add-submit');
+        const pantryAddName = document.getElementById('pantry-add-name');
+        const pantryAddAmount = document.getElementById('pantry-add-amount');
+        const pantryAddSection = document.getElementById('pantry-add-section');
+        const pantryAddSubmit = document.getElementById('pantry-add-submit');
         const promptInput = document.getElementById('prompt');
         const sendButton = document.getElementById('send');
         const logoutButton = document.getElementById('logout');
@@ -4505,14 +3312,23 @@ app.get('/', (req, res) => {
           dry: document.getElementById('g-list-dry'),
           other: document.getElementById('g-list-other'),
         };
+        const pantryLists = {
+          spices_herbs: document.getElementById('p-list-spices_herbs'),
+          oils_vinegars: document.getElementById('p-list-oils_vinegars'),
+          baking: document.getElementById('p-list-baking'),
+          sweeteners: document.getElementById('p-list-sweeteners'),
+          condiments_sauces: document.getElementById('p-list-condiments_sauces'),
+          pasta_grains_dry_goods: document.getElementById('p-list-pasta_grains_dry_goods'),
+          other_pantry: document.getElementById('p-list-other_pantry'),
+        };
 
         let currentChatId = null;
         let currentUserName = null;
         let currentHouseholdId = null;
         let currentUserId = null;
         let isCurrentUserOwner = false;
+        let currentGroceriesSubview = 'list';
         let godModeReadOnly = false;
-        let editingMemoryKey = null;
         let editingSmartMemoryId = null;
         let editingSmartMemoryNoteIndex = null;
         /** Normalized display name (trim + lower) -> chat color key */
@@ -4557,8 +3373,6 @@ app.get('/', (req, res) => {
         let lastDeletedGrocery = null;
         let lastDeletedTimeout = null;
         let lastMePayload = null;
-        const pendingActionByChatId = new Map();
-        const serverManagedActionByChatId = new Map();
         /** Last persisted message count from /history per chat (DB rows only). */
         const lastPersistedMessageCountByChatId = new Map();
         /**
@@ -4567,229 +3381,6 @@ app.get('/', (req, res) => {
          */
         const ephemeralExchangesByChatId = new Map();
         const nextEphemeralSeqByChatId = new Map();
-
-        function isPendingActionAffirmative(text) {
-          const t = String(text ?? '').trim().toLowerCase();
-          const s = t.replace(/[!?.]/g, '').replace(/\s+/g, ' ').trim();
-          if (t.length > 120) return false;
-          if (
-            [
-              'yes',
-              'yep',
-              'yeah',
-              'sure',
-              'do it',
-              'run it',
-              'go ahead',
-              'sure go ahead',
-              'sure, go ahead',
-              'yes please',
-              'okay',
-              'ok',
-              'okay do it',
-              'ok do it',
-              'please do',
-              'yeah save it',
-              'yes save it',
-              'sure save it',
-              'yep save it',
-              'ok save it',
-              'okay save it',
-              'yes save the preference please',
-              'yeah save the preference please',
-              'sure save the preference please',
-              'yep save the preference please',
-              'ok save the preference please',
-              'okay save the preference please',
-            ].includes(s)
-          ) {
-            return true;
-          }
-          if (/^(yes|yeah|yep|sure|ok|okay)\s+save\s+it$/.test(s)) {
-            return true;
-          }
-          if (/^(yes|yeah|yep|sure|ok|okay)\s+save(\s+the)?\s+preference(\s+please)?$/.test(s)) {
-            return true;
-          }
-          if (
-            [
-              'add it',
-              'add them',
-              'update it',
-              'push it',
-              'push it over',
-            ].includes(s)
-          ) {
-            return true;
-          }
-          return /^(sure|yes|okay|ok)(?:,\s*|\s+)?(?:go ahead|do it|please)?$/.test(s);
-        }
-
-        function isPendingActionDecline(text) {
-          const t = String(text ?? '').trim().toLowerCase();
-          return ['no', 'nope', 'cancel', 'nevermind', 'never mind'].includes(t);
-        }
-
-        /** Vague affirmations that must not pick append/prune/replace for grocery_mode_choice. */
-        function isGroceryVagueOrAffirmative(t) {
-          const s = String(t ?? '').trim().toLowerCase();
-          if (!s) return false;
-          if (
-            [
-              'yes',
-              'yep',
-              'yeah',
-              'do it',
-              'run it',
-              'go ahead',
-              'update it',
-              'fix it',
-              'sure',
-              'ok',
-              'okay',
-            ].includes(s)
-          ) {
-            return true;
-          }
-          return /^(yes|sure|ok|okay)\s*[!?.]*\s*$/i.test(s);
-        }
-
-        function groceryPendingClarifyText(pending) {
-          const opts = pending && Array.isArray(pending.options) ? pending.options : [];
-          if (opts.some((o) => o.mode === 'prune')) {
-            return 'I can do that. Do you want me to keep the older items too, or remove the ones that no longer fit this version of the plan?';
-          }
-          if (opts.some((o) => o.mode === 'replace')) {
-            return "I can do that. Do you want me to start fresh with this week's ingredients, or keep what's already there and add these on top?";
-          }
-          return "I just need one quick choice so I update the right list behavior: add these on top, start fresh, keep both, or remove the swapped-out items.";
-        }
-
-        /** Replace (start fresh) intent for grocery_mode_choice — not used for vague affirmations (caller checks first). */
-        function groceryUserWantsReplace(t) {
-          const s = String(t ?? '').trim().toLowerCase();
-          if (!s) return false;
-          if (isGroceryVagueOrAffirmative(s)) return false;
-          if (s === 'new' || /^new\s*[!?.]*\s*$/i.test(s)) return true;
-          if (s === 'fresh' || /^fresh\s*[!?.]*\s*$/i.test(s)) return true;
-          if (s === 'replace' || /^replace\s*[!?.]*\s*$/i.test(s)) return true;
-          if (s === 'overwrite' || /^overwrite\s*[!?.]*\s*$/i.test(s)) return true;
-          const phrases = [
-            'start new',
-            'start a new',
-            'start a new one',
-            'start a new list',
-            'start a new grocery list',
-            'new list',
-            'new one',
-            'create a new one',
-            'create a new list',
-            'make a new one',
-            'make a new list',
-            'start fresh',
-            'start over',
-            'wipe it and start over',
-            'replace it',
-            'overwrite it',
-            "replace what's there",
-            'replace what’s there',
-          ];
-          for (const p of phrases) {
-            if (s.includes(p)) return true;
-          }
-          if (s.includes('replace what') && s.includes('there')) return true;
-          return false;
-        }
-
-        function resolvePendingActionFromUserReply(text, pending) {
-          const t = String(text ?? '').trim().toLowerCase();
-          if (!pending) return { kind: 'none', action: null };
-          if (isPendingActionDecline(t)) return { kind: 'decline', action: null };
-          if (Array.isArray(pending.options) && pending.options.length > 0) {
-            const options = pending.options;
-            const hasPrune = options.some((o) => String(o.mode || '') === 'prune');
-            const hasReplace = options.some((o) => String(o.mode || '') === 'replace');
-
-            const strictAppendToList =
-              /^\s*(add|append|keep)(\s*[!?.])?\s*$/i.test(t) ||
-              /^\s*keep\s*$/i.test(t) ||
-              /^\s*keep\s+both\s*$/i.test(t) ||
-              /\bkeep\s+both\b/i.test(t) ||
-              /\b(add|keep)\s+both\b/i.test(t) ||
-              /\bkeep\s+old\s+and\s+new\b/i.test(t) ||
-              /\bkeep\s+(?:them|old\s+items|everything|the\s+old(?:\s+items)?)\b/i.test(t) ||
-              /\bkeep\s+old\b/i.test(t) ||
-              /\badd\s+(?:to|these|it)\b/i.test(t) ||
-              /\badd\s+to\s+what(?:'|'|\u2019)s\s+(?:already\s+)?there\b/i.test(t) ||
-              /\badd\s+(?:them|these|those)\s+on\s+top\b/i.test(t) ||
-              /\bon\s+top\b/i.test(t) ||
-              /\bkeep\s+what(?:'|'|\u2019)s\s+there\s+and\s+add\b/i.test(t) ||
-              /\bkeep\s+what\s+is\s+there\s+and\s+add\b/i.test(t);
-
-            const mealPrune =
-              /\bprune\b/i.test(t) ||
-              /^\s*remove\s*[!?.]*\s*$/i.test(t) ||
-              /\bremove\s+the\s+ones\s+we\s+swapped\s+out\b/i.test(t) ||
-              /\bremove\s+old\b/i.test(t) ||
-              /\bremove\s+(?:old\s+items|swapped\s*-?\s*out\s+items|the\s+items\s+we\s+swapped\s+out)\b/i.test(t) ||
-              /\bremove\s+swapped/i.test(t) ||
-              /\b(swapped|swap)\s+them\s+out\b/i.test(t) ||
-              /\bclean\s+up\s+old\s+items\b/i.test(t) ||
-              /\breplace\s+old\s+items\b/i.test(t) ||
-              /\bswapped[- ]?out\b/i.test(t) ||
-              /\bdrop\s+old\b/i.test(t);
-
-            if (hasPrune) {
-              if (isGroceryVagueOrAffirmative(t)) return { kind: 'ambiguous', action: null };
-              if (mealPrune) {
-                return {
-                  kind: 'execute',
-                  action: options.find((o) => o.command === '!grocerylist' && o.mode === 'prune') || null,
-                };
-              }
-              if (strictAppendToList) {
-                return {
-                  kind: 'execute',
-                  action: options.find((o) => o.command === '!grocerylist' && o.mode === 'append') || null,
-                };
-              }
-              return { kind: 'none', action: null };
-            }
-
-            if (hasReplace) {
-              if (isGroceryVagueOrAffirmative(t)) {
-                return { kind: 'ambiguous', action: null };
-              }
-              const wantsReplace = groceryUserWantsReplace(t);
-              const replaceAction =
-                options.find(
-                  (o) =>
-                    String(o.command ?? '') === '!grocerylist' && String(o.mode ?? '') === 'replace'
-                ) || null;
-              if (wantsReplace) {
-                return {
-                  kind: 'execute',
-                  action: replaceAction,
-                };
-              }
-              if (strictAppendToList) {
-                return {
-                  kind: 'execute',
-                  action:
-                    options.find(
-                      (o) =>
-                        String(o.command ?? '') === '!grocerylist' && String(o.mode ?? '') === 'append'
-                    ) || null,
-                };
-              }
-              return { kind: 'none', action: null };
-            }
-
-            return { kind: 'none', action: null };
-          }
-          if (isPendingActionAffirmative(t)) return { kind: 'execute', action: pending };
-          return { kind: 'none', action: null };
-        }
 
         /** @returns {'God mode' | 'Demo mode' | 'Read-only mode'} */
         function impersonationReadOnlyModeLabel() {
@@ -4872,14 +3463,14 @@ app.get('/', (req, res) => {
           const gas = document.getElementById('settings-anthropic-owner-key-save');
           const sas = document.getElementById('settings-add-submit');
           const memSave = document.getElementById('my-settings-memory-save');
-          const smartMemSave = document.getElementById('my-settings-smart-memory-save');
+          const memorySaveButton = document.getElementById('my-settings-memory-save');
           const adminModeSave = document.getElementById('admin-anthropic-mode-save');
           const adminNewHh = document.getElementById('admin-new-hh-submit');
           const demoViewBtn = document.getElementById('settings-demo-view-btn');
           if (gas) gas.disabled = ro;
           if (sas) sas.disabled = ro;
           if (memSave) memSave.disabled = ro;
-          if (smartMemSave) smartMemSave.disabled = ro;
+          if (memorySaveButton) memorySaveButton.disabled = ro;
           if (demoViewBtn) demoViewBtn.disabled = ro;
           if (adminModeSave) adminModeSave.disabled = ro;
           if (adminNewHh) adminNewHh.disabled = ro;
@@ -4894,7 +3485,16 @@ app.get('/', (req, res) => {
           if (groceryAddSection) groceryAddSection.disabled = ro;
           if (groceryAddSubmit) groceryAddSubmit.disabled = ro;
           if (groceryClearButton) groceryClearButton.disabled = ro;
-          syncChatInputVisibility();
+          if (pantryAddName) {
+            pantryAddName.readOnly = ro;
+            pantryAddName.style.opacity = ro ? '0.65' : '';
+          }
+          if (pantryAddAmount) {
+            pantryAddAmount.readOnly = ro;
+            pantryAddAmount.style.opacity = ro ? '0.65' : '';
+          }
+          if (pantryAddSection) pantryAddSection.disabled = ro;
+          if (pantryAddSubmit) pantryAddSubmit.disabled = ro;
         }
 
         let typingWs = null;
@@ -4902,49 +3502,6 @@ app.get('/', (req, res) => {
         let typingStopTimeout = null;
         let weAreStreamingThisChat = false;
         let remoteStreamBodyEl = null;
-        let activeChatRequestId = null;
-        const CHAT_STATUS_MIN_DWELL_MS = 700;
-        let activeStatusText = '';
-        let activeStatusAppliedAtMs = 0;
-        let pendingStatusTimer = null;
-        let pendingStatusPayload = null;
-
-        function clearPendingStatusTimer() {
-          if (pendingStatusTimer) {
-            clearTimeout(pendingStatusTimer);
-            pendingStatusTimer = null;
-          }
-          pendingStatusPayload = null;
-        }
-
-        function applyStatusToBody(bodyEl, statusText) {
-          if (!bodyEl) return;
-          bodyEl.classList.add('kb-thinking', 'kb-thinking-anim');
-          bodyEl.textContent = statusText;
-          activeStatusText = statusText;
-          activeStatusAppliedAtMs = Date.now();
-          chat.scrollTop = chat.scrollHeight;
-        }
-
-        function scheduleOrApplyStatus(bodyEl, statusText) {
-          const now = Date.now();
-          const elapsed = now - activeStatusAppliedAtMs;
-          if (!activeStatusAppliedAtMs || elapsed >= CHAT_STATUS_MIN_DWELL_MS) {
-            clearPendingStatusTimer();
-            applyStatusToBody(bodyEl, statusText);
-            return;
-          }
-          pendingStatusPayload = { bodyEl, statusText };
-          if (pendingStatusTimer) return;
-          const waitMs = Math.max(20, CHAT_STATUS_MIN_DWELL_MS - elapsed);
-          pendingStatusTimer = setTimeout(() => {
-            pendingStatusTimer = null;
-            const next = pendingStatusPayload;
-            pendingStatusPayload = null;
-            if (!next) return;
-            applyStatusToBody(next.bodyEl, next.statusText);
-          }, waitMs);
-        }
 
         const headerEl = document.getElementById('header');
 
@@ -4962,6 +3519,19 @@ app.get('/', (req, res) => {
             return;
           }
           typingIndicator.textContent = formatTypingText(typingUsers);
+        }
+
+        function teardownRealtimeUi() {
+          if (typingWs) {
+            typingWs.close();
+            typingWs = null;
+          }
+          typingUsers.clear();
+          typingIndicator.textContent = '';
+          if (typingStopTimeout) clearTimeout(typingStopTimeout);
+          typingStopTimeout = null;
+          remoteStreamBodyEl = null;
+          weAreStreamingThisChat = false;
         }
 
         function sendTypingViewing() {
@@ -5034,44 +3604,6 @@ app.get('/', (req, res) => {
                   }
                   return;
                 }
-                if (msg.type === 'chat_status' && msgChatId === currentChatId) {
-                  if (msgHid != null && currentHouseholdId != null && msgHid !== Number(currentHouseholdId)) {
-                    return;
-                  }
-                  if (msg.requestId && activeChatRequestId && String(msg.requestId) !== String(activeChatRequestId)) {
-                    return;
-                  }
-                  if (msg.done) {
-                    clearPendingStatusTimer();
-                    if (remoteStreamBodyEl && remoteStreamBodyEl.classList.contains('kb-thinking')) {
-                      remoteStreamBodyEl.classList.remove('kb-thinking-anim');
-                    }
-                    return;
-                  }
-                  const statusText = String(msg.statusText || '').trim();
-                  if (!statusText) return;
-                  if (!remoteStreamBodyEl) {
-                    const wrap = document.createElement('div');
-                    wrap.className = 'message assistant';
-                    const author = document.createElement('span');
-                    author.className = 'message-author';
-                    author.textContent = 'KitchenBot';
-                    wrap.appendChild(author);
-                    const body = document.createElement('div');
-                    body.className = 'message-body kb-thinking kb-thinking-anim';
-                    body.textContent = statusText;
-                    wrap.appendChild(body);
-                    chat.appendChild(wrap);
-                    remoteStreamBodyEl = body;
-                    activeStatusText = statusText;
-                    activeStatusAppliedAtMs = Date.now();
-                    chat.scrollTop = chat.scrollHeight;
-                    return;
-                  }
-                  if (statusText === activeStatusText) return;
-                  scheduleOrApplyStatus(remoteStreamBodyEl, statusText);
-                  return;
-                }
                 if (msg.type === 'user_typing' || msg.type === 'user_stopped_typing') {
                   if (currentHouseholdId == null || !Number.isFinite(Number(currentHouseholdId))) return;
                   if (msgHid == null || msgHid !== Number(currentHouseholdId)) return;
@@ -5141,17 +3673,8 @@ app.get('/', (req, res) => {
           setActiveTab('chat');
         }
 
-        function isChatTabCurrentlyActive() {
-          return !!(tabChat && tabChat.classList.contains('tab-active'));
-        }
-
-        function syncChatInputVisibility() {
-          if (!inputArea) return;
-          inputArea.style.display = isChatTabCurrentlyActive() ? 'flex' : 'none';
-        }
-
         function setActiveTab(tab) {
-          clearMemoryUiMessage();
+          clearEntityMemoryUiMessage();
           tabChat.classList.toggle('tab-active', tab === 'chat');
           tabGroceries.classList.toggle('tab-active', tab === 'groceries');
           if (tabSettings) tabSettings.classList.toggle('tab-active', tab === 'settings');
@@ -5159,6 +3682,7 @@ app.get('/', (req, res) => {
           groceryPanel.style.display = tab === 'groceries' ? 'flex' : 'none';
           if (settingsPanel) settingsPanel.style.display = tab === 'settings' ? 'flex' : 'none';
           if (inputArea) inputArea.style.display = tab === 'chat' ? 'flex' : 'none';
+          if (tab === 'groceries') setGroceriesSubview(currentGroceriesSubview);
           if (tab === 'settings') loadSettingsPanel();
         }
 
@@ -5168,46 +3692,32 @@ app.get('/', (req, res) => {
           sidebarBackdrop.classList.remove('open');
         }
 
+        function syncEntityMemoriesWrapVisibility(runtimeEnabled) {
+          const w = document.getElementById('my-settings-entity-memories-wrap');
+          if (w) w.style.display = isCurrentUserOwner && runtimeEnabled ? '' : 'none';
+        }
+
         function syncMemoriesWrapVisibility() {
-          const w = document.getElementById('my-settings-memories-wrap');
-          if (w) w.style.display = isCurrentUserOwner ? '' : 'none';
+          syncEntityMemoriesWrapVisibility(true);
         }
 
-        function syncSmartMemoriesWrapVisibility(smartModeEnabled) {
-          const w = document.getElementById('my-settings-smart-memories-wrap');
-          if (w) w.style.display = isCurrentUserOwner && smartModeEnabled ? '' : 'none';
-        }
-
-        function clearMemoryUiMessage() {
-          const el = document.getElementById('my-settings-memories-msg');
+        function clearEntityMemoryUiMessage() {
+          const el = document.getElementById('my-settings-entity-memories-msg');
           if (el) el.textContent = '';
         }
 
-        function clearSmartMemoryUiMessage() {
-          const el = document.getElementById('my-settings-smart-memories-msg');
+        function clearHouseholdDefaultsUiMessage() {
+          const el = document.getElementById('my-settings-defaults-msg');
           if (el) el.textContent = '';
-        }
-
-        function resetMemoryEditForm() {
-          editingMemoryKey = null;
-          const keyIn = document.getElementById('my-settings-memory-key');
-          const valIn = document.getElementById('my-settings-memory-value');
-          const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
-          if (keyIn) {
-            keyIn.value = '';
-            keyIn.readOnly = false;
-          }
-          if (valIn) valIn.value = '';
-          if (cancelBtn) cancelBtn.style.display = 'none';
         }
 
         function resetSmartMemoryEditForm() {
           editingSmartMemoryId = null;
           editingSmartMemoryNoteIndex = null;
-          const typeIn = document.getElementById('my-settings-smart-memory-type');
-          const labelIn = document.getElementById('my-settings-smart-memory-label');
-          const summaryIn = document.getElementById('my-settings-smart-memory-summary');
-          const cancelBtn = document.getElementById('my-settings-smart-memory-cancel-edit');
+          const typeIn = document.getElementById('my-settings-memory-type');
+          const labelIn = document.getElementById('my-settings-memory-label');
+          const summaryIn = document.getElementById('my-settings-memory-summary');
+          const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
           if (typeIn) typeIn.value = 'person';
           if (labelIn) labelIn.value = '';
           if (summaryIn) summaryIn.value = '';
@@ -5229,107 +3739,22 @@ app.get('/', (req, res) => {
           return t;
         }
 
-        async function loadHouseholdMemoriesEditor() {
-          const listEl = document.getElementById('my-settings-memories-list');
-          const memMsg = document.getElementById('my-settings-memories-msg');
-          if (!listEl || !isCurrentUserOwner) return;
-          try {
-            const r = await fetch('/settings/household/memories');
-            if (!r.ok) {
-              listEl.innerHTML = '';
-              if (memMsg) memMsg.textContent = 'Could not load memories.';
-              return;
-            }
-            const data = await r.json();
-            listEl.innerHTML = '';
-            listEl.className = 'settings-memory-list';
-            const visibleMemories = (data.memories || []).filter((m) => m.key !== 'assistant_name');
-            if (!visibleMemories.length) {
-              const empty = document.createElement('div');
-              empty.className = 'settings-memory-empty';
-              empty.textContent = 'No legacy household memories saved yet.';
-              listEl.appendChild(empty);
-              if (memMsg) memMsg.textContent = '';
-              return;
-            }
-            for (const m of visibleMemories) {
-              const row = document.createElement('div');
-              row.className = 'settings-memory-row';
-              const kv = document.createElement('div');
-              kv.className = 'settings-memory-row-main';
-              const strong = document.createElement('strong');
-              strong.className = 'settings-memory-row-title';
-              strong.textContent = stripMemoryDisplayWrappers(m.key);
-              kv.appendChild(strong);
-              const span = document.createElement('span');
-              span.className = 'settings-memory-row-body';
-              span.textContent = stripMemoryDisplayWrappers(m.value);
-              kv.appendChild(span);
-              row.appendChild(kv);
-              const actions = document.createElement('div');
-              actions.className = 'settings-memory-actions';
-              const editBtn = document.createElement('button');
-              editBtn.type = 'button';
-              editBtn.textContent = 'Edit';
-              editBtn.addEventListener('click', () => {
-                editingMemoryKey = m.key;
-                const keyIn = document.getElementById('my-settings-memory-key');
-                const valIn = document.getElementById('my-settings-memory-value');
-                const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
-                if (keyIn) {
-                  keyIn.value = stripMemoryDisplayWrappers(m.key);
-                  keyIn.readOnly = true;
-                }
-                if (valIn) valIn.value = stripMemoryDisplayWrappers(m.value);
-                if (cancelBtn) cancelBtn.style.display = '';
-                clearMemoryUiMessage();
-              });
-              const delBtn = document.createElement('button');
-              delBtn.type = 'button';
-              delBtn.textContent = 'Delete';
-              delBtn.addEventListener('click', async () => {
-                if (!confirm('Delete memory "' + m.key + '"?')) return;
-                const dr = await fetch('/settings/household/memories/' + encodeURIComponent(m.key), {
-                  method: 'DELETE',
-                });
-                const errBody = await dr.json().catch(() => ({}));
-                if (memMsg) {
-                  memMsg.textContent = dr.ok
-                    ? 'Memory deleted.'
-                    : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
-                }
-                if (dr.ok) {
-                  resetMemoryEditForm();
-                  await loadHouseholdMemoriesEditor();
-                }
-              });
-              actions.appendChild(editBtn);
-              actions.appendChild(delBtn);
-              row.appendChild(actions);
-              listEl.appendChild(row);
-            }
-            if (memMsg) memMsg.textContent = '';
-          } catch (e) {
-            listEl.innerHTML = '';
-            if (memMsg) memMsg.textContent = 'Load failed.';
-          }
-        }
 
-        async function loadSmartDurableMemoriesEditor() {
-          const listEl = document.getElementById('my-settings-smart-memories-list');
-          const memMsg = document.getElementById('my-settings-smart-memories-msg');
+        async function loadMemoryNotesEditor() {
+          const listEl = document.getElementById('my-settings-entity-memories-list');
+          const memMsg = document.getElementById('my-settings-entity-memories-msg');
           if (!listEl || !isCurrentUserOwner) return;
           try {
-            const r = await fetch('/settings/household/smart-memories');
+            const r = await fetch('/settings/household/memory-notes');
             if (!r.ok) {
               listEl.innerHTML = '';
-              if (memMsg) memMsg.textContent = 'Could not load Smart durable memories.';
+              if (memMsg) memMsg.textContent = 'Could not load saved memories.';
               return;
             }
             const data = await r.json();
             listEl.innerHTML = '';
             listEl.className = 'settings-memory-list';
-            const all = Array.isArray(data.smartMemories) ? data.smartMemories : [];
+            const all = Array.isArray(data.memories) ? data.memories : [];
             const people = all.filter((m) => m.memoryType === 'person');
             const householdNotes = all.filter((m) => m.memoryType !== 'person');
 
@@ -5381,12 +3806,12 @@ app.get('/', (req, res) => {
               delPersonBtn.textContent = 'Delete person';
               delPersonBtn.addEventListener('click', async () => {
                 if (!confirm('Delete all Smart memory for "' + m.label + '"?')) return;
-                const dr = await fetch('/settings/household/smart-memories/' + encodeURIComponent(m.id), { method: 'DELETE' });
+                const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id), { method: 'DELETE' });
                 const errBody = await dr.json().catch(() => ({}));
                 if (memMsg) memMsg.textContent = dr.ok ? 'Person deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
                 if (dr.ok) {
                   resetSmartMemoryEditForm();
-                  await loadSmartDurableMemoriesEditor();
+                  await loadMemoryNotesEditor();
                 }
               });
               actions.appendChild(delPersonBtn);
@@ -5415,15 +3840,15 @@ app.get('/', (req, res) => {
                 editBtn.addEventListener('click', () => {
                   editingSmartMemoryId = m.id;
                   editingSmartMemoryNoteIndex = idx;
-                  const typeIn = document.getElementById('my-settings-smart-memory-type');
-                  const labelIn = document.getElementById('my-settings-smart-memory-label');
-                  const summaryIn = document.getElementById('my-settings-smart-memory-summary');
-                  const cancelBtn = document.getElementById('my-settings-smart-memory-cancel-edit');
+                  const typeIn = document.getElementById('my-settings-memory-type');
+                  const labelIn = document.getElementById('my-settings-memory-label');
+                  const summaryIn = document.getElementById('my-settings-memory-summary');
+                  const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
                   if (typeIn) typeIn.value = 'person';
                   if (labelIn) labelIn.value = m.label || '';
                   if (summaryIn) summaryIn.value = note && note.text ? note.text : '';
                   if (cancelBtn) cancelBtn.style.display = '';
-                  clearSmartMemoryUiMessage();
+                  clearEntityMemoryUiMessage();
                 });
                 noteActions.appendChild(editBtn);
                 const delBtn = document.createElement('button');
@@ -5431,12 +3856,12 @@ app.get('/', (req, res) => {
                 delBtn.textContent = 'Delete';
                 delBtn.addEventListener('click', async () => {
                   if (!confirm('Delete this saved note for "' + m.label + '"?')) return;
-                  const dr = await fetch('/settings/household/smart-memories/' + encodeURIComponent(m.id) + '?noteIndex=' + encodeURIComponent(idx), { method: 'DELETE' });
+                  const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id) + '?noteIndex=' + encodeURIComponent(idx), { method: 'DELETE' });
                   const errBody = await dr.json().catch(() => ({}));
                   if (memMsg) memMsg.textContent = dr.ok ? 'Saved note deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
                   if (dr.ok) {
                     resetSmartMemoryEditForm();
-                    await loadSmartDurableMemoriesEditor();
+                    await loadMemoryNotesEditor();
                   }
                 });
                 noteActions.appendChild(delBtn);
@@ -5481,15 +3906,15 @@ app.get('/', (req, res) => {
               editBtn.addEventListener('click', () => {
                 editingSmartMemoryId = m.id;
                 editingSmartMemoryNoteIndex = null;
-                const typeIn = document.getElementById('my-settings-smart-memory-type');
-                const labelIn = document.getElementById('my-settings-smart-memory-label');
-                const summaryIn = document.getElementById('my-settings-smart-memory-summary');
-                const cancelBtn = document.getElementById('my-settings-smart-memory-cancel-edit');
+                const typeIn = document.getElementById('my-settings-memory-type');
+                const labelIn = document.getElementById('my-settings-memory-label');
+                const summaryIn = document.getElementById('my-settings-memory-summary');
+                const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
                 if (typeIn) typeIn.value = 'household_note';
                 if (labelIn) labelIn.value = m.label || '';
                 if (summaryIn) summaryIn.value = m.summary || '';
                 if (cancelBtn) cancelBtn.style.display = '';
-                clearSmartMemoryUiMessage();
+                clearEntityMemoryUiMessage();
               });
               actions.appendChild(editBtn);
               const delBtn = document.createElement('button');
@@ -5497,12 +3922,12 @@ app.get('/', (req, res) => {
               delBtn.textContent = 'Delete';
               delBtn.addEventListener('click', async () => {
                 if (!confirm('Delete household preference "' + m.label + '"?')) return;
-                const dr = await fetch('/settings/household/smart-memories/' + encodeURIComponent(m.id), { method: 'DELETE' });
+                const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id), { method: 'DELETE' });
                 const errBody = await dr.json().catch(() => ({}));
                 if (memMsg) memMsg.textContent = dr.ok ? 'Household preference deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
                 if (dr.ok) {
                   resetSmartMemoryEditForm();
-                  await loadSmartDurableMemoriesEditor();
+                  await loadMemoryNotesEditor();
                 }
               });
               actions.appendChild(delBtn);
@@ -5514,6 +3939,30 @@ app.get('/', (req, res) => {
           } catch (e) {
             listEl.innerHTML = '';
             if (memMsg) memMsg.textContent = 'Load failed.';
+          }
+        }
+
+        async function loadHouseholdDefaultsEditor() {
+          const portionsEl = document.getElementById('my-settings-defaults-portions');
+          const styleEl = document.getElementById('my-settings-defaults-style');
+          const msgEl = document.getElementById('my-settings-defaults-msg');
+          if (!portionsEl || !styleEl || !isCurrentUserOwner) return;
+          try {
+            const r = await fetch('/settings/household/defaults');
+            if (!r.ok) {
+              if (msgEl) msgEl.textContent = 'Could not load household defaults.';
+              return;
+            }
+            const data = await r.json();
+            const defaults = data.defaults || {};
+            portionsEl.value =
+              defaults.defaultDinnerPortions == null || !Number.isFinite(Number(defaults.defaultDinnerPortions))
+                ? ''
+                : String(Number(defaults.defaultDinnerPortions));
+            styleEl.value = defaults.weeknightCookingStyle || '';
+            if (msgEl) msgEl.textContent = '';
+          } catch (e) {
+            if (msgEl) msgEl.textContent = 'Load failed.';
           }
         }
 
@@ -5532,7 +3981,7 @@ app.get('/', (req, res) => {
             const data = await r.json();
             isCurrentUserOwner = !!data.canManageHouseholdSettings;
             syncMemoriesWrapVisibility();
-            syncSmartMemoriesWrapVisibility(!!(data.household && data.household.smartModeEnabled));
+            syncEntityMemoriesWrapVisibility(true);
             nameEl.textContent = data.household.name;
             keyEl.textContent = data.household.key;
             rebuildDisplayNameToColorFromSettingsUsers(data.users);
@@ -5580,14 +4029,14 @@ app.get('/', (req, res) => {
                 roleBtn.disabled = true;
               } else {
                 roleSel.addEventListener('change', () => {
-                  clearMemoryUiMessage();
+                  clearEntityMemoryUiMessage();
                   roleFeedback.textContent = '';
                   syncRoleButtonState();
                 });
                 syncRoleButtonState();
               }
               roleBtn.addEventListener('click', async () => {
-                clearMemoryUiMessage();
+                clearEntityMemoryUiMessage();
                 const newRole = roleSel.value;
                 if (newRole === prevRole) {
                   roleFeedback.textContent = 'No changes';
@@ -5656,12 +4105,12 @@ app.get('/', (req, res) => {
               }
               syncPinButton();
               pinIn.addEventListener('input', () => {
-                clearMemoryUiMessage();
+                clearEntityMemoryUiMessage();
                 pinFeedback.textContent = '';
                 syncPinButton();
               });
               btn.addEventListener('click', async () => {
-                clearMemoryUiMessage();
+                clearEntityMemoryUiMessage();
                 if (pinSaving) return;
                 const pin = pinIn.value.trim();
                 if (!pin) {
@@ -5710,57 +4159,8 @@ app.get('/', (req, res) => {
               row.appendChild(label);
               row.appendChild(roleCol);
               row.appendChild(pinCol);
-              const complCol = document.createElement('div');
-              complCol.className = 'settings-user-row-role-col';
               const prefGrid = document.createElement('div');
               prefGrid.className = 'settings-user-pref-grid';
-              const complWrap = document.createElement('label');
-              complWrap.className = 'settings-user-pref-toggle';
-              const complChk = document.createElement('input');
-              complChk.type = 'checkbox';
-              complChk.checked = u.complimentsEnabled !== false;
-              const complFeedback = document.createElement('div');
-              complFeedback.className = 'settings-user-row-role-feedback';
-              complFeedback.setAttribute('aria-live', 'polite');
-              let complimentsSaving = false;
-              complChk.addEventListener('change', async () => {
-                clearMemoryUiMessage();
-                if (complimentsSaving) return;
-                const desired = complChk.checked;
-                complimentsSaving = true;
-                complChk.disabled = true;
-                complFeedback.textContent = '';
-                try {
-                  const rr = await fetch('/settings/household/users/' + u.id + '/compliments', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ complimentsEnabled: desired }),
-                  });
-                  const errBody = await rr.json().catch(() => ({}));
-                  if (rr.ok) {
-                    complFeedback.textContent = desired ? 'Compliments enabled' : 'Compliments disabled';
-                    complFeedback.style.color = 'var(--accent-strong)';
-                    row.classList.add('settings-user-row-role-flash');
-                    setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
-                  } else {
-                    complChk.checked = !desired;
-                    complFeedback.textContent =
-                      mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update compliments';
-                    complFeedback.style.color = '#b91c1c';
-                  }
-                } catch (e) {
-                  complChk.checked = !desired;
-                  complFeedback.textContent = 'Request failed';
-                  complFeedback.style.color = '#b91c1c';
-                } finally {
-                  complimentsSaving = false;
-                  complChk.disabled = false;
-                }
-              });
-              const complLbl = document.createElement('span');
-              complLbl.textContent = 'Compliments';
-              complWrap.appendChild(complChk);
-              complWrap.appendChild(complLbl);
               const colorCol = document.createElement('div');
               colorCol.className = 'settings-user-row-role-col';
               const colorWrap = document.createElement('div');
@@ -5782,7 +4182,7 @@ app.get('/', (req, res) => {
               colorFeedback.setAttribute('aria-live', 'polite');
               let chatColorSaving = false;
               colorSel.addEventListener('change', async () => {
-                clearMemoryUiMessage();
+                clearEntityMemoryUiMessage();
                 if (chatColorSaving) return;
                 const attempted = colorSel.value;
                 chatColorSaving = true;
@@ -5824,16 +4224,13 @@ app.get('/', (req, res) => {
               colorWrap.appendChild(colorSel);
               colorCol.appendChild(colorWrap);
               colorCol.appendChild(colorFeedback);
-              prefGrid.appendChild(complWrap);
-              prefGrid.appendChild(complFeedback);
               prefGrid.appendChild(colorCol);
-              complCol.appendChild(prefGrid);
-              row.appendChild(complCol);
+              row.appendChild(prefGrid);
               listEl.appendChild(row);
             }
             if (msgEl) msgEl.textContent = '';
-            await loadHouseholdMemoriesEditor();
-            await loadSmartDurableMemoriesEditor();
+            await loadHouseholdDefaultsEditor();
+            await loadMemoryNotesEditor();
           } catch (e) {
             if (msgEl) msgEl.textContent = 'Load failed.';
           }
@@ -5859,7 +4256,7 @@ app.get('/', (req, res) => {
         }
 
         function showSettingsSubView(view) {
-          clearMemoryUiMessage();
+          clearEntityMemoryUiMessage();
           const myV = document.getElementById('settings-view-my');
           const adminV = document.getElementById('settings-view-admin');
           const myBtn = document.getElementById('settings-subtab-my-btn');
@@ -6139,7 +4536,13 @@ app.get('/', (req, res) => {
                       }
                       return;
                     }
-                    location.reload();
+                    const meR = await fetch('/me');
+                    if (!meR.ok) {
+                      showLogin();
+                      return;
+                    }
+                    const meData = await meR.json();
+                    await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
                   } catch (e) {
                     if (pinGlobalMsg) pinGlobalMsg.textContent = 'Request failed.';
                   }
@@ -6192,28 +4595,18 @@ app.get('/', (req, res) => {
             }
             const webSaveBtn = document.getElementById('admin-web-search-save');
             if (webSaveBtn) webSaveBtn.disabled = godModeReadOnly;
-            const smartCb = document.getElementById('admin-smart-mode-enabled');
-            if (smartCb) {
-              smartCb.checked = !!d.household.smartModeEnabled;
-              smartCb.disabled = godModeReadOnly;
-            }
-            const smartSaveBtn = document.getElementById('admin-smart-mode-save');
-            if (smartSaveBtn) smartSaveBtn.disabled = godModeReadOnly;
             if (statEl) {
               statEl.textContent =
                 'Anthropic: ' +
                 (d.statusBrief || d.statusText || '') +
                 ' · Web search: ' +
                 (d.household.webSearchEnabled ? 'on' : 'off') +
-                ' · Smart Mode: ' +
-                (d.household.smartModeEnabled ? 'on' : 'off');
+                ' · Runtime: Smart only';
             }
             updateAdminAnthropicFormVisibility();
             if (msgEl) msgEl.textContent = '';
             const webMsg = document.getElementById('admin-web-search-msg');
             if (webMsg) webMsg.textContent = '';
-            const smartMsg = document.getElementById('admin-smart-mode-msg');
-            if (smartMsg) smartMsg.textContent = '';
           } catch (e) {}
         }
 
@@ -6261,11 +4654,6 @@ app.get('/', (req, res) => {
                 main.appendChild(meta);
                 const tags = document.createElement('div');
                 tags.className = 'settings-admin-household-tags';
-                const smartTag = document.createElement('span');
-                smartTag.className =
-                  'settings-admin-tag' + (hh.smartModeEnabled ? ' settings-admin-tag--on' : '');
-                smartTag.textContent = hh.smartModeEnabled ? 'Smart on' : 'Smart off';
-                tags.appendChild(smartTag);
                 const webTag = document.createElement('span');
                 webTag.className =
                   'settings-admin-tag' + (hh.webSearchEnabled ? ' settings-admin-tag--on' : '');
@@ -6534,6 +4922,7 @@ app.get('/', (req, res) => {
               left.appendChild(checkbox);
 
               const textContainer = document.createElement('div');
+              textContainer.className = 'g-text-wrap';
               const main = document.createElement('div');
               main.className = 'g-text-main';
               main.textContent = item.name;
@@ -6548,6 +4937,22 @@ app.get('/', (req, res) => {
               left.appendChild(textContainer);
 
               li.appendChild(left);
+
+              const actions = document.createElement('div');
+              actions.className = 'g-actions';
+
+              const moveBtn = document.createElement('button');
+              moveBtn.className = 'g-delete';
+              moveBtn.textContent = 'Move to pantry';
+              moveBtn.title = 'Move to Pantry';
+              moveBtn.disabled = godModeReadOnly;
+              moveBtn.addEventListener('click', async () => {
+                try {
+                  await fetch('/groceries/' + item.id + '/move-to-pantry', { method: 'POST' });
+                  await Promise.all([loadGroceries(), loadPantry()]);
+                } catch (e) {}
+              });
+              actions.appendChild(moveBtn);
 
               const del = document.createElement('button');
               del.className = 'g-delete';
@@ -6618,7 +5023,8 @@ app.get('/', (req, res) => {
                   lastDeletedTimeout = null;
                 }, 3000);
               });
-              li.appendChild(del);
+              actions.appendChild(del);
+              li.appendChild(actions);
 
               const targetList = groceryLists[item.section] || groceryLists.other;
               targetList.appendChild(li);
@@ -6628,6 +5034,85 @@ app.get('/', (req, res) => {
           } catch (e) {
             // ignore for now
           }
+        }
+
+        async function loadPantry() {
+          try {
+            const response = await fetch('/pantry');
+            if (!response.ok) return;
+            const data = await response.json();
+
+            Object.values(pantryLists).forEach((list) => {
+              list.innerHTML = '';
+            });
+
+            for (const item of data.items || []) {
+              const li = document.createElement('li');
+              li.className = 'g-item';
+              li.dataset.id = item.id;
+              li.dataset.section = item.section;
+
+              const left = document.createElement('div');
+              left.className = 'g-left';
+
+              const textContainer = document.createElement('div');
+              textContainer.className = 'g-text-wrap';
+              const main = document.createElement('div');
+              main.className = 'g-text-main';
+              main.textContent = item.name;
+              textContainer.appendChild(main);
+              if (item.amount) {
+                const amount = document.createElement('div');
+                amount.className = 'g-text-amount';
+                amount.textContent = item.amount || '';
+                textContainer.appendChild(amount);
+              }
+              left.appendChild(textContainer);
+              li.appendChild(left);
+
+              const actions = document.createElement('div');
+              actions.className = 'g-actions';
+
+              const moveBtn = document.createElement('button');
+              moveBtn.className = 'g-delete';
+              moveBtn.textContent = 'Move to grocery';
+              moveBtn.title = 'Move to Grocery List';
+              moveBtn.disabled = godModeReadOnly;
+              moveBtn.addEventListener('click', async () => {
+                try {
+                  await fetch('/pantry/' + item.id + '/move-to-groceries', { method: 'POST' });
+                  await Promise.all([loadPantry(), loadGroceries()]);
+                } catch (e) {}
+              });
+              actions.appendChild(moveBtn);
+
+              const del = document.createElement('button');
+              del.className = 'g-delete';
+              del.textContent = '×';
+              del.disabled = godModeReadOnly;
+              del.addEventListener('click', async () => {
+                try {
+                  await fetch('/pantry/' + item.id, { method: 'DELETE' });
+                  await loadPantry();
+                } catch (e) {}
+              });
+              actions.appendChild(del);
+              li.appendChild(actions);
+
+              const targetList = pantryLists[item.section] || pantryLists.other_pantry;
+              targetList.appendChild(li);
+            }
+          } catch (e) {
+            // ignore for now
+          }
+        }
+
+        function setGroceriesSubview(view) {
+          currentGroceriesSubview = view === 'pantry' ? 'pantry' : 'list';
+          if (grocerySubtabList) grocerySubtabList.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'list');
+          if (grocerySubtabPantry) grocerySubtabPantry.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'pantry');
+          if (grocerySubviewList) grocerySubviewList.style.display = currentGroceriesSubview === 'list' ? '' : 'none';
+          if (grocerySubviewPantry) grocerySubviewPantry.style.display = currentGroceriesSubview === 'pantry' ? '' : 'none';
         }
 
         function renderChats() {
@@ -6751,24 +5236,40 @@ app.get('/', (req, res) => {
               showLogin();
               return;
             }
-
             const data = await response.json();
-            currentUserName = data.name;
-            currentHouseholdId = data.householdId != null ? Number(data.householdId) : null;
-            currentUserId = data.userId != null ? Number(data.userId) : null;
-            isCurrentUserOwner = !!data.isOwner;
-            applyGodModeFromMe(data);
-            syncMemoriesWrapVisibility();
-            rebuildDisplayNameToColorFromMeChatColors(data.chatColors);
-            showApp(data.name);
-            setActiveTab('chat');
-            await loadChatsAndEnsureOne();
-            await loadHistory();
-            connectTypingWs();
-            refreshOwnerSettingsTab();
+            await rehydrateAuthenticatedApp(data, { forceChatTab: true, resetSessionView: true });
           } catch (error) {
             showLogin();
           }
+        }
+
+        async function rehydrateAuthenticatedApp(meData, opts = {}) {
+          const forceChatTab = opts.forceChatTab !== false;
+          const resetSessionView = opts.resetSessionView !== false;
+          teardownRealtimeUi();
+          if (resetSessionView) {
+            currentChatId = null;
+            chatsCache = [];
+            chat.innerHTML = '';
+            sidebar.classList.remove('open');
+            sidebarBackdrop.classList.remove('open');
+            lastPersistedMessageCountByChatId.clear();
+            ephemeralExchangesByChatId.clear();
+            nextEphemeralSeqByChatId.clear();
+          }
+          currentUserName = meData.name;
+          currentHouseholdId = meData.householdId != null ? Number(meData.householdId) : null;
+          currentUserId = meData.userId != null ? Number(meData.userId) : null;
+          isCurrentUserOwner = !!meData.isOwner;
+          applyGodModeFromMe(meData);
+          syncMemoriesWrapVisibility();
+          rebuildDisplayNameToColorFromMeChatColors(meData.chatColors);
+          showApp(meData.name);
+          if (forceChatTab) setActiveTab('chat');
+          await loadChatsAndEnsureOne();
+          await loadHistory();
+          connectTypingWs();
+          refreshOwnerSettingsTab();
         }
 
         tabChat.addEventListener('click', () => {
@@ -6777,8 +5278,19 @@ app.get('/', (req, res) => {
 
         tabGroceries.addEventListener('click', async () => {
           setActiveTab('groceries');
-          await loadGroceries();
+          await Promise.all([loadGroceries(), loadPantry()]);
         });
+
+        if (grocerySubtabList) {
+          grocerySubtabList.addEventListener('click', () => {
+            setGroceriesSubview('list');
+          });
+        }
+        if (grocerySubtabPantry) {
+          grocerySubtabPantry.addEventListener('click', () => {
+            setGroceriesSubview('pantry');
+          });
+        }
 
         if (tabSettings) {
           tabSettings.addEventListener('click', () => {
@@ -6896,40 +5408,10 @@ app.get('/', (req, res) => {
           });
         }
 
-        const adminSmartModeSave = document.getElementById('admin-smart-mode-save');
-        if (adminSmartModeSave) {
-          adminSmartModeSave.addEventListener('click', async () => {
-            const sel = document.getElementById('admin-anthropic-household-select');
-            const hid = sel && sel.value ? Number(sel.value) : NaN;
-            const msgEl = document.getElementById('admin-smart-mode-msg');
-            const cb = document.getElementById('admin-smart-mode-enabled');
-            if (!Number.isFinite(hid)) {
-              if (msgEl) msgEl.textContent = 'Select a household.';
-              return;
-            }
-            try {
-              const r = await fetch('/settings/anthropic/smart-mode', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ householdId: hid, smartModeEnabled: !!(cb && cb.checked) }),
-              });
-              const errBody = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
-                return;
-              }
-              if (msgEl) msgEl.textContent = 'Saved.';
-              await loadGlobalAdminView();
-            } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
-            }
-          });
-        }
-
         const settingsAnthropicOwnerKeySave = document.getElementById('settings-anthropic-owner-key-save');
         if (settingsAnthropicOwnerKeySave) {
           settingsAnthropicOwnerKeySave.addEventListener('click', async () => {
-            clearMemoryUiMessage();
+            clearEntityMemoryUiMessage();
             const keyInput = document.getElementById('settings-anthropic-owner-key');
             const msgEl = document.getElementById('settings-anthropic-owner-key-msg');
             const key = keyInput && keyInput.value.trim();
@@ -7013,7 +5495,7 @@ app.get('/', (req, res) => {
 
         if (settingsAddSubmit) {
           settingsAddSubmit.addEventListener('click', async () => {
-            clearMemoryUiMessage();
+            clearEntityMemoryUiMessage();
             const displayName = document.getElementById('settings-new-display').value.trim();
             const role = document.getElementById('settings-new-role').value;
             const pin = document.getElementById('settings-new-pin').value.trim();
@@ -7061,73 +5543,28 @@ app.get('/', (req, res) => {
                 if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Could not open demo view.';
                 return;
               }
-              location.reload();
+              const meR = await fetch('/me');
+              if (!meR.ok) {
+                showLogin();
+                return;
+              }
+              const meData = await meR.json();
+              await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
             } catch (e) {
               if (msgEl) msgEl.textContent = 'Request failed.';
             }
           });
         }
 
-        const memSaveBtn = document.getElementById('my-settings-memory-save');
-        const memCancelBtn = document.getElementById('my-settings-memory-cancel-edit');
-        if (memSaveBtn) {
-          memSaveBtn.addEventListener('click', async () => {
-            clearMemoryUiMessage();
-            const keyIn = document.getElementById('my-settings-memory-key');
-            const valIn = document.getElementById('my-settings-memory-value');
-            const memMsg = document.getElementById('my-settings-memories-msg');
-            const key =
-              editingMemoryKey != null ? editingMemoryKey : keyIn && String(keyIn.value).trim();
-            const value = valIn && String(valIn.value).trim();
-            if (!key) {
-              if (memMsg) memMsg.textContent = 'Key is required.';
-              return;
-            }
-            if (!value) {
-              if (memMsg) memMsg.textContent = 'Value is required.';
-              return;
-            }
-            try {
-              const r = await fetch('/settings/household/memories', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key, value }),
-              });
-              const errBody = await r.json().catch(() => ({}));
-              if (memMsg) {
-                memMsg.textContent = r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
-              }
-              if (r.ok) {
-                resetMemoryEditForm();
-                await loadHouseholdMemoriesEditor();
-              }
-            } catch (e) {
-              if (memMsg) memMsg.textContent = 'Request failed.';
-            }
-          });
-        }
-        if (memCancelBtn) {
-          memCancelBtn.addEventListener('click', () => {
-            clearMemoryUiMessage();
-            resetMemoryEditForm();
-          });
-        }
-
-        const memKeyInputEl = document.getElementById('my-settings-memory-key');
-        const memValInputEl = document.getElementById('my-settings-memory-value');
-        const onMemoryFieldInput = () => clearMemoryUiMessage();
-        if (memKeyInputEl) memKeyInputEl.addEventListener('input', onMemoryFieldInput);
-        if (memValInputEl) memValInputEl.addEventListener('input', onMemoryFieldInput);
-
-        const smartMemSaveBtn = document.getElementById('my-settings-smart-memory-save');
-        const smartMemCancelBtn = document.getElementById('my-settings-smart-memory-cancel-edit');
-        if (smartMemSaveBtn) {
-          smartMemSaveBtn.addEventListener('click', async () => {
-            clearSmartMemoryUiMessage();
-            const typeIn = document.getElementById('my-settings-smart-memory-type');
-            const labelIn = document.getElementById('my-settings-smart-memory-label');
-            const summaryIn = document.getElementById('my-settings-smart-memory-summary');
-            const memMsg = document.getElementById('my-settings-smart-memories-msg');
+        const memorySaveButton = document.getElementById('my-settings-memory-save');
+        const memoryCancelButton = document.getElementById('my-settings-memory-cancel-edit');
+        if (memorySaveButton) {
+          memorySaveButton.addEventListener('click', async () => {
+            clearEntityMemoryUiMessage();
+            const typeIn = document.getElementById('my-settings-memory-type');
+            const labelIn = document.getElementById('my-settings-memory-label');
+            const summaryIn = document.getElementById('my-settings-memory-summary');
+            const memMsg = document.getElementById('my-settings-entity-memories-msg');
             const memoryType = typeIn && String(typeIn.value).trim();
             const label = labelIn && String(labelIn.value).trim();
             const summary = summaryIn && String(summaryIn.value).trim();
@@ -7136,7 +5573,7 @@ app.get('/', (req, res) => {
               return;
             }
             try {
-              const r = await fetch('/settings/household/smart-memories', {
+              const r = await fetch('/settings/household/memory-notes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -7153,26 +5590,62 @@ app.get('/', (req, res) => {
               }
               if (r.ok) {
                 resetSmartMemoryEditForm();
-                await loadSmartDurableMemoriesEditor();
+                await loadMemoryNotesEditor();
               }
             } catch (e) {
               if (memMsg) memMsg.textContent = 'Request failed.';
             }
           });
         }
-        if (smartMemCancelBtn) {
-          smartMemCancelBtn.addEventListener('click', () => {
-            clearSmartMemoryUiMessage();
+        if (memoryCancelButton) {
+          memoryCancelButton.addEventListener('click', () => {
+            clearEntityMemoryUiMessage();
             resetSmartMemoryEditForm();
           });
         }
-        const smartMemTypeInputEl = document.getElementById('my-settings-smart-memory-type');
-        const smartMemLabelInputEl = document.getElementById('my-settings-smart-memory-label');
-        const smartMemSummaryInputEl = document.getElementById('my-settings-smart-memory-summary');
-        const onSmartMemoryFieldInput = () => clearSmartMemoryUiMessage();
-        if (smartMemTypeInputEl) smartMemTypeInputEl.addEventListener('input', onSmartMemoryFieldInput);
-        if (smartMemLabelInputEl) smartMemLabelInputEl.addEventListener('input', onSmartMemoryFieldInput);
-        if (smartMemSummaryInputEl) smartMemSummaryInputEl.addEventListener('input', onSmartMemoryFieldInput);
+        const memoryTypeInputEl = document.getElementById('my-settings-memory-type');
+        const memoryLabelInputEl = document.getElementById('my-settings-memory-label');
+        const memorySummaryInputEl = document.getElementById('my-settings-memory-summary');
+        const onMemoryFieldInput = () => clearEntityMemoryUiMessage();
+        if (memoryTypeInputEl) memoryTypeInputEl.addEventListener('input', onMemoryFieldInput);
+        if (memoryLabelInputEl) memoryLabelInputEl.addEventListener('input', onMemoryFieldInput);
+        if (memorySummaryInputEl) memorySummaryInputEl.addEventListener('input', onMemoryFieldInput);
+
+        const defaultsSaveButton = document.getElementById('my-settings-defaults-save');
+        if (defaultsSaveButton) {
+          defaultsSaveButton.addEventListener('click', async () => {
+            clearHouseholdDefaultsUiMessage();
+            const portionsEl = document.getElementById('my-settings-defaults-portions');
+            const styleEl = document.getElementById('my-settings-defaults-style');
+            const msgEl = document.getElementById('my-settings-defaults-msg');
+            const defaultDinnerPortions = portionsEl && String(portionsEl.value).trim() ? Number(portionsEl.value) : null;
+            const weeknightCookingStyle = styleEl && String(styleEl.value).trim() ? String(styleEl.value).trim() : null;
+            try {
+              const r = await fetch('/settings/household/defaults', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  defaultDinnerPortions,
+                  weeknightCookingStyle,
+                }),
+              });
+              const errBody = await r.json().catch(() => ({}));
+              if (msgEl) {
+                msgEl.textContent = r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
+              }
+              if (r.ok) {
+                await loadHouseholdDefaultsEditor();
+              }
+            } catch (e) {
+              if (msgEl) msgEl.textContent = 'Request failed.';
+            }
+          });
+        }
+        const defaultsPortionsInputEl = document.getElementById('my-settings-defaults-portions');
+        const defaultsStyleInputEl = document.getElementById('my-settings-defaults-style');
+        const onDefaultsFieldInput = () => clearHouseholdDefaultsUiMessage();
+        if (defaultsPortionsInputEl) defaultsPortionsInputEl.addEventListener('input', onDefaultsFieldInput);
+        if (defaultsStyleInputEl) defaultsStyleInputEl.addEventListener('input', onDefaultsFieldInput);
 
         menuButton.addEventListener('click', async () => {
           try {
@@ -7243,6 +5716,37 @@ app.get('/', (req, res) => {
             loginNameSelect.value &&
             loginPasswordInput.value.trim().length > 0;
           loginButton.disabled = !canTry;
+        }
+
+        function buildClientTimeContext() {
+          const now = new Date();
+          const offsetMinutes = -now.getTimezoneOffset();
+          const sign = offsetMinutes >= 0 ? '+' : '-';
+          const absMinutes = Math.abs(offsetMinutes);
+          const offsetHours = String(Math.floor(absMinutes / 60)).padStart(2, '0');
+          const offsetRemainder = String(absMinutes % 60).padStart(2, '0');
+          const isoLocal =
+            now.getFullYear() +
+            '-' +
+            String(now.getMonth() + 1).padStart(2, '0') +
+            '-' +
+            String(now.getDate()).padStart(2, '0') +
+            'T' +
+            String(now.getHours()).padStart(2, '0') +
+            ':' +
+            String(now.getMinutes()).padStart(2, '0') +
+            ':' +
+            String(now.getSeconds()).padStart(2, '0') +
+            sign +
+            offsetHours +
+            ':' +
+            offsetRemainder;
+          return {
+            localDateTime: isoLocal,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+            localDayName: now.toLocaleDateString(undefined, { weekday: 'long' }),
+            localHour: now.getHours(),
+          };
         }
 
         async function findHousehold() {
@@ -7362,25 +5866,27 @@ app.get('/', (req, res) => {
 
             loginPasswordInput.value = '';
             loginStatus.textContent = '';
-            const resolvedName = data.displayName ?? data.name ?? displayName;
-            currentUserName = resolvedName;
-            currentHouseholdId = data.householdId != null ? Number(data.householdId) : null;
-            currentUserId = data.userId != null ? Number(data.userId) : null;
-            isCurrentUserOwner = !!data.isOwner;
-            syncMemoriesWrapVisibility();
-            showApp(resolvedName);
             try {
               const meR = await fetch('/me');
               if (meR.ok) {
                 const meData = await meR.json();
-                rebuildDisplayNameToColorFromMeChatColors(meData.chatColors);
-                applyGodModeFromMe(meData);
+                await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
+                return;
               }
             } catch (e) {}
-            await loadChatsAndEnsureOne();
-            await loadHistory();
-            connectTypingWs();
-            refreshOwnerSettingsTab();
+            const resolvedName = data.displayName ?? data.name ?? displayName;
+            await rehydrateAuthenticatedApp(
+              {
+                name: resolvedName,
+                householdId: data.householdId,
+                userId: data.userId,
+                isOwner: data.isOwner,
+                chatColors: {},
+                isImpersonating: false,
+                impersonationReadOnly: false,
+              },
+              { forceChatTab: true, resetSessionView: true }
+            );
           } catch (error) {
             loginStatus.textContent = 'Login failed.';
           }
@@ -7434,7 +5940,13 @@ app.get('/', (req, res) => {
             try {
               const r = await fetch('/admin/impersonate/exit', { method: 'POST' });
               if (!r.ok) return;
-              location.reload();
+              const meR = await fetch('/me');
+              if (!meR.ok) {
+                showLogin();
+                return;
+              }
+              const meData = await meR.json();
+              await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
             } catch (e) {}
           });
         }
@@ -7452,44 +5964,6 @@ app.get('/', (req, res) => {
           }
 
           const speaker = speakerName.textContent || 'Rob';
-          const serverManagedForChat =
-            currentChatId != null ? serverManagedActionByChatId.get(Number(currentChatId)) === true : false;
-          const pendingForChat =
-            currentChatId != null && !serverManagedForChat ? pendingActionByChatId.get(Number(currentChatId)) : null;
-          const pendingHasOptions =
-            pendingForChat &&
-            Array.isArray(pendingForChat.options) &&
-            pendingForChat.options.length > 0;
-          const pendingResolution = resolvePendingActionFromUserReply(prompt, pendingForChat);
-          const actionToExecute =
-            pendingResolution.kind === 'execute' && pendingResolution.action
-              ? pendingResolution.action
-              : null;
-          const groceryClarifyMsg = pendingHasOptions
-            ? groceryPendingClarifyText(pendingForChat)
-            : "Please choose one option so I don't run the wrong action: say 'add', 'start new', 'keep', or 'remove swapped-out items'.";
-          if (pendingForChat && pendingResolution.kind === 'decline') {
-            pendingActionByChatId.delete(Number(currentChatId));
-          } else if (pendingForChat && pendingResolution.kind === 'none' && pendingHasOptions) {
-            addMessage('user', speaker, prompt);
-            addMessage('assistant', 'KitchenBot', groceryClarifyMsg);
-            promptInput.value = '';
-            resizePromptInput();
-            chat.scrollTop = chat.scrollHeight;
-            return;
-          } else if (pendingForChat && pendingResolution.kind === 'none') {
-            pendingActionByChatId.delete(Number(currentChatId));
-          } else if (pendingForChat && pendingResolution.kind === 'ambiguous') {
-            addMessage('user', speaker, prompt);
-            addMessage('assistant', 'KitchenBot', groceryClarifyMsg);
-            promptInput.value = '';
-            resizePromptInput();
-            chat.scrollTop = chat.scrollHeight;
-            return;
-          } else if (pendingForChat && actionToExecute) {
-            pendingActionByChatId.delete(Number(currentChatId));
-          }
-          // Grocery mode-choice replies must continue into the real !grocerylist command path, not return success early.
           addMessage('user', speaker, prompt);
           promptInput.value = '';
           resizePromptInput();
@@ -7504,9 +5978,6 @@ app.get('/', (req, res) => {
           const thinkingBody = document.createElement('div');
           thinkingBody.className = 'message-body kb-thinking kb-thinking-anim';
           thinkingBody.textContent = 'Thinking…';
-          activeStatusText = 'Thinking…';
-          activeStatusAppliedAtMs = Date.now();
-          clearPendingStatusTimer();
           thinkingDiv.appendChild(thinkingBody);
           chat.appendChild(thinkingDiv);
           chat.scrollTop = chat.scrollHeight;
@@ -7516,8 +5987,6 @@ app.get('/', (req, res) => {
             lastPersistedMessageCountByChatId.get(Number(currentChatId)) ?? 0;
 
           try {
-            const requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-            activeChatRequestId = requestId;
             const response = await fetch('/chat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -7525,16 +5994,13 @@ app.get('/', (req, res) => {
                 prompt,
                 name: speaker,
                 chatId: currentChatId,
-                requestId,
-                ...(actionToExecute ? { executePendingAction: actionToExecute } : {}),
+                timeContext: buildClientTimeContext(),
               })
             });
 
             if (!response.ok) {
               remoteStreamBodyEl = null;
               weAreStreamingThisChat = false;
-              activeChatRequestId = null;
-              clearPendingStatusTimer();
               thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
               if (response.status === 401) {
                 thinkingBody.textContent = 'Please log in.';
@@ -7563,24 +6029,6 @@ app.get('/', (req, res) => {
             }
 
             const serverActionManaged = response.headers.get('X-KitchenBot-Server-Action-Managed') === '1';
-            const pendingActionHeader = serverActionManaged ? null : response.headers.get('X-KitchenBot-Pending-Action');
-            if (currentChatId != null) {
-              if (serverActionManaged) {
-                serverManagedActionByChatId.set(Number(currentChatId), true);
-                pendingActionByChatId.delete(Number(currentChatId));
-              } else if (pendingActionHeader) {
-                try {
-                  pendingActionByChatId.set(
-                    Number(currentChatId),
-                    JSON.parse(decodeURIComponent(pendingActionHeader))
-                  );
-                } catch (e) {
-                  pendingActionByChatId.delete(Number(currentChatId));
-                }
-              } else {
-                pendingActionByChatId.delete(Number(currentChatId));
-              }
-            }
 
             const chatResponseEphemeral = response.headers.get('X-KitchenBot-Ephemeral') === '1';
 
@@ -7598,7 +6046,6 @@ app.get('/', (req, res) => {
               if (!chunk) continue;
               fullReply += chunk;
               if (firstStreamChunk) {
-                clearPendingStatusTimer();
                 thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
                 thinkingBody.textContent = '';
                 firstStreamChunk = false;
@@ -7613,8 +6060,6 @@ app.get('/', (req, res) => {
             chat.scrollTop = chat.scrollHeight;
             remoteStreamBodyEl = null;
             weAreStreamingThisChat = false;
-            activeChatRequestId = null;
-            clearPendingStatusTimer();
 
             if (chatResponseEphemeral && currentChatId != null) {
               const cid = Number(currentChatId);
@@ -7648,8 +6093,6 @@ app.get('/', (req, res) => {
             thinkingBody.textContent = 'Something went wrong.';
             remoteStreamBodyEl = null;
             weAreStreamingThisChat = false;
-            activeChatRequestId = null;
-            clearPendingStatusTimer();
           }
         });
 
@@ -7661,14 +6104,7 @@ app.get('/', (req, res) => {
           }
           sidebar.classList.remove('open');
           sidebarBackdrop.classList.remove('open');
-          if (typingWs) {
-            typingWs.close();
-            typingWs = null;
-          }
-          typingUsers.clear();
-          typingIndicator.textContent = '';
-          if (typingStopTimeout) clearTimeout(typingStopTimeout);
-          typingStopTimeout = null;
+          teardownRealtimeUi();
           speakerName.textContent = '';
           currentUserName = null;
           currentHouseholdId = null;
@@ -7686,7 +6122,7 @@ app.get('/', (req, res) => {
         });
 
         groceryRefreshButton.addEventListener('click', async () => {
-          await loadGroceries();
+          await Promise.all([loadGroceries(), loadPantry()]);
         });
 
         if (groceryAddSubmit) {
@@ -7695,7 +6131,7 @@ app.get('/', (req, res) => {
             if (!name) return;
             const amount = groceryAddAmount && groceryAddAmount.value.trim();
             const section =
-              groceryAddSection && groceryAddSection.value ? groceryAddSection.value : 'other';
+              groceryAddSection ? groceryAddSection.value : '';
             try {
               const r = await fetch('/groceries', {
                 method: 'POST',
@@ -7707,8 +6143,34 @@ app.get('/', (req, res) => {
               if (!r.ok) return;
               if (groceryAddAmount) groceryAddAmount.value = '';
               if (groceryAddName) groceryAddName.value = '';
+              if (groceryAddSection) groceryAddSection.value = '';
               await loadGroceries();
               if (groceryAddName) groceryAddName.focus();
+            } catch (e) {}
+          });
+        }
+
+        if (pantryAddSubmit) {
+          pantryAddSubmit.addEventListener('click', async () => {
+            const name = pantryAddName && pantryAddName.value.trim();
+            if (!name) return;
+            const amount = pantryAddAmount && pantryAddAmount.value.trim();
+            const section =
+              pantryAddSection && pantryAddSection.value ? pantryAddSection.value : 'other';
+            try {
+              const r = await fetch('/pantry', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  items: [{ name, section, amount: amount || '' }],
+                }),
+              });
+              if (!r.ok) return;
+              if (pantryAddAmount) pantryAddAmount.value = '';
+              if (pantryAddName) pantryAddName.value = '';
+              if (pantryAddSection) pantryAddSection.value = '';
+              await loadPantry();
+              if (pantryAddName) pantryAddName.focus();
             } catch (e) {}
           });
         }
@@ -7823,28 +6285,26 @@ app.get('/settings/household', requireHousehold, requireAuth, requireOwner, asyn
     const canManageHouseholdSettings =
       currentUser.role === 'owner' || (await isGlobalAdminUser(req.userId));
     const users = await listHouseholdUsers(req.householdId);
+    const defaults = await getHouseholdDefaults(req.householdId);
     return res.json({
       household: {
         id: h.id,
         name: h.name,
         key: h.household_key,
-        smartModeEnabled: Number(h.smart_mode_enabled) === 1,
+        runtimeEnabled: true,
       },
       currentUser: {
         id: currentUser.id,
         displayName: currentUser.display_name,
         role: currentUser.role,
       },
+      defaults,
       canManageHouseholdSettings,
       users: users.map((u) => ({
         id: u.id,
         displayName: u.display_name,
         role: u.role,
         chatColor: normalizeChatColor(u.chat_color),
-        complimentsEnabled:
-          u.compliments_enabled === null || u.compliments_enabled === undefined
-            ? true
-            : Number(u.compliments_enabled) === 1,
       })),
     });
   } catch (e) {
@@ -7853,80 +6313,48 @@ app.get('/settings/household', requireHousehold, requireAuth, requireOwner, asyn
   }
 });
 
-app.get('/settings/household/memories', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.get('/settings/household/defaults', requireHousehold, requireAuth, requireOwner, async (req, res) => {
   try {
-    const rows = (await getMemories(req.householdId)).filter((r) => r.key !== 'assistant_name');
-    res.json({
-      memories: rows.map((r) => ({ key: r.key, value: r.value })),
-    });
+    const defaults = await getHouseholdDefaults(req.householdId);
+    return res.json({ defaults });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: 'Failed to load memories' });
+    return res.status(500).json({ error: 'Failed to load household defaults' });
   }
 });
 
 app.post(
-  '/settings/household/memories',
+  '/settings/household/defaults',
   requireHousehold,
   requireAuth,
   requireNotImpersonatingReadOnly,
   requireOwner,
   async (req, res) => {
-  try {
-    const key = req.body.key != null ? String(req.body.key).trim() : '';
-    const value = req.body.value != null ? String(req.body.value).trim() : '';
-    if (!key) {
-      return res.status(400).json({ error: 'Key is required' });
+    try {
+      const defaults = await saveHouseholdDefaults(req.householdId, {
+        defaultDinnerPortions: req.body.defaultDinnerPortions,
+        weeknightCookingStyle: req.body.weeknightCookingStyle,
+      });
+      return res.json({ ok: true, defaults });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: 'Failed to save household defaults' });
     }
-    if (!value) {
-      return res.status(400).json({ error: 'Value is required' });
-    }
-    if (key === 'assistant_name') {
-      return res.status(403).json({ error: 'assistant_name is a system memory and cannot be modified' });
-    }
-    await upsertHouseholdMemory(req.householdId, key, value);
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: 'Failed to save memory' });
   }
-});
+);
 
-app.delete(
-  '/settings/household/memories/:key',
-  requireHousehold,
-  requireAuth,
-  requireNotImpersonatingReadOnly,
-  requireOwner,
-  async (req, res) => {
+app.get('/settings/household/memory-notes', requireHousehold, requireAuth, requireOwner, async (req, res) => {
   try {
-    const key = String(req.params.key ?? '').trim();
-    if (!key) {
-      return res.status(400).json({ error: 'Invalid key' });
-    }
-    if (key === 'assistant_name') {
-      return res.status(403).json({ error: 'assistant_name is a system memory and cannot be modified' });
-    }
-    await deleteMemory(req.householdId, key);
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: 'Failed to delete memory' });
-  }
-});
-
-app.get('/settings/household/smart-memories', requireHousehold, requireAuth, requireOwner, async (req, res) => {
-  try {
-    const rows = await listSmartDurableMemories(req.householdId);
+    const rows = await listKbMemories(req.householdId);
     res.json({
-      smartMemories: rows.map((row) => {
-        const memoryType = normalizeSmartDurableMemoryType(row.memoryType);
-        const notes = normalizeSmartDurablePersonNotes(row?.attributes?.notes || []);
+      memories: rows.map((row) => {
+        const memoryType = normalizeMemoryType(row.memoryType);
+        const notes = normalizePersonNotes(row?.attributes?.notes || []);
         return {
           id: row.id,
           memoryType,
           label: row.label,
-          summary: memoryType === 'person' ? buildPersonSummaryFromNotes(notes) : row.summary,
+          summary: memoryType === 'person' ? buildPersonSummary(notes) : row.summary,
           attributes: memoryType === 'person' ? { ...(row.attributes || {}), notes } : row.attributes,
           sourceKind: row.sourceKind,
           updatedAt: row.updatedAt,
@@ -7935,12 +6363,12 @@ app.get('/settings/household/smart-memories', requireHousehold, requireAuth, req
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: 'Failed to load Smart durable memories' });
+    res.status(500).json({ error: 'Failed to load saved memories' });
   }
 });
 
 app.post(
-  '/settings/household/smart-memories',
+  '/settings/household/memory-notes',
   requireHousehold,
   requireAuth,
   requireNotImpersonatingReadOnly,
@@ -7951,27 +6379,27 @@ app.post(
       const noteIndex =
         req.body.noteIndex != null && Number.isFinite(Number(req.body.noteIndex)) ? Number(req.body.noteIndex) : null;
       if (id && req.body.memoryType === 'person' && noteIndex != null) {
-        const rows = await listSmartDurableMemories(req.householdId);
+        const rows = await listKbMemories(req.householdId);
         const existing = rows.find((row) => Number(row.id) === id);
-        if (!existing) return res.status(404).json({ error: 'Smart durable memory not found' });
-        const currentNotes = normalizeSmartDurablePersonNotes(existing?.attributes?.notes || []);
+        if (!existing) return res.status(404).json({ error: 'Memory not found' });
+        const currentNotes = normalizePersonNotes(existing?.attributes?.notes || []);
         if (noteIndex < 0 || noteIndex >= currentNotes.length) {
           return res.status(400).json({ error: 'Invalid saved note index' });
         }
         currentNotes[noteIndex] = { text: String(req.body.summary || '').trim() };
-        const record = buildSmartDurableMemoryRecordForStorage({
+        const record = buildMemoryRecordForStorage({
           type: 'person',
           label: req.body.label || existing.label,
           attributes: { ...(existing.attributes || {}), notes: currentNotes },
         });
         if (!record) return res.status(400).json({ error: 'Label and note are required' });
-        await saveSmartDurableMemory(req.householdId, record, {
+        await saveKbMemory(req.householdId, record, {
           id,
           sourceKind: 'manual',
         });
         return res.json({ ok: true });
       }
-      const record = buildSmartDurableMemoryRecordForStorage({
+      const record = buildMemoryRecordForStorage({
         type: req.body.memoryType,
         label: req.body.label,
         summary: req.body.summary,
@@ -7981,32 +6409,32 @@ app.post(
         return res.status(400).json({ error: 'Type, label, and summary are required' });
       }
       if (id) {
-        await saveSmartDurableMemory(req.householdId, record, {
+        await saveKbMemory(req.householdId, record, {
           id,
           sourceKind: 'manual',
         });
         return res.json({ ok: true });
       }
-      const prior = await getSmartDurableMemoryByTypeAndLabel(
+      const prior = await getKbMemoryByTypeAndLabel(
         req.householdId,
         record.memoryType,
         record.normalizedLabel
       );
-      const merged = prior ? mergeSmartDurableMemoryForUpsert(prior, record) : record;
-      await saveSmartDurableMemory(req.householdId, merged, {
+      const merged = prior ? mergeMemoryRecord(prior, record) : record;
+      await saveKbMemory(req.householdId, merged, {
         id: prior?.id ?? null,
         sourceKind: 'manual',
       });
       return res.json({ ok: true });
     } catch (e) {
       console.error(e);
-      return res.status(500).json({ error: 'Failed to save Smart durable memory' });
+      return res.status(500).json({ error: 'Failed to save memory' });
     }
   }
 );
 
 app.delete(
-  '/settings/household/smart-memories/:id',
+  '/settings/household/memory-notes/:id',
   requireHousehold,
   requireAuth,
   requireNotImpersonatingReadOnly,
@@ -8015,43 +6443,43 @@ app.delete(
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) {
-        return res.status(400).json({ error: 'Invalid Smart memory id' });
+        return res.status(400).json({ error: 'Invalid memory id' });
       }
       const noteIndex =
         req.query.noteIndex != null && Number.isFinite(Number(req.query.noteIndex)) ? Number(req.query.noteIndex) : null;
       if (noteIndex != null) {
-        const rows = await listSmartDurableMemories(req.householdId);
+        const rows = await listKbMemories(req.householdId);
         const existing = rows.find((row) => Number(row.id) === id);
-        if (!existing) return res.status(404).json({ error: 'Smart durable memory not found' });
-        if (normalizeSmartDurableMemoryType(existing.memoryType) !== 'person') {
+        if (!existing) return res.status(404).json({ error: 'Memory not found' });
+        if (normalizeMemoryType(existing.memoryType) !== 'person') {
           return res.status(400).json({ error: 'Only people support note-level deletion' });
         }
-        const currentNotes = normalizeSmartDurablePersonNotes(existing?.attributes?.notes || []);
+        const currentNotes = normalizePersonNotes(existing?.attributes?.notes || []);
         if (noteIndex < 0 || noteIndex >= currentNotes.length) {
           return res.status(400).json({ error: 'Invalid saved note index' });
         }
         const nextNotes = currentNotes.filter((_, idx) => idx !== noteIndex);
         if (nextNotes.length === 0) {
-          await deleteSmartDurableMemory(req.householdId, id);
+          await deleteKbMemory(req.householdId, id);
           return res.json({ ok: true });
         }
-        const record = buildSmartDurableMemoryRecordForStorage({
+        const record = buildMemoryRecordForStorage({
           type: 'person',
           label: existing.label,
           attributes: { ...(existing.attributes || {}), notes: nextNotes },
         });
         if (!record) return res.status(400).json({ error: 'Could not rebuild person memory' });
-        await saveSmartDurableMemory(req.householdId, record, {
+        await saveKbMemory(req.householdId, record, {
           id,
           sourceKind: 'manual',
         });
         return res.json({ ok: true });
       }
-      await deleteSmartDurableMemory(req.householdId, id);
+      await deleteKbMemory(req.householdId, id);
       return res.json({ ok: true });
     } catch (e) {
       console.error(e);
-      return res.status(500).json({ error: 'Failed to delete Smart durable memory' });
+      return res.status(500).json({ error: 'Failed to delete memory' });
     }
   }
 );
@@ -8089,36 +6517,6 @@ app.post(
     }
     console.error(e);
     return res.status(500).json({ error: e.message || 'Failed to update chat color' });
-  }
-});
-
-app.post(
-  '/settings/household/users/:id/compliments',
-  requireHousehold,
-  requireAuth,
-  requireNotImpersonatingReadOnly,
-  requireOwner,
-  async (req, res) => {
-  try {
-    const userId = Number(req.params.id);
-    if (!Number.isFinite(userId)) {
-      return res.status(400).json({ error: 'Invalid user id' });
-    }
-    if (typeof req.body.complimentsEnabled !== 'boolean') {
-      return res.status(400).json({ error: 'complimentsEnabled (boolean) is required' });
-    }
-    const target = await getHouseholdUserById(req.householdId, userId);
-    if (!target) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    await updateHouseholdUserComplimentsEnabled(req.householdId, userId, req.body.complimentsEnabled);
-    return res.json({ ok: true, complimentsEnabled: req.body.complimentsEnabled });
-  } catch (e) {
-    if (e && e.message === 'User not found') {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    console.error(e);
-    return res.status(500).json({ error: e.message || 'Failed to update' });
   }
 });
 
@@ -8282,7 +6680,7 @@ app.get('/settings/anthropic', requireHousehold, requireAuth, async (req, res) =
         key: h.household_key,
         anthropicKeyMode: mode,
         webSearchEnabled: Number(h.web_search_enabled) === 1,
-        smartModeEnabled: Number(h.smart_mode_enabled) === 1,
+        runtimeEnabled: true,
       },
       usingSharedKey: mode === 'shared',
       hasHouseholdKey: hasKey,
@@ -8345,30 +6743,6 @@ app.post(
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: e.message || 'Failed to save web search setting' });
-  }
-});
-
-app.post(
-  '/settings/anthropic/smart-mode',
-  requireHousehold,
-  requireAuth,
-  requireNotImpersonatingReadOnly,
-  requireGlobalAdmin,
-  async (req, res) => {
-  try {
-    const householdId = Number(req.body.householdId);
-    if (!Number.isFinite(householdId)) {
-      return res.status(400).json({ error: 'householdId is required' });
-    }
-    const targetId = await resolveAnthropicTargetHouseholdId(req, res, householdId);
-    if (targetId == null) return;
-    const raw = req.body.smartModeEnabled;
-    const enabled = raw === true || raw === 1 || raw === '1' || String(raw).toLowerCase() === 'true';
-    await setHouseholdSmartModeEnabled(targetId, enabled);
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: e.message || 'Failed to save Smart Mode setting' });
   }
 });
 
@@ -8528,868 +6902,26 @@ app.get('/history', requireHousehold, requireAuth, async (req, res) => {
   }
 });
 
-/** TEMP: global-admin-only thread context debug (remove when scene plumbing is verified). */
-app.get(
-  '/debug/thread-context',
-  requireHousehold,
-  requireAuth,
-  requireGlobalAdminRead,
-  async (req, res) => {
-    try {
-      const chatId = Number(req.query.chatId);
-      if (!Number.isFinite(chatId)) {
-        return res.status(400).json({ error: 'Invalid chatId' });
-      }
-      const chats = await listAllChats(req.householdId);
-      if (!chats.some((c) => Number(c.id) === chatId)) {
-        return res.status(404).json({ error: 'Chat not found' });
-      }
-      const ctx = await getChatThreadContext(chatId, req.householdId);
-      return res.json({
-        mealPlanSummary: ctx.mealPlanSummary,
-        threadGrocerySummary: ctx.threadGrocerySummary,
-        threadScene: ctx.threadScene,
-      });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: 'Server error' });
-    }
-  }
-);
-
-/** TEMP: global-admin-only sample thread scene write (remove when scene plumbing is verified). */
-app.post(
-  '/debug/thread-scene-sample',
-  requireHousehold,
-  requireAuth,
-  requireGlobalAdminRead,
-  requireNotImpersonatingReadOnly,
-  async (req, res) => {
-    try {
-      const chatId = Number(req.body.chatId);
-      if (!Number.isFinite(chatId)) {
-        return res.status(400).json({ error: 'Invalid chatId' });
-      }
-      const chats = await listAllChats(req.householdId);
-      if (!chats.some((c) => Number(c.id) === chatId)) {
-        return res.status(404).json({ error: 'Chat not found' });
-      }
-      await updateChatThreadScene(chatId, req.householdId, {
-        debugMarker: 'thread-scene-test',
-        mission: 'debug test',
-        updatedBy: 'debug button',
-      });
-      const ctx = await getChatThreadContext(chatId, req.householdId);
-      return res.json({
-        mealPlanSummary: ctx.mealPlanSummary,
-        threadGrocerySummary: ctx.threadGrocerySummary,
-        threadScene: ctx.threadScene,
-      });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: 'Server error' });
-    }
-  }
-);
-
-/** TEMP: global-admin-only full thread scene replace for editor (remove when scene plumbing is verified). */
-app.post(
-  '/debug/thread-scene-replace',
-  requireHousehold,
-  requireAuth,
-  requireGlobalAdminRead,
-  requireNotImpersonatingReadOnly,
-  async (req, res) => {
-    try {
-      const chatId = Number(req.body.chatId);
-      const rawScene = req.body.threadScene;
-      if (!Number.isFinite(chatId)) {
-        return res.status(400).json({ error: 'Invalid chatId' });
-      }
-      if (rawScene == null || typeof rawScene !== 'object' || Array.isArray(rawScene)) {
-        return res.status(400).json({ error: 'threadScene must be a plain object' });
-      }
-      const chats = await listAllChats(req.householdId);
-      if (!chats.some((c) => Number(c.id) === chatId)) {
-        return res.status(404).json({ error: 'Chat not found' });
-      }
-      try {
-        await replaceChatThreadScene(chatId, req.householdId, rawScene);
-      } catch (e) {
-        return res.status(400).json({ error: e.message || 'Invalid thread scene' });
-      }
-      const ctx = await getChatThreadContext(chatId, req.householdId);
-      return res.json({
-        mealPlanSummary: ctx.mealPlanSummary,
-        threadGrocerySummary: ctx.threadGrocerySummary,
-        threadScene: ctx.threadScene,
-      });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: 'Server error' });
-    }
-  }
-);
-
-const GROCERY_SECTION_KEYS = new Set(['produce', 'meat', 'dairy', 'frozen', 'dry', 'other']);
-
-/** Trim, drop empty names, coerce unknown sections to `other`. Compatible with !grocerylist and manual adds. */
-function normalizeGroceryItemsForPost(rawItems) {
-  if (!Array.isArray(rawItems)) return [];
-  const out = [];
-  for (const raw of rawItems) {
-    if (!raw || typeof raw !== 'object') continue;
-    const name = String(raw.name ?? '').trim();
-    if (!name) continue;
-    let section = String(raw.section ?? '').trim().toLowerCase();
-    if (!GROCERY_SECTION_KEYS.has(section)) section = 'other';
-    const amount = raw.amount != null && String(raw.amount).trim() !== '' ? String(raw.amount).trim() : '';
-    out.push({ name, section, amount });
-  }
-  return out;
-}
-
-function normalizeGroceryNameKey(name) {
-  return String(name ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
-}
-
-/**
- * Merge AI-parsed rows into existing list: match unchecked items by section + normalized name; update amount or insert.
- * @returns {{ insertedCount: number, updatedCount: number, backfilledCount: number, changedCount: number }}
- * `changedCount` is inserts + amount updates only (not provenance backfill).
- */
-async function mergeGroceryItemsFromAi(householdId, parsedItems, sourceChatId) {
-  const empty = { insertedCount: 0, updatedCount: 0, backfilledCount: 0, changedCount: 0 };
-  if (!parsedItems.length) return empty;
-  let insertedCount = 0;
-  let updatedCount = 0;
-  let backfilledCount = 0;
-  const existing = await getGroceryItems(householdId);
-  const byKey = new Map();
-  for (const e of existing) {
-    if (!e.checked) {
-      const k = `${e.section}::${normalizeGroceryNameKey(e.name)}`;
-      byKey.set(k, e);
-    }
-  }
-  const toInsert = [];
-  const pendingByKey = new Map();
-  for (const item of parsedItems) {
-    const nameDisp = String(item.name).trim();
-    if (!nameDisp) continue;
-    const section = item.section;
-    const newAmt = String(item.amount ?? '').trim();
-    const k = `${section}::${normalizeGroceryNameKey(nameDisp)}`;
-    if (byKey.has(k)) {
-      const match = byKey.get(k);
-      if (Number.isFinite(Number(sourceChatId))) {
-        try {
-          const n = await backfillGroceryItemSourceChatIfSafe(householdId, match.id, sourceChatId);
-          backfilledCount += Number(n) || 0;
-        } catch (_) {
-          // Non-fatal provenance backfill.
-        }
-      }
-      const oldAmt = String(match.amount ?? '').trim();
-      if (newAmt !== '' && newAmt !== oldAmt) {
-        try {
-          await updateGroceryItemAmount(householdId, match.id, newAmt);
-          updatedCount += 1;
-          match.amount = newAmt;
-        } catch (e) {
-          // Row checked or removed since load
-        }
-      }
-    } else if (pendingByKey.has(k)) {
-      const pend = pendingByKey.get(k);
-      if (newAmt !== '' && newAmt !== String(pend.amount ?? '').trim()) {
-        pend.amount = newAmt;
-      }
-    } else {
-      const row = { name: nameDisp, section, amount: newAmt };
-      toInsert.push(row);
-      pendingByKey.set(k, row);
-    }
-  }
-  if (toInsert.length) {
-    await addGroceryItems(householdId, toInsert, {
-      sourceChatId: Number.isFinite(Number(sourceChatId)) ? Number(sourceChatId) : null,
-    });
-    insertedCount = toInsert.length;
-  }
-  const changedCount = insertedCount + updatedCount;
-  return { insertedCount, updatedCount, backfilledCount, changedCount };
-}
-
-/**
- * Shared !remember execution (normal path + planner micro-plan). Does not end HTTP unless caller does.
- * @param {object} opts
- * @param {boolean} [opts.plannerMode] — skip user/assistant chat lines; still broadcast
- * @param {boolean} [opts.smartModeEnabled] — when false, skip thread-scene metadata writes and scene auto-updater
- */
-async function runRememberSharedCommandEffects({
-  req,
-  name,
-  chatId,
-  commandUserTextForPersistence,
-  memoryParsed,
-  memories,
-  anthropic,
-  routePrompt,
-  plannerMode = false,
-  smartModeEnabled = false,
-}) {
-  return runRememberSharedExecutorEffects({
-    req,
-    name,
-    chatId,
-    commandUserTextForPersistence,
-    memoryParsed,
-    memories,
-    anthropic,
-    routePrompt,
-    plannerMode,
-    smartModeEnabled,
-    deps: {
-      addMessage,
-      broadcastToChat,
-      getMessages,
-      runThreadSceneAutoUpdaterAfterNormalChat,
-    },
-  });
-}
-
-/**
- * Weekly dinner plan → draft shopping list in chat only + confirmable pending !grocerylist (draft_chat_offer).
- * Does not write grocery_items; user confirms to run the normal !grocerylist path.
- */
-async function runWeeklyPlanGroceryDraftOfferResponse({
-  req,
-  res,
-  name,
-  chatId,
-  prompt,
-  memories,
-  memoriesByKey,
-  anthropic,
-}) {
-  return runWeeklyPlanGroceryDraftOfferExecutorResponse({
-    req,
-    res,
-    name,
-    chatId,
-    prompt,
-    memories,
-    memoriesByKey,
-    anthropic,
-    deps: {
-      addMessage,
-      broadcastToChat,
-      formatSmartGroceryPreviewArtifact,
-      formatWeeklyPlanDraftForPrompt,
-      formatWeeklyPlanDraftVisibleBlock,
-      generateSmartGroceryPreviewCommitReply,
-      generateSmartGroceryPreviewLead,
-      incrementUserMessageCountForSender,
-      normalizeGroceryItemsForPost,
-      stripStoredMessageContentForDisplay,
-    },
-  });
-}
-
-/**
- * Shared !grocerylist execution. Returns outcome for caller to end HTTP or continue to stream.
- * @param {boolean} [opts.smartModeEnabled] — when false, skip thread-scene metadata writes and scene auto-updater (meal/thread summaries still update for !grocerylist)
- * @returns {Promise<{ type: 'done', reply: string } | { type: 'disambiguation', reply: string, pendingHeader: string }>}
- */
-async function runGrocerySharedCommandEffects({
-  req,
-  name,
-  chatId,
-  commandUserTextForPersistence,
-  routePrompt,
-  executePendingAction,
-  memories,
-  anthropic,
-  plannerMode = false,
-  skipIncrement = false,
-  plannerUserLineAlreadyAdded = false,
-  smartModeEnabled = false,
-  /** When set (planner multi-action), disambiguation assistant text is prefixed so the user sees a memory ack first. */
-  plannerRememberAck = null,
-  /** When set (planner weekly patch before grocery), disambiguation text is prefixed after the weekly ack. */
-  plannerWeeklyPatchAck = null,
-  /** Smart runtime owns response persistence when true. */
-  runtimeManagedResponse = false,
-}) {
-  return runGrocerySharedExecutorEffects({
-    req,
-    name,
-    chatId,
-    commandUserTextForPersistence,
-    routePrompt,
-    executePendingAction,
-    memories,
-    anthropic,
-    plannerMode,
-    skipIncrement,
-    plannerUserLineAlreadyAdded,
-    smartModeEnabled,
-    plannerRememberAck,
-    plannerWeeklyPatchAck,
-    runtimeManagedResponse,
-    deps: {
-      addMessage,
-      broadcastToChat,
-      clearGroceryItems,
-      combinePlannerDisambiguationWithRememberAck,
-      formatWeeklyPlanDraftForPrompt,
-      formatWeeklyPlanDraftVisibleBlock,
-      getMessages,
-      incrementUserMessageCountForSender,
-      mergeGroceryItemsFromAi,
-      normalizeGroceryItemsForPost,
-      normalizeGroceryNameKey,
-      parseThreadGrocerySummaryKeys,
-      pruneStaleGroceryItemsForChat,
-      runThreadSceneAutoUpdaterAfterNormalChat,
-      stripStoredMessageContentForDisplay,
-      withPlannerWeeklyPlanVisibleBlock,
-    },
-  });
-}
-
-function truncatePlannerAckValue(s, max = 120) {
-  const t = String(s ?? '').trim();
-  if (!t) return '';
-  if (t.length <= max) return t;
-  return t.slice(0, max - 1) + '…';
-}
-
-function buildPlannerRememberAckFragment(normKey, displayValue) {
-  const v = truncatePlannerAckValue(displayValue, 120);
-  const nk = String(normKey ?? '').trim();
-  if (v && nk) return `I saved that ${nk}: ${v}.`;
-  if (v) return `I saved that ${v}.`;
-  if (nk) return `I updated memory for ${nk}.`;
-  return 'I saved that in memory.';
-}
-
-function combinePlannerDisambiguationWithRememberAck(rememberAck, disambiguationBody) {
-  const ra = rememberAck && String(rememberAck).trim();
-  const d = String(disambiguationBody ?? '').trim();
-  if (!ra) return d;
-  if (!d) return ra;
-  return `${ra} ${d}`;
-}
-
-/** Both must be non-empty; used only when remember + grocery completed in one planner turn. */
-function composePlannerMultiActionStreamAck(rememberAck, groceryReply) {
-  const r = rememberAck && String(rememberAck).trim();
-  const g = groceryReply && String(groceryReply).trim();
-  if (r && g) return `${r} ${g}`;
-  return null;
-}
-
-/** Short acknowledgement line for planner weekly_plan_draft_patch (user-visible stream hint). */
-function buildWeeklyPlanPatchAck(patch) {
-  if (!patch || typeof patch !== 'object') return null;
-  const parts = [];
-  if (Object.prototype.hasOwnProperty.call(patch, 'label') && String(patch.label ?? '').trim()) {
-    parts.push(`title “${truncateSmartModeContext(String(patch.label).trim(), 48)}”`);
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, 'meals') && Array.isArray(patch.meals)) {
-    const n = patch.meals.length;
-    if (n > 0) parts.push(`${n} dinner idea${n === 1 ? '' : 's'}`);
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, 'notes') && String(patch.notes ?? '').trim()) {
-    parts.push('notes');
-  }
-  if (Object.prototype.hasOwnProperty.call(patch, 'status')) {
-    const status = String(patch.status ?? '').trim().toLowerCase();
-    if (status === 'empty') parts.push('cleared');
-  }
-  if (parts.length === 0) return 'I updated your weekly dinner plan.';
-  return `I updated your weekly dinner plan (${parts.join(', ')}).`;
-}
-
-app.get('/groceries', requireHousehold, requireAuth, async (req, res) => {
-  try {
-    const items = await getGroceryItems(req.householdId);
-    res.json({ items });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ items: [] });
-  }
+registerKitchenInventoryRoutes(app, {
+  middleware: {
+    requireHousehold,
+    requireAuth,
+    requireNotImpersonatingReadOnly,
+    requireOwner,
+  },
+  db: {
+    getGroceryItems,
+    getPantryItems,
+    addGroceryItems,
+    addPantryItems,
+    updateGroceryItem,
+    deleteGroceryItem,
+    deletePantryItem,
+    clearGroceryItems,
+    findPantryItemById,
+  },
+  inventory: createBoundInventoryServices(),
 });
-
-app.post('/groceries', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
-  try {
-    const normalized = normalizeGroceryItemsForPost(req.body.items);
-    if (normalized.length === 0) {
-      return res.status(400).json({ error: 'No valid items. Each item needs a non-empty name.' });
-    }
-    await addGroceryItems(req.householdId, normalized);
-    res.json({ ok: true });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ ok: false });
-  }
-});
-
-app.patch('/groceries/:id', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const { checked } = req.body;
-    if (!Number.isFinite(id)) {
-      return res.status(400).json({ error: 'Invalid id.' });
-    }
-    await updateGroceryItem(req.householdId, id, { checked: !!checked });
-    res.json({ ok: true });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ ok: false });
-  }
-});
-
-app.delete('/groceries/:id', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) {
-      return res.status(400).json({ error: 'Invalid id.' });
-    }
-    await deleteGroceryItem(req.householdId, id);
-    res.json({ ok: true });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ ok: false });
-  }
-});
-
-app.post(
-  '/groceries/clear',
-  requireHousehold,
-  requireAuth,
-  requireNotImpersonatingReadOnly,
-  requireOwner,
-  async (req, res) => {
-  try {
-    await clearGroceryItems(req.householdId);
-    res.json({ ok: true });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ ok: false });
-  }
-});
-
-async function handleCompatChatTurn({
-  req,
-  res,
-  name,
-  chatId,
-  prompt,
-  turn,
-  memories,
-  memoriesByKey,
-  anthropic,
-  householdWebSearchEnabled,
-  statusEmitter = null,
-}) {
-  let {
-    routePrompt,
-    executePendingAction,
-    commandUserTextForPersistence,
-    plannerUserMessageAlreadyPersisted = false,
-    plannerStreamCompletedActionsAck = null,
-    skipWeeklyPlanDraftAutoUpdater = false,
-  } = turn;
-
-  let cmdRoute = decideCommandRoute({
-    routePrompt,
-    executePendingAction,
-    isMemoriesCommand,
-    isGroceryListCommand,
-    isSharedChatCommand,
-    isPrivateChatCommand,
-    parseMemoryCommand,
-  });
-
-  if (cmdRoute.kind === 'remember_shared') {
-    const applyGuard = shouldApplySmartDurableAutoMemoryGuard({
-      commandUserTextForPersistence,
-      executePendingAction,
-      bodyExecutePending: req.body?.executePendingAction,
-      isPendingActionConfirmation,
-    });
-    if (applyGuard) {
-      const threadCtxRememberRoute = await getChatThreadContext(chatId, req.householdId);
-      if (
-        !isSmartDurableAutoMemoryCandidate({
-          key: cmdRoute.memoryParsed.key,
-          value: cmdRoute.memoryParsed.value,
-          routePrompt,
-          threadCtx: threadCtxRememberRoute,
-          userPrompt: prompt,
-        })
-      ) {
-        executePendingAction = null;
-        routePrompt = commandUserTextForPersistence;
-        cmdRoute = decideCommandRoute({
-          routePrompt,
-          executePendingAction,
-          isMemoriesCommand,
-          isGroceryListCommand,
-          isSharedChatCommand,
-          isPrivateChatCommand,
-          parseMemoryCommand,
-        });
-      }
-    }
-  }
-
-  if (cmdRoute.kind === 'rename') {
-    const arg = cmdRoute.arg;
-    await incrementUserMessageCountForSender(req);
-    let title;
-    if (arg) {
-      title = arg.slice(0, 200);
-    } else {
-      const conv = await getMessages(chatId, req.householdId);
-      title = await generateAutoChatTitle({
-        anthropic,
-        householdId: req.householdId,
-        chatId,
-        smartModeEnabled: false,
-        conversation: conv,
-        stripStoredMessageContentForDisplay,
-        isAnthropicSdkAuthOrKeyError,
-      });
-    }
-    await updateChatTitleAndLock(chatId, req.householdId, title);
-    const reply = `Renamed this chat to "${title}".`;
-    res.setHeader('X-KitchenBot-Ephemeral', '1');
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.end(reply);
-  }
-
-  if (cmdRoute.kind === 'private_memories_list') {
-    const memoriesFiltered = memories.filter((m) => m.key !== 'assistant_name');
-    const reply = memoriesFiltered.length
-      ? 'Current memories:\n' + memoriesFiltered.map((memory) => `- ${memory.key}: ${memory.value}`).join('\n')
-      : 'No memories stored.';
-    res.setHeader('X-KitchenBot-Ephemeral', '1');
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.end(reply);
-  }
-
-  if (cmdRoute.kind === 'remember_shared') {
-    const { reply } = await runRememberSharedCommandEffects({
-      req,
-      name,
-      chatId,
-      commandUserTextForPersistence,
-      memoryParsed: cmdRoute.memoryParsed,
-      memories,
-      anthropic,
-      routePrompt,
-      plannerMode: false,
-      smartModeEnabled: false,
-    });
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.end(reply);
-  }
-
-  if (cmdRoute.kind === 'grocery_shared') {
-    const gOut = await runGrocerySharedCommandEffects({
-      req,
-      name,
-      chatId,
-      commandUserTextForPersistence,
-      routePrompt,
-      executePendingAction,
-      memories,
-      anthropic,
-      plannerMode: false,
-      skipIncrement: false,
-      plannerUserLineAlreadyAdded: false,
-      smartModeEnabled: false,
-    });
-    if (gOut.type === 'disambiguation') {
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.setHeader('X-KitchenBot-Pending-Action', gOut.pendingHeader);
-      return res.end(gOut.reply);
-    }
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.end(gOut.reply);
-  }
-
-  if (cmdRoute.kind === 'unknown_bang_command') {
-    const reply = 'Unknown command.\n\n' + getHelpReply();
-    await incrementUserMessageCountForSender(req);
-    res.setHeader('X-KitchenBot-Ephemeral', '1');
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.end(reply);
-  }
-
-  if (cmdRoute.kind === 'prompt_required') {
-    return res.status(400).json({ reply: 'Prompt is required.' });
-  }
-
-  if (turn.kind === 'legacy_command_guidance') {
-    if (!plannerUserMessageAlreadyPersisted) {
-      await addMessage(chatId, req.householdId, 'user', name, routePrompt);
-      await incrementUserMessageCountForSender(req);
-      if (typeof broadcastToChat === 'function') {
-        broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-      }
-    }
-    const reply = buildLegacyCommandGuidanceReply(turn.pendingAction);
-    await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
-    await maybeAutoNameChatOnTurn({
-      anthropic,
-      householdId: req.householdId,
-      chatId,
-      smartModeEnabled: false,
-      getMessages,
-      updateChatTitleAutoIfUnlocked,
-      stripStoredMessageContentForDisplay,
-      isAnthropicSdkAuthOrKeyError,
-      broadcastToChat,
-      broadcastUser: name,
-    });
-    if (typeof broadcastToChat === 'function') {
-      broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-    }
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.end(reply);
-  }
-
-  if (!plannerUserMessageAlreadyPersisted) {
-    await addMessage(chatId, req.householdId, 'user', name, routePrompt);
-    await incrementUserMessageCountForSender(req);
-    if (typeof broadcastToChat === 'function') {
-      broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-    }
-  }
-
-  const conversation = await getMessages(chatId, req.householdId);
-  const conversationForContext = conversation.filter(
-    (m) => m.role !== 'user' || !String(m.content || '').trim().startsWith('!')
-  );
-  const recentConversation = conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
-  const memoryText = memories.map((memory) => `${memory.key}: ${memory.value}`).join('\n');
-  const threadCtx = await getChatThreadContext(chatId, req.householdId);
-  const mainThreadScene =
-    threadCtx.threadScene && typeof threadCtx.threadScene === 'object' && !Array.isArray(threadCtx.threadScene)
-      ? threadCtx.threadScene
-      : {};
-  const threadSceneCompactMain = '(not injected for this reply)';
-  const weeklyPlanDraftCompact = '(not available in this chat)';
-  const claudeMessages = recentConversation.map((message) => ({
-    role: message.role,
-    content:
-      message.role === 'user'
-        ? `${message.name}: ${message.content}`
-        : stripStoredMessageContentForDisplay(message.content),
-  }));
-  await maybeAutoNameChatOnTurn({
-    anthropic,
-    householdId: req.householdId,
-    chatId,
-    smartModeEnabled: false,
-    getMessages,
-    updateChatTitleAutoIfUnlocked,
-    stripStoredMessageContentForDisplay,
-    isAnthropicSdkAuthOrKeyError,
-    broadcastToChat,
-    broadcastUser: name,
-  });
-  const useWebSearchTool = householdWebSearchEnabled && shouldEnableWebSearchForPrompt(routePrompt);
-  const webSearchCapabilityBlock = useWebSearchTool
-    ? `Web (this request): Anthropic web_search IS attached. Only attribute content to a site or URL if the search tool actually returned that material this turn. Do not fabricate "exact" ingredients, steps, or quotes from a page you did not receive via the tool. If the tool did not return a page body, say you do not have the exact text from that source.`
-    : householdWebSearchEnabled
-      ? `Web (this request): Web search is NOT attached—no live fetch of links for this reply. Seeing a URL in the user's message does not mean you read it. Do not imply you extracted, checked, read, or matched that page.`
-      : `Web (this request): Web search is off for this household. You cannot load URLs. A link in the chat is not page content—do not imply you read it.`;
-  const smartModeCapabilityBlock = 'App changes only happen when the server actually executes them. Plain chat text by itself does not perform app actions.';
-  const legacyModeBehaviorBlock = `
-    Command-first contract:
-    - I can chat naturally, but I cannot execute app actions from a normal chat message.
-    - If the user asks me to change app state in normal language, reply naturally and point them to the right explicit command.
-    - Use these commands when relevant: !grocerylist, !remember <key> = <value>, !rename, !help.
-    - Do not imply a pending confirmation exists unless a real command flow already attached one.
-    - Do not offer "I can do that for you" style confirmations for grocery, memory, rename, or help from normal language.
-    - Do not mention hidden modes, internal settings, or alternate versions of KitchenBot.
-    - Do not create or update weekly-plan state here. Meal-planning discussion may stay conversational only.`;
-  const smartModeClarifyBlock = '';
-  const plannerCompletedActionsBlock = plannerStreamCompletedActionsAck
-    ? `\n    Planner (this request): The server already completed these actions; you may open your reply by acknowledging them as fact:\n    ${plannerStreamCompletedActionsAck}\n    If this block is present, the usual restriction below against claiming memory or grocery tab updates does not apply to those specific outcomes—they are confirmed for this request.`
-    : '';
-  const weeklyPlanServerVisibleHint = '';
-  const streamParams = {
-    model: resolveAnthropicModelForCallPurpose('chat_reply'),
-    max_tokens: useWebSearchTool ? 4096 : 800,
-    system: `You are KitchenBot: a concise household assistant. Always use first person (I/me/my)—never describe "KitchenBot" as a separate system. Plain text by default; code blocks only if the user asks.
-
-    App contract: This message is plain text only; it does not execute app actions by itself. An app action only happened if the server already executed it and the thread shows the confirmed outcome.
-    - Do not claim I saved, updated, or changed the app this turn unless the thread shows the real confirmed outcome for that action.
-    - New facts may inform this reply only; do not describe them as already saved or remembered for future use unless the backend actually executed a save in this thread.
-    - Do not say \`I saved memory …\`, \`I updated memory …\`, or \`I've updated … preferences\` unless the thread history clearly shows the real confirmed save outcome.
-    - Do not frame non-executed ideas as completed app actions. If the server did not execute it, speak about it as a suggestion, question, or next step instead.
-    - If the thread already shows a confirmed outcome, you may acknowledge it naturally as fact.
-
-    One reply per user message; finish here (no "stand by" or promised follow-ups). If web_search is attached, use it in this reply. Do not print raw search queries unless asked.
-
-    If the user asks for grocery, memory, rename, or help actions in ordinary language, respond based on the real server-confirmed state in the thread. Do not invent command requirements, hidden modes, or confirmations that are not present.
-
-    ${webSearchCapabilityBlock}
-    ${smartModeCapabilityBlock}
-    ${legacyModeBehaviorBlock}
-    ${smartModeClarifyBlock}
-    ${plannerCompletedActionsBlock}
-    ${weeklyPlanServerVisibleHint}
-    Sources: Attribute ingredients/steps/prices to a URL or site only if those details are in this chat, memory below, or web_search results this turn; otherwise say you don't have that page. Generic help is OK if labeled approximate.
-
-    Thread meal-plan summary (read-only; updated on \`!grocerylist\`; not the live Grocery tab):
-    ${threadCtx.mealPlanSummary.trim() || '(none yet)'}
-
-    Thread grocery intent (read-only; not the live grocery_items list):
-    ${threadCtx.threadGrocerySummary.trim() || '(none yet)'}
-
-    Weekly dinner plan draft (read-only; chat-scoped; not household memory; not the Grocery tab; updated best-effort after Smart Mode replies only):
-    ${weeklyPlanDraftCompact}
-
-    Thread scene (server-owned compact JSON for this chat; read-only soft continuity—it may help you stay coherent across turns; it does NOT mean a DB write should happen now; it does NOT override explicit commands, pending actions, or recovery; do not claim an app action happened unless the thread already shows that outcome):
-    ${threadSceneCompactMain}
-
-    Household memory (read-only; edits via Settings or a confirmed save offer):
-    ${memoryText}`,
-    messages: claudeMessages,
-  };
-  if (useWebSearchTool) {
-    streamParams.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }];
-  }
-
-  statusEmitter?.emit?.('writing_reply');
-  const stream = await anthropic.messages.stream(streamParams);
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Transfer-Encoding', 'chunked');
-  res.setHeader('X-Accel-Buffering', 'no');
-
-  let finalReply = '';
-  let streamRawAccum = '';
-  let streamEnded = false;
-  let displayEmittedLen = 0;
-
-  function flushDisplayEmit() {
-    const cleaned = stripKitchenBotHiddenMarkers(streamRawAccum);
-    let emitPlain = stripFakeGroceryOperationalLines(cleaned);
-    emitPlain = stripFakeMemoryPendingOfferLines(emitPlain);
-    finalReply = emitPlain;
-    if (!streamEnded) {
-      const lastNl = emitPlain.lastIndexOf('\n');
-      if (lastNl === -1) return;
-      emitPlain = emitPlain.slice(0, lastNl + 1);
-    }
-    displayEmittedLen = Math.min(displayEmittedLen, emitPlain.length);
-    const newSuffix = emitPlain.slice(displayEmittedLen);
-    if (!newSuffix) return;
-    displayEmittedLen += newSuffix.length;
-    res.write(newSuffix);
-    if (typeof broadcastToChat === 'function') {
-      broadcastToChat(chatId, {
-        type: 'stream_delta',
-        householdId: req.householdId,
-        chatId,
-        delta: newSuffix,
-        user: name,
-      });
-    }
-  }
-
-  function writeChatDelta(delta) {
-    if (!delta) return;
-    streamRawAccum += delta;
-    flushDisplayEmit();
-  }
-
-  for await (const event of stream) {
-    if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-      writeChatDelta(event.delta.text);
-    }
-  }
-
-  streamEnded = true;
-  flushDisplayEmit();
-  await finalizeLoggedAnthropicStream(stream, {
-    householdId: req.householdId,
-    chatId,
-    smartModeEnabled: false,
-    callSurface: 'chat',
-    callPurpose: 'chat_reply',
-    webSearchEnabledAtCall: householdWebSearchEnabled,
-    usedWebSearchTool: useWebSearchTool,
-  });
-
-  finalReply = stripFakeGroceryOperationalLines(finalReply);
-  finalReply = stripFakeMemoryPendingOfferLines(finalReply);
-  finalReply = stripModelAuthoredMemoryOfferLines(finalReply);
-
-  const senderForCompliment = await getHouseholdUserById(req.householdId, req.userId);
-  const complimentsEnabled =
-    senderForCompliment &&
-    (senderForCompliment.compliments_enabled === null ||
-      senderForCompliment.compliments_enabled === undefined ||
-      Number(senderForCompliment.compliments_enabled) === 1);
-  if (complimentsEnabled) {
-    await ensureUserComplimentStateRow(req.userId);
-    const state = await getUserComplimentState(req.userId);
-    const { trigger } = shouldTriggerCompliment(state);
-    if (trigger) {
-      const { compliment, template } = selectComplimentAvoidingRecent(compliments, complimentTemplates, state);
-      const complimentLine = template.replace('%s', compliment);
-      const complimentAppend = '\n\n' + complimentLine;
-      finalReply += complimentAppend;
-      await recordCompliment(req.userId, compliment, template);
-      res.write(complimentAppend);
-      if (typeof broadcastToChat === 'function') {
-        broadcastToChat(chatId, {
-          type: 'stream_delta',
-          householdId: req.householdId,
-          chatId,
-          delta: complimentAppend,
-          user: name,
-        });
-      }
-    }
-  }
-
-  {
-    finalReply = scrubUnsavedMemoryClaimsInNormalChatReply(finalReply);
-  }
-
-  await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReply);
-  void runThreadSceneAutoUpdaterAfterNormalChat(anthropic, {
-    smartModeEnabled: false,
-    chatId,
-    householdId: req.householdId,
-    priorThreadScene: mainThreadScene,
-    routePrompt,
-    finalAssistantReply: finalReply,
-    threadMealPlanSummary: threadCtx.mealPlanSummary,
-    threadGrocerySummary: threadCtx.threadGrocerySummary,
-    householdMemoriesCompact: memoryText,
-    recentConversationForContext: recentConversation,
-    trustedActionSummary: null,
-  });
-  if (typeof broadcastToChat === 'function') {
-    broadcastToChat(chatId, { type: 'chat_updated', householdId: req.householdId, chatId, user: name });
-  }
-
-  return res.end();
-}
 
 app.post(
   '/chat',
@@ -9406,83 +6938,32 @@ app.post(
         return res.status(400).json({ reply: 'chatId is required.' });
       }
 
-      const sharedDeps = {
-        ANTHROPIC_KEY_USER_MESSAGE,
-        broadcastToChat,
-        detectCommandIntentFromNaturalLanguage,
-        getAnthropicClient,
-        handleCompatChatTurn,
-        isPrivateChatCommand,
-        stripStoredMessageContentForDisplay,
-        threadHasConcreteGroceryDraftForFollowUp,
-      };
+      const inventoryServices = createBoundInventoryServices();
 
-      const smartDeps = {
+      const kbDeps = buildKbRuntimeDeps({
         ANTHROPIC_KEY_USER_MESSAGE,
         addMessage,
         broadcastToChat,
-        buildSmartModeInterpreterContext,
         clearChatRuntimeState,
-        detectSmartActionIntentFromNaturalLanguage,
-        ensureUserComplimentStateRow,
-        executeSmartActions,
-        formatSmartGroceryPreviewArtifact,
-        generateSmartGroceryModeChoiceReply,
-        generateSmartGroceryPreviewCommitReply,
-        generateSmartGroceryPreviewLead,
         getAnthropicClient,
-        getMessages,
-        getSmartDurableMemoryPromptContext,
-        getUserByHouseholdAndDisplayName,
+        buildKbContextPacket,
         incrementUserMessageCountForSender,
-        interpretSmartSkillFollowUp: interpretGrocerySkillFollowUp,
-        invokeSmartModeInterpreterModel,
         isAnthropicSdkAuthOrKeyError,
-        isGroceryListCommand,
-        isPrivateChatCommand,
-        mergeGroceryItemsFromAi,
-        normalizeGroceryItemsForPost,
-        normalizeGroceryNameKey,
-        parseMemoryCommand,
+        mergeGroceryItemsFromAi: inventoryServices.mergeGroceryItemsFromAi,
+        normalizeGroceryItemsForPost: inventoryServices.normalizeGroceryItemsForPost,
+        normalizeInventoryNameKey: inventoryServices.normalizeInventoryNameKey,
         pruneStaleGroceryItemsForChat,
-        scrubUnsavedMemoryClaimsInNormalChatReply,
-        setUserLoveBoost,
-        shouldEnableWebSearchForPrompt,
-        stripFakeGroceryOperationalLines,
-        stripFakeMemoryPendingOfferLines,
-        stripModelAuthoredMemoryOfferLines,
         stripStoredMessageContentForDisplay,
-        truncateSmartModeContext,
-        updateChatTitle,
-        updateChatTitleAndLock,
-        updateChatTitleAutoIfUnlocked,
-        maybeAutoNameChatOnTurn,
-        combinePlannerDisambiguationWithRememberAck,
         clearGroceryItems,
-        loadSmartDurableMemoryCompatRows: async (householdId) => {
-          const ctx = await getSmartDurableMemoryPromptContext(householdId, {}, { limit: 6 });
-          return ctx.compatRows;
-        },
-      };
+      });
 
-      if (Number((await getHouseholdById(req.householdId))?.smart_mode_enabled) === 1) {
-        return await handleSmartModeChatTurn({
-          req,
-          res,
-          name,
-          chatId,
-          prompt,
-          deps: smartDeps,
-        });
-      }
-
-      return await handleLegacyChatTurn({
+      return await handleKbChatTurn({
         req,
         res,
         name,
         chatId,
         prompt,
-        deps: sharedDeps,
+        deps: kbDeps,
       });
     } catch (error) {
       console.error(error);
@@ -9636,12 +7117,6 @@ async function connectRedis() {
 (async () => {
   await runMigrations();
   await connectRedis();
-  try {
-    const n = await deleteLegacySeedMemories();
-    if (n > 0) console.log(`Removed ${n} legacy seed memory row(s).`);
-  } catch (e) {
-    console.error('Legacy memory cleanup failed:', e.message || e);
-  }
   await seedInitialHouseholdFromEnvIfNeeded();
   server.listen(port, '0.0.0.0', () => {
   const nets = os.networkInterfaces();
@@ -9658,4 +7133,7 @@ async function connectRedis() {
   console.log(`Server running at http://localhost:${port}`);
   if (lanIp) console.log(`Local network:  http://${lanIp}:${port}`);
   });
-})();
+})().catch((error) => {
+  console.error('KitchenBot startup failed:', error?.message || error);
+  process.exit(1);
+});
