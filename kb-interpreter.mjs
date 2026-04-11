@@ -2,6 +2,7 @@ import { getMessages } from './db.mjs';
 import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
 import {
+  buildKbAssistantPersonaSystemText,
   formatKbRecentConversation,
   getKbPromptContextSections,
 } from './kb-prompt-context.mjs';
@@ -96,6 +97,7 @@ function needsInterpreterFallback(turn, { prompt = '', memoryContext = null } = 
         'pantry.remove',
         'pantry.move_to_grocery',
         'grocery.move_to_pantry',
+        'web.search',
       ].includes(capability)
     );
   }
@@ -115,17 +117,22 @@ async function runKbTurnInterpretation({
   callPurpose,
 }) {
   const conversation = await getMessages(chatId, req.householdId);
-  const recentConversation = formatKbRecentConversation(conversation, deps, { limit: 12 }) || '(none)';
+  const recentConversation =
+    formatKbRecentConversation(conversation, deps, {
+      limit: 12,
+      assistantPersona: memoryContext?.assistantPersona,
+    }) || '(none)';
   const contextSections = getKbPromptContextSections(memoryContext);
-  const skillList = buildKbInterpreterSkillList();
-  const actionExamples = buildKbInterpreterActionExamples();
+  const webSearchEnabled = !!memoryContext?.capabilities?.webSearchEnabled;
+  const skillList = buildKbInterpreterSkillList({ webSearchEnabled });
+  const actionExamples = buildKbInterpreterActionExamples({ webSearchEnabled });
 
   const response = await createLoggedAnthropicMessage(
     anthropic,
     {
       model: resolveAnthropicModelForCallPurpose(callPurpose),
       max_tokens: 400,
-      system: `You are KitchenBot's turn interpreter.
+      system: `${buildKbAssistantPersonaSystemText(memoryContext, { role: 'interpreter' })}
 
 Choose exactly one of:
 - reply_only
@@ -137,6 +144,8 @@ Rules:
 - Never pretend an action happened. If no action should happen, choose reply_only.
 - Prefer normal conversation when the user is brainstorming, asking for ideas, explanations, or advice.
 - If the user asks what you can do, what you cannot do, or asks for help, choose reply_only and answer using the available skills.
+- If the user asks who you are, what your name is, or what your tone is supposed to be, choose reply_only and answer from the configured assistant persona above.
+- If the user asks whether you can search the web or why you did not look something up, choose reply_only and answer from the household capability context below.
 - For memory.save, interpret who the memory is about using the active speaker, mentioned people, and household context.
 - First-person durable preferences usually belong to the active speaker.
 - Treat applied memory and resolved entities as real context for deciding whether the user wants conversation, preview, or a real mutation.
@@ -160,6 +169,9 @@ Rules:
 - Use grocery.preview when the user wants to see, show, preview, draft, or list the groceries needed without asking to update the tab.
 - Use grocery.write only when the user clearly wants the grocery list tab created, updated, appended to, replaced, or otherwise changed.
 - Use meal.refine when the user asks to revise the current meals in this chat, like "make one of those vegetarian" or "swap the salmon one".
+- Use web.search only when the household capability says web search is enabled and the user clearly needs outside/current information or explicitly asks or invites you to search the web.
+- Do not use web.search for purely local pantry, grocery, or household-state questions.
+- Never print raw tool syntax like search_web(...) in chat.
 - If the user wants an action but you lack enough detail to act safely, choose clarify.
 - If a pending action context exists below, treat it as the continuation of an already-selected action. Use it to continue, clarify, or cancel that same action rather than starting a new deterministic interpretation path.
 - If you choose clarify for an already-selected action, include a structured proposedNextAction so KitchenBot can continue that same action on the next turn.
@@ -194,6 +206,7 @@ ${actionExamples}`,
             groceryPantryOverlap: contextSections.groceryPantryOverlap,
             appMap: contextSections.appMap,
             localTimeContext: contextSections.localTimeContext,
+            capabilities: contextSections.capabilities,
             workingContext: contextSections.workingContext,
             appliedWorkingContext: contextSections.appliedWorkingContext,
             availableSkills: skillList,
@@ -208,7 +221,7 @@ ${actionExamples}`,
       runtimeEnabled: true,
       callSurface: 'chat',
       callPurpose,
-      webSearchEnabledAtCall: false,
+      webSearchEnabledAtCall: webSearchEnabled,
       usedWebSearchTool: false,
     }
   );
@@ -245,6 +258,7 @@ export async function interpretKbTurn({
       memoriesByKey,
       activeSpeakerName,
       originalPrompt: prompt,
+      webSearchEnabled: !!memoryContext?.capabilities?.webSearchEnabled,
     });
     if (!needsInterpreterFallback(primaryTurn, { prompt, memoryContext })) {
       return primaryTurn;
@@ -265,6 +279,7 @@ export async function interpretKbTurn({
       memoriesByKey,
       activeSpeakerName,
       originalPrompt: prompt,
+      webSearchEnabled: !!memoryContext?.capabilities?.webSearchEnabled,
     }) || primaryTurn;
   } catch (error) {
     console.error('KitchenBot turn interpretation failed:', error?.message || error);

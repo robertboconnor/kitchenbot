@@ -9,6 +9,7 @@ import {
 } from './db.mjs';
 import { normalizePantrySection } from './inventory-classification.mjs';
 import { normalizeMemoryKey, normalizeMemoryValue } from './kb-memory-policy.mjs';
+import { getAssistantPersonaSettings } from './kb-persona.mjs';
 
 const MEMORY_TYPES = new Set(['person', 'household_note']);
 
@@ -480,7 +481,7 @@ function formatHouseholdDefaultsText(defaults = {}) {
   const style = normalizeLabel(defaults.weeknightCookingStyle || '');
   const lines = [];
   if (portions) lines.push(`default dinner portions: ${portions}`);
-  if (style) lines.push(`weeknight cooking style: ${style.toLowerCase()}`);
+  if (style) lines.push(`cooking style: ${style.toLowerCase()}`);
   return lines.length > 0 ? lines.join('\n') : '(none)';
 }
 
@@ -631,7 +632,7 @@ function buildAppliedDefaultsText(defaults = {}) {
     lines.push(`- Default dinner portions: ${portions}`);
   }
   if (style) {
-    lines.push(`- Weeknight cooking style: ${style.toLowerCase()}`);
+    lines.push(`- Cooking style: ${style.toLowerCase()}`);
   }
   if (lines.length === 1) return '(none)';
   lines.push('If the current turn touches groceries, meal sizing, or weeknight cooking decisions, apply these defaults naturally.');
@@ -700,13 +701,28 @@ export async function buildKbContextPacket(householdId, prompt = '', opts = {}) 
   const includeDefaults = opts.includeDefaults !== false;
   const includePantry = opts.includePantry !== false;
   const includeGrocery = opts.includeGrocery !== false;
+  const capabilities =
+    opts.capabilities && typeof opts.capabilities === 'object' && !Array.isArray(opts.capabilities)
+      ? {
+          webSearchEnabled: !!opts.capabilities.webSearchEnabled,
+        }
+      : {
+          webSearchEnabled: false,
+        };
   const pantryItems = includePantry ? await getPantryItems(householdId).catch(() => []) : [];
   const groceryItems = includeGrocery ? await getGroceryItems(householdId).catch(() => []) : [];
+  const fullHouseholdDefaults = await getHouseholdDefaults(householdId).catch(() => ({
+    defaultDinnerPortions: null,
+    weeknightCookingStyle: null,
+    assistantName: 'KitchenBot',
+    assistantTone: 'concise',
+  }));
+  const assistantPersona = getAssistantPersonaSettings(fullHouseholdDefaults);
   const householdDefaults = includeDefaults
-    ? await getHouseholdDefaults(householdId).catch(() => ({
-        defaultDinnerPortions: null,
-        weeknightCookingStyle: null,
-      }))
+    ? {
+        defaultDinnerPortions: fullHouseholdDefaults.defaultDinnerPortions,
+        weeknightCookingStyle: fullHouseholdDefaults.weeknightCookingStyle,
+      }
     : {
         defaultDinnerPortions: null,
         weeknightCookingStyle: null,
@@ -723,7 +739,9 @@ export async function buildKbContextPacket(householdId, prompt = '', opts = {}) 
     householdUsers,
     pantryItems,
     groceryItems,
+    capabilities,
     householdDefaults,
+    assistantPersona,
     selectedItems,
     rows: formatCompatRows(selectedItems),
     promptText: formatPromptText(selectedItems, entityContext),

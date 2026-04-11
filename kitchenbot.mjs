@@ -63,6 +63,8 @@ import {
   normalizePersonNotes,
 } from './kb-memory-store.mjs';
 import {
+  buildAnthropicUsageReport,
+  classifyAnthropicUsageFunction,
   createLoggedAnthropicMessage,
   finalizeLoggedAnthropicStream,
   estimateAnthropicLedgerCostUsd,
@@ -79,6 +81,7 @@ import {
   normalizeAdminUsage,
   normalizeAdminUsers,
 } from './admin-households.mjs';
+import { DEFAULT_ASSISTANT_NAME } from './kb-persona.mjs';
 import 'dotenv/config';
 import os from 'os';
 import http from 'http';
@@ -179,10 +182,6 @@ function weeklyPlanDraftHasMeaningfulContent(draft) {
   );
 }
 
-function classifyUsageBucket(callPurpose) {
-  return String(callPurpose ?? '') === 'chat_reply' ? 'actual_chat' : 'background';
-}
-
 function isoDayStartUtc(rawDate) {
   const s = String(rawDate ?? '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
@@ -196,86 +195,6 @@ function isoNextDayStartUtc(rawDate) {
   if (Number.isNaN(d.getTime())) return null;
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString().slice(0, 19) + 'Z';
-}
-
-function buildAnthropicUsageReport(rows) {
-  const totals = {
-    callCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheCreationInputTokens: 0,
-    cacheReadInputTokens: 0,
-    estimatedCostUsd: 0,
-    estimatedCostAvailable: true,
-  };
-
-  const byHousehold = new Map();
-  const byPurpose = new Map();
-  const byBucket = new Map();
-  const byWebSearchEnabled = new Map();
-  const byWebSearchUsage = new Map();
-
-  function bump(map, key, row, costUsd) {
-    const k = String(key);
-    if (!map.has(k)) {
-      map.set(k, {
-        key: k,
-        callCount: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 0,
-        estimatedCostUsd: 0,
-        estimatedCostAvailable: true,
-      });
-    }
-    const entry = map.get(k);
-    entry.callCount += 1;
-    entry.inputTokens += Number(row.input_tokens ?? 0) || 0;
-    entry.outputTokens += Number(row.output_tokens ?? 0) || 0;
-    entry.cacheCreationInputTokens += Number(row.cache_creation_input_tokens ?? 0) || 0;
-    entry.cacheReadInputTokens += Number(row.cache_read_input_tokens ?? 0) || 0;
-    if (costUsd == null) {
-      entry.estimatedCostAvailable = false;
-    } else if (entry.estimatedCostAvailable) {
-      entry.estimatedCostUsd += costUsd;
-    }
-  }
-
-  for (const row of rows) {
-    totals.callCount += 1;
-    totals.inputTokens += Number(row.input_tokens ?? 0) || 0;
-    totals.outputTokens += Number(row.output_tokens ?? 0) || 0;
-    totals.cacheCreationInputTokens += Number(row.cache_creation_input_tokens ?? 0) || 0;
-    totals.cacheReadInputTokens += Number(row.cache_read_input_tokens ?? 0) || 0;
-    const costUsd = estimateAnthropicLedgerCostUsd(row);
-    if (costUsd == null) {
-      totals.estimatedCostAvailable = false;
-    } else if (totals.estimatedCostAvailable) {
-      totals.estimatedCostUsd += costUsd;
-    }
-    bump(byHousehold, row.household_id, row, costUsd);
-    bump(byPurpose, row.call_purpose, row, costUsd);
-    bump(byBucket, classifyUsageBucket(row.call_purpose), row, costUsd);
-    bump(byWebSearchEnabled, Number(row.web_search_enabled_at_call) === 1 ? 'enabled' : 'disabled', row, costUsd);
-    bump(byWebSearchUsage, Number(row.used_web_search_tool) === 1 ? 'used' : 'not_used', row, costUsd);
-  }
-
-  function finalizeGroups(map) {
-    return Array.from(map.values()).sort((a, b) => {
-      if (b.inputTokens !== a.inputTokens) return b.inputTokens - a.inputTokens;
-      return b.callCount - a.callCount;
-    });
-  }
-
-  return {
-    totals,
-    byHousehold: finalizeGroups(byHousehold),
-    byPurpose: finalizeGroups(byPurpose),
-    byBucket: finalizeGroups(byBucket),
-    byWebSearchEnabled: finalizeGroups(byWebSearchEnabled),
-    byWebSearchUsage: finalizeGroups(byWebSearchUsage),
-  };
 }
 
 function truncateSmartModeContext(s, max) {
@@ -777,7 +696,7 @@ app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdmin
       runtimeEnabled: Number(row.runtime_enabled ?? 1) === 1,
       callSurface: row.call_surface,
       callPurpose: row.call_purpose,
-      bucket: classifyUsageBucket(row.call_purpose),
+      callFunction: classifyAnthropicUsageFunction(row.call_purpose),
       model: row.model,
       requestKind: row.request_kind,
       inputTokens: Number(row.input_tokens ?? 0) || 0,
@@ -807,9 +726,8 @@ app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdmin
       },
       totals: report.totals,
       byHousehold,
+      byFunction: report.byFunction,
       byPurpose: report.byPurpose,
-      byBucket: report.byBucket,
-      byWebSearchEnabled: report.byWebSearchEnabled,
       byWebSearchUsage: report.byWebSearchUsage,
       recentRows,
     });
@@ -1917,6 +1835,13 @@ app.get('/', (req, res) => {
           color: var(--text-soft);
         }
 
+        .admin-report-note {
+          margin: -2px 0 10px;
+          font-size: 12px;
+          line-height: 1.4;
+          color: var(--text-soft);
+        }
+
         .admin-report-table-wrap {
           overflow-x: auto;
         }
@@ -3015,18 +2940,33 @@ app.get('/', (req, res) => {
                 </div>
                 <div class="settings-split-grid">
                   <div id="my-settings-household-defaults-wrap">
-                    <h4 style="margin:0 0 6px;">Household defaults</h4>
+                    <h4 style="margin:0 0 6px;">KitchenBot settings</h4>
                     <p class="settings-section-note">
-                      KitchenBot treats these as your household's default assumptions for dinner ideas and weeknight cooking.
+                      These structured settings shape how KitchenBot behaves for your household by default.
                     </p>
                     <div class="settings-memory-editor" style="margin-top: 12px;">
+                      <div class="settings-form-row" style="margin-bottom:8px;">
+                        <div class="settings-form-field" style="max-width: 220px;">
+                          <label for="my-settings-defaults-assistant-name">KitchenBot name</label>
+                          <input id="my-settings-defaults-assistant-name" type="text" maxlength="40" autocomplete="off" placeholder="KitchenBot" />
+                        </div>
+                        <div class="settings-form-field" style="max-width: 220px;">
+                          <label for="my-settings-defaults-assistant-tone">Tone</label>
+                          <select id="my-settings-defaults-assistant-tone">
+                            <option value="helpful">Helpful (recommended)</option>
+                            <option value="concise">Concise</option>
+                            <option value="witty">Witty</option>
+                            <option value="thirsty">Thirsty</option>
+                          </select>
+                        </div>
+                      </div>
                       <div class="settings-form-row" style="margin-bottom:8px;">
                         <div class="settings-form-field" style="max-width: 180px;">
                           <label for="my-settings-defaults-portions">Default dinner portions</label>
                           <input id="my-settings-defaults-portions" type="number" min="1" max="24" step="1" autocomplete="off" placeholder="4" />
                         </div>
                         <div class="settings-form-field" style="max-width: 220px;">
-                          <label for="my-settings-defaults-style">Weeknight cooking style</label>
+                          <label for="my-settings-defaults-style">Cooking style</label>
                           <select id="my-settings-defaults-style">
                             <option value="">No default</option>
                             <option value="easy">easy</option>
@@ -3036,15 +2976,15 @@ app.get('/', (req, res) => {
                         </div>
                       </div>
                       <div class="settings-actions-row">
-                        <button type="button" id="my-settings-defaults-save">Save defaults</button>
+                        <button type="button" id="my-settings-defaults-save">Save settings</button>
                         <span id="my-settings-defaults-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
                       </div>
                     </div>
                   </div>
                   <div id="my-settings-entity-memories-wrap" style="display: none;">
-                    <h4 style="margin:0 0 6px;">People and household memory</h4>
+                    <h4 style="margin:0 0 6px;">Household memory</h4>
                     <p class="settings-section-note">
-                      KitchenBot uses this to remember people and household preferences across chats.
+                      KitchenBot uses this to remember people and household-wide facts across chats.
                     </p>
                     <div class="settings-memory-viewer">
                       <div id="my-settings-entity-memories-list" style="font-size: 13px;"></div>
@@ -3053,18 +2993,18 @@ app.get('/', (req, res) => {
                     <div class="settings-memory-editor" style="margin-top: 12px;">
                       <div class="settings-form-row" style="margin-bottom:8px;">
                         <div class="settings-form-field" style="max-width: 180px;">
-                          <label for="my-settings-memory-type">Save under</label>
+                          <label for="my-settings-memory-type">Memory type</label>
                           <select id="my-settings-memory-type">
-                            <option value="person">person</option>
-                            <option value="household_note">household_note</option>
+                            <option value="person">Person</option>
+                            <option value="household_note">Household-wide</option>
                           </select>
                         </div>
                         <div class="settings-form-field" style="max-width: 220px;">
-                          <label for="my-settings-memory-label">Person or label</label>
-                          <input id="my-settings-memory-label" type="text" autocomplete="off" placeholder="e.g. Elle or concise recipes" />
+                          <label for="my-settings-memory-label">Person or memory label</label>
+                          <input id="my-settings-memory-label" type="text" autocomplete="off" placeholder="e.g. Elle or quick lunches" />
                         </div>
                         <div class="settings-form-field">
-                          <label for="my-settings-memory-summary">Preference or note</label>
+                          <label for="my-settings-memory-summary">What should KitchenBot remember?</label>
                           <input id="my-settings-memory-summary" type="text" autocomplete="off" placeholder="What KitchenBot should remember" />
                         </div>
                       </div>
@@ -3263,7 +3203,7 @@ app.get('/', (req, res) => {
         </div>
 
         <div id="input-area">
-          <textarea id="prompt" placeholder="Ask KitchenBot" rows="1"></textarea>
+          <textarea id="prompt" placeholder="What's cooking?" rows="1"></textarea>
           <button id="send" type="button" aria-label="Send">↑</button>
         </div>
       </div>
@@ -3271,7 +3211,11 @@ app.get('/', (req, res) => {
       <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
       <script>
         const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-        const useMobileEnterBehavior = isMobile;
+        const useMobileEnterBehavior =
+          isMobile ||
+          (!!window.matchMedia &&
+            window.matchMedia('(pointer: coarse)').matches &&
+            window.matchMedia('(hover: none)').matches);
         const loginArea = document.getElementById('login-area');
         const appArea = document.getElementById('app');
         const loginHouseholdKeyInput = document.getElementById('login-household-key');
@@ -3337,6 +3281,7 @@ app.get('/', (req, res) => {
         let currentUserName = null;
         let currentHouseholdId = null;
         let currentUserId = null;
+        let currentAssistantName = 'KitchenBot';
         let isCurrentUserOwner = false;
         let currentGroceriesSubview = 'list';
         let godModeReadOnly = false;
@@ -3353,6 +3298,13 @@ app.get('/', (req, res) => {
         ];
         function normalizeDisplayNameKey(name) {
           return String(name ?? '').trim().toLowerCase();
+        }
+        function normalizeToneValue(value) {
+          const key = String(value ?? '').trim().toLowerCase();
+          if (key === 'sexy') return 'thirsty';
+          if (key === 'sassy') return 'witty';
+          if (key === 'friendly') return 'helpful';
+          return ['helpful', 'concise', 'witty', 'thirsty'].includes(key) ? key : 'helpful';
         }
         function rebuildDisplayNameToColorFromMeChatColors(chatColors) {
           displayNameToColor = {};
@@ -3600,7 +3552,7 @@ app.get('/', (req, res) => {
                     wrap.className = 'message assistant';
                     const author = document.createElement('span');
                     author.className = 'message-author';
-                    author.textContent = 'KitchenBot';
+                    author.textContent = currentAssistantName || 'KitchenBot';
                     wrap.appendChild(author);
                     const body = document.createElement('div');
                     body.className = 'message-body';
@@ -3714,12 +3666,32 @@ app.get('/', (req, res) => {
 
         function clearEntityMemoryUiMessage() {
           const el = document.getElementById('my-settings-entity-memories-msg');
-          if (el) el.textContent = '';
+          clearSettingsUiMessage(el);
         }
 
         function clearHouseholdDefaultsUiMessage() {
           const el = document.getElementById('my-settings-defaults-msg');
-          if (el) el.textContent = '';
+          clearSettingsUiMessage(el);
+        }
+
+        function setSettingsUiMessage(el, text, { sticky = false } = {}) {
+          if (!el) return;
+          el.textContent = text || '';
+          el.dataset.sticky = sticky && text ? 'true' : 'false';
+        }
+
+        function clearSettingsUiMessage(el, { force = false } = {}) {
+          if (!el) return;
+          if (!force && el.dataset.sticky === 'true') return;
+          el.textContent = '';
+          el.dataset.sticky = 'false';
+        }
+
+        function clearStickySettingsMessages() {
+          clearSettingsUiMessage(document.getElementById('my-settings-entity-memories-msg'), { force: true });
+          clearSettingsUiMessage(document.getElementById('my-settings-defaults-msg'), { force: true });
+          clearSettingsUiMessage(document.getElementById('my-settings-msg'), { force: true });
+          clearSettingsUiMessage(document.getElementById('settings-anthropic-owner-key-msg'), { force: true });
         }
 
         function resetSmartMemoryEditForm() {
@@ -3819,7 +3791,11 @@ app.get('/', (req, res) => {
                 if (!confirm('Delete all Smart memory for "' + m.label + '"?')) return;
                 const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id), { method: 'DELETE' });
                 const errBody = await dr.json().catch(() => ({}));
-                if (memMsg) memMsg.textContent = dr.ok ? 'Person deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
+                setSettingsUiMessage(
+                  memMsg,
+                  dr.ok ? 'Person deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed',
+                  { sticky: dr.ok }
+                );
                 if (dr.ok) {
                   resetSmartMemoryEditForm();
                   await loadMemoryNotesEditor();
@@ -3869,7 +3845,11 @@ app.get('/', (req, res) => {
                   if (!confirm('Delete this saved note for "' + m.label + '"?')) return;
                   const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id) + '?noteIndex=' + encodeURIComponent(idx), { method: 'DELETE' });
                   const errBody = await dr.json().catch(() => ({}));
-                  if (memMsg) memMsg.textContent = dr.ok ? 'Saved note deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
+                  setSettingsUiMessage(
+                    memMsg,
+                    dr.ok ? 'Saved note deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed',
+                    { sticky: dr.ok }
+                  );
                   if (dr.ok) {
                     resetSmartMemoryEditForm();
                     await loadMemoryNotesEditor();
@@ -3884,7 +3864,7 @@ app.get('/', (req, res) => {
             }
             listEl.appendChild(peopleSection);
 
-            const householdSection = buildSection('Household preferences', householdNotes.length ? '' : 'No household preferences saved yet.');
+            const householdSection = buildSection('Household-wide', householdNotes.length ? '' : 'No household-wide memory saved yet.');
             if (householdNotes.length) {
               const count = document.createElement('span');
               count.className = 'count';
@@ -3935,7 +3915,11 @@ app.get('/', (req, res) => {
                 if (!confirm('Delete household preference "' + m.label + '"?')) return;
                 const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id), { method: 'DELETE' });
                 const errBody = await dr.json().catch(() => ({}));
-                if (memMsg) memMsg.textContent = dr.ok ? 'Household preference deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed';
+                setSettingsUiMessage(
+                  memMsg,
+                  dr.ok ? 'Household preference deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed',
+                  { sticky: dr.ok }
+                );
                 if (dr.ok) {
                   resetSmartMemoryEditForm();
                   await loadMemoryNotesEditor();
@@ -3946,22 +3930,24 @@ app.get('/', (req, res) => {
               householdSection.appendChild(row);
             }
             listEl.appendChild(householdSection);
-            if (memMsg) memMsg.textContent = '';
+            clearSettingsUiMessage(memMsg);
           } catch (e) {
             listEl.innerHTML = '';
-            if (memMsg) memMsg.textContent = 'Load failed.';
+            setSettingsUiMessage(memMsg, 'Load failed.');
           }
         }
 
         async function loadHouseholdDefaultsEditor() {
           const portionsEl = document.getElementById('my-settings-defaults-portions');
           const styleEl = document.getElementById('my-settings-defaults-style');
+          const assistantNameEl = document.getElementById('my-settings-defaults-assistant-name');
+          const assistantToneEl = document.getElementById('my-settings-defaults-assistant-tone');
           const msgEl = document.getElementById('my-settings-defaults-msg');
-          if (!portionsEl || !styleEl || !isCurrentUserOwner) return;
+          if (!portionsEl || !styleEl || !assistantNameEl || !assistantToneEl || !isCurrentUserOwner) return;
           try {
             const r = await fetch('/settings/household/defaults');
             if (!r.ok) {
-              if (msgEl) msgEl.textContent = 'Could not load household defaults.';
+              if (msgEl) msgEl.textContent = 'Could not load KitchenBot settings.';
               return;
             }
             const data = await r.json();
@@ -3971,9 +3957,12 @@ app.get('/', (req, res) => {
                 ? ''
                 : String(Number(defaults.defaultDinnerPortions));
             styleEl.value = defaults.weeknightCookingStyle || '';
-            if (msgEl) msgEl.textContent = '';
+            assistantNameEl.value = defaults.assistantName || 'KitchenBot';
+            assistantToneEl.value = normalizeToneValue(defaults.assistantTone);
+            currentAssistantName = defaults.assistantName || 'KitchenBot';
+            clearSettingsUiMessage(msgEl);
           } catch (e) {
-            if (msgEl) msgEl.textContent = 'Load failed.';
+            setSettingsUiMessage(msgEl, 'Load failed.');
           }
         }
 
@@ -3991,6 +3980,10 @@ app.get('/', (req, res) => {
             }
             const data = await r.json();
             isCurrentUserOwner = !!data.canManageHouseholdSettings;
+            currentAssistantName =
+              (data.defaults && typeof data.defaults.assistantName === 'string' && data.defaults.assistantName.trim()) ||
+              currentAssistantName ||
+              'KitchenBot';
             syncMemoriesWrapVisibility();
             syncEntityMemoriesWrapVisibility(true);
             nameEl.textContent = data.household.name;
@@ -4312,18 +4305,26 @@ app.get('/', (req, res) => {
           return '$' + n.toFixed(4);
         }
 
-        function renderAdminUsageSection(title, rows, labelKey) {
+        function renderAdminUsageSection(title, rows, labelKey, description) {
           if (!Array.isArray(rows) || rows.length === 0) {
             return (
               '<section class="admin-report-section"><h5>' +
               escapeAdminHtml(title) +
-              '</h5><div class="admin-report-empty">No rows.</div></section>'
+              '</h5>' +
+              (description
+                ? '<div class="admin-report-note">' + escapeAdminHtml(description) + '</div>'
+                : '') +
+              '<div class="admin-report-empty">No rows.</div></section>'
             );
           }
           let html =
             '<section class="admin-report-section"><h5>' +
             escapeAdminHtml(title) +
-            '</h5><div class="admin-report-table-wrap"><table class="admin-report-table">' +
+            '</h5>' +
+            (description
+              ? '<div class="admin-report-note">' + escapeAdminHtml(description) + '</div>'
+              : '') +
+            '<div class="admin-report-table-wrap"><table class="admin-report-table">' +
             '<thead><tr><th>' +
             escapeAdminHtml(labelKey) +
             '</th><th class="num">Calls</th><th class="num">In</th><th class="num">Out</th><th class="num">Est. cost</th></tr></thead><tbody>';
@@ -4366,10 +4367,13 @@ app.get('/', (req, res) => {
             '</span></div>';
           html += '</div>';
           html += '<div class="admin-report-grid">';
-          html += renderAdminUsageSection('By bucket', reportData.byBucket || [], 'Bucket');
+          html += renderAdminUsageSection(
+            'Where usage went',
+            reportData.byFunction || [],
+            'Function',
+            'A single visible KitchenBot turn often spans several internal calls, including interpretation, context loading, reply writing, and web search.'
+          );
           html += renderAdminUsageSection('By household', reportData.byHousehold || [], 'Household');
-          html += renderAdminUsageSection('By purpose', reportData.byPurpose || [], 'Purpose');
-          html += renderAdminUsageSection('By web search setting', reportData.byWebSearchEnabled || [], 'Setting');
           html += renderAdminUsageSection('By actual web search usage', reportData.byWebSearchUsage || [], 'Usage');
           html += '</div>';
           const recentRows = Array.isArray(reportData.recentRows) ? reportData.recentRows : [];
@@ -4401,6 +4405,12 @@ app.get('/', (req, res) => {
             html += '</tbody></table></div>';
           }
           html += '</section>';
+          html += renderAdminUsageSection(
+            'Raw internal purposes',
+            reportData.byPurpose || [],
+            'Purpose',
+            'This is the low-level engineering breakdown of the raw call_purpose values written to the ledger.'
+          );
           root.innerHTML = html;
         }
 
@@ -4796,8 +4806,9 @@ app.get('/', (req, res) => {
 
         promptInput.addEventListener('keydown', (event) => {
           if (event.key !== 'Enter') return;
+          if (event.isComposing) return;
           if (useMobileEnterBehavior) return;
-          if (event.shiftKey) return;
+          if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
           event.preventDefault();
           sendButton.click();
         });
@@ -4814,6 +4825,20 @@ app.get('/', (req, res) => {
           }, 2000);
         });
         resizePromptInput();
+
+        document.addEventListener(
+          'click',
+          (event) => {
+            const target = event.target;
+            if (!(target instanceof Element)) return;
+            const actionable = target.closest(
+              'button, a, select, summary, [role="button"], input[type="checkbox"], input[type="radio"]'
+            );
+            if (!actionable) return;
+            clearStickySettingsMessages();
+          },
+          true
+        );
 
         function renderMarkdown(text) {
           if (typeof marked === 'undefined') return document.createTextNode(text);
@@ -4835,7 +4860,7 @@ app.get('/', (req, res) => {
             name = name.slice(0, idx);
           } else if (content === undefined) {
             content = name;
-            name = role === 'user' ? (speakerName && speakerName.textContent) || 'User' : 'KitchenBot';
+            name = role === 'user' ? (speakerName && speakerName.textContent) || 'User' : currentAssistantName || 'KitchenBot';
           }
           const div = document.createElement('div');
           div.className = 'message ' + role;
@@ -4869,6 +4894,7 @@ app.get('/', (req, res) => {
             return;
           }
           const data = await response.json();
+          currentAssistantName = data.assistantName || currentAssistantName || 'KitchenBot';
           const persisted = data.conversation || [];
           const cid = Number(currentChatId);
           lastPersistedMessageCountByChatId.set(cid, persisted.length);
@@ -4886,7 +4912,7 @@ app.get('/', (req, res) => {
               dbEmitted++;
             }
             addMessage('user', ep.userName, ep.user);
-            addMessage('assistant', 'KitchenBot', ep.assistant);
+            addMessage('assistant', currentAssistantName || 'KitchenBot', ep.assistant);
           }
           while (pIdx < persisted.length) {
             const m = persisted[pIdx++];
@@ -5438,15 +5464,15 @@ app.get('/', (req, res) => {
               });
               const errBody = await r.json().catch(() => ({}));
               if (!r.ok) {
-                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
+                setSettingsUiMessage(msgEl, mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed');
                 return;
               }
-              if (msgEl) msgEl.textContent = 'Key saved.';
+              setSettingsUiMessage(msgEl, 'Key saved.', { sticky: true });
               if (keyInput) keyInput.value = '';
               await loadMyHouseholdView();
               await loadAnthropicSection();
             } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
+              setSettingsUiMessage(msgEl, 'Request failed.');
             }
           });
         }
@@ -5512,7 +5538,7 @@ app.get('/', (req, res) => {
             const pin = document.getElementById('settings-new-pin').value.trim();
             const msgEl = document.getElementById('my-settings-msg');
             if (!displayName || !pin) {
-              if (msgEl) msgEl.textContent = 'Display name and PIN required.';
+              setSettingsUiMessage(msgEl, 'Display name and PIN required.');
               return;
             }
             try {
@@ -5523,12 +5549,12 @@ app.get('/', (req, res) => {
               });
               const data = await r.json().catch(() => ({}));
               if (!r.ok) {
-                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(data.error) || 'Failed';
+                setSettingsUiMessage(msgEl, mapServerReadOnlyErrorMessage(data.error) || 'Failed');
                 return;
               }
               document.getElementById('settings-new-display').value = '';
               document.getElementById('settings-new-pin').value = '';
-              if (msgEl) msgEl.textContent = 'User added.';
+              setSettingsUiMessage(msgEl, 'User added.', { sticky: true });
               displayNameToColor[normalizeDisplayNameKey(displayName)] = data.chatColor || 'blue';
               await loadMyHouseholdView();
               await loadAnthropicSection();
@@ -5537,7 +5563,7 @@ app.get('/', (req, res) => {
                 await loadGlobalAdminView();
               }
             } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
+              setSettingsUiMessage(msgEl, 'Request failed.');
             }
           });
         }
@@ -5597,14 +5623,18 @@ app.get('/', (req, res) => {
               });
               const errBody = await r.json().catch(() => ({}));
               if (memMsg) {
-                memMsg.textContent = r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
+                setSettingsUiMessage(
+                  memMsg,
+                  r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed',
+                  { sticky: r.ok }
+                );
               }
               if (r.ok) {
                 resetSmartMemoryEditForm();
                 await loadMemoryNotesEditor();
               }
             } catch (e) {
-              if (memMsg) memMsg.textContent = 'Request failed.';
+              setSettingsUiMessage(memMsg, 'Request failed.');
             }
           });
         }
@@ -5614,23 +5644,25 @@ app.get('/', (req, res) => {
             resetSmartMemoryEditForm();
           });
         }
-        const memoryTypeInputEl = document.getElementById('my-settings-memory-type');
-        const memoryLabelInputEl = document.getElementById('my-settings-memory-label');
-        const memorySummaryInputEl = document.getElementById('my-settings-memory-summary');
-        const onMemoryFieldInput = () => clearEntityMemoryUiMessage();
-        if (memoryTypeInputEl) memoryTypeInputEl.addEventListener('input', onMemoryFieldInput);
-        if (memoryLabelInputEl) memoryLabelInputEl.addEventListener('input', onMemoryFieldInput);
-        if (memorySummaryInputEl) memorySummaryInputEl.addEventListener('input', onMemoryFieldInput);
-
         const defaultsSaveButton = document.getElementById('my-settings-defaults-save');
         if (defaultsSaveButton) {
           defaultsSaveButton.addEventListener('click', async () => {
             clearHouseholdDefaultsUiMessage();
             const portionsEl = document.getElementById('my-settings-defaults-portions');
             const styleEl = document.getElementById('my-settings-defaults-style');
+            const assistantNameEl = document.getElementById('my-settings-defaults-assistant-name');
+            const assistantToneEl = document.getElementById('my-settings-defaults-assistant-tone');
             const msgEl = document.getElementById('my-settings-defaults-msg');
             const defaultDinnerPortions = portionsEl && String(portionsEl.value).trim() ? Number(portionsEl.value) : null;
             const weeknightCookingStyle = styleEl && String(styleEl.value).trim() ? String(styleEl.value).trim() : null;
+            const assistantName =
+              assistantNameEl && String(assistantNameEl.value).trim()
+                ? String(assistantNameEl.value).trim()
+                : 'KitchenBot';
+            const assistantTone =
+              assistantToneEl && String(assistantToneEl.value).trim()
+                ? normalizeToneValue(assistantToneEl.value)
+                : 'helpful';
             try {
               const r = await fetch('/settings/household/defaults', {
                 method: 'POST',
@@ -5638,25 +5670,27 @@ app.get('/', (req, res) => {
                 body: JSON.stringify({
                   defaultDinnerPortions,
                   weeknightCookingStyle,
+                  assistantName,
+                  assistantTone,
                 }),
               });
               const errBody = await r.json().catch(() => ({}));
               if (msgEl) {
-                msgEl.textContent = r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
+                setSettingsUiMessage(
+                  msgEl,
+                  r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed',
+                  { sticky: r.ok }
+                );
               }
               if (r.ok) {
+                currentAssistantName = assistantName;
                 await loadHouseholdDefaultsEditor();
               }
             } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
+              setSettingsUiMessage(msgEl, 'Request failed.');
             }
           });
         }
-        const defaultsPortionsInputEl = document.getElementById('my-settings-defaults-portions');
-        const defaultsStyleInputEl = document.getElementById('my-settings-defaults-style');
-        const onDefaultsFieldInput = () => clearHouseholdDefaultsUiMessage();
-        if (defaultsPortionsInputEl) defaultsPortionsInputEl.addEventListener('input', onDefaultsFieldInput);
-        if (defaultsStyleInputEl) defaultsStyleInputEl.addEventListener('input', onDefaultsFieldInput);
 
         menuButton.addEventListener('click', async () => {
           try {
@@ -5984,7 +6018,7 @@ app.get('/', (req, res) => {
           thinkingDiv.className = 'message assistant';
           const thinkingAuthor = document.createElement('span');
           thinkingAuthor.className = 'message-author';
-          thinkingAuthor.textContent = 'KitchenBot';
+          thinkingAuthor.textContent = currentAssistantName || 'KitchenBot';
           thinkingDiv.appendChild(thinkingAuthor);
           const thinkingBody = document.createElement('div');
           thinkingBody.className = 'message-body kb-thinking kb-thinking-anim';
@@ -6345,6 +6379,8 @@ app.post(
       const defaults = await saveHouseholdDefaults(req.householdId, {
         defaultDinnerPortions: req.body.defaultDinnerPortions,
         weeknightCookingStyle: req.body.weeknightCookingStyle,
+        assistantName: req.body.assistantName,
+        assistantTone: req.body.assistantTone,
       });
       return res.json({ ok: true, defaults });
     } catch (e) {
@@ -6902,11 +6938,12 @@ app.get('/history', requireHousehold, requireAuth, async (req, res) => {
       return res.status(400).json({ conversation: [] });
     }
     const conversation = await getMessages(chatId, req.householdId);
+    const defaults = await getHouseholdDefaults(req.householdId).catch(() => ({}));
     const conversationForClient = conversation.map((m) => ({
       ...m,
       content: stripStoredMessageContentForDisplay(m.content),
     }));
-    res.json({ conversation: conversationForClient });
+    res.json({ conversation: conversationForClient, assistantName: defaults.assistantName || DEFAULT_ASSISTANT_NAME });
   } catch (error) {
     console.error(error);
     res.status(500).json({ conversation: [] });

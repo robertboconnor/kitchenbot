@@ -1,3 +1,8 @@
+import {
+  buildAssistantPersonaSystemText,
+  getAssistantPersonaSettings,
+} from './kb-persona.mjs';
+
 function safeTrim(text) {
   return String(text ?? '').trim();
 }
@@ -8,7 +13,9 @@ function readContextText(memoryContext, key) {
 
 export function formatKbRecentConversation(messages, deps, opts = {}) {
   const limit = Number.isFinite(opts.limit) ? Number(opts.limit) : 12;
-  const assistantLabel = safeTrim(opts.assistantLabel) || 'KitchenBot';
+  const assistantLabel =
+    safeTrim(opts.assistantLabel) ||
+    getAssistantPersonaSettings(opts.assistantPersona || opts.defaults).assistantName;
   return (Array.isArray(messages) ? messages : [])
     .filter((message) => message.role === 'user' || message.role === 'assistant')
     .slice(-limit)
@@ -19,6 +26,14 @@ export function formatKbRecentConversation(messages, deps, opts = {}) {
     )
     .filter(Boolean)
     .join('\n\n');
+}
+
+export function getKbAssistantPersona(memoryContext = {}) {
+  return getAssistantPersonaSettings(memoryContext?.assistantPersona || memoryContext?.householdDefaults);
+}
+
+export function buildKbAssistantPersonaSystemText(memoryContext = {}, opts = {}) {
+  return buildAssistantPersonaSystemText(memoryContext?.assistantPersona || memoryContext?.householdDefaults, opts);
 }
 
 export function formatKbEntityContextText(entityContext = {}) {
@@ -49,6 +64,7 @@ export function getKbPromptContextSections(memoryContext = {}) {
     groceryItems: readContextText(memoryContext, 'groceryText'),
     appliedGrocery: readContextText(memoryContext, 'appliedGroceryText'),
     groceryPantryOverlap: readContextText(memoryContext, 'groceryPantryOverlapText'),
+    capabilities: readContextText(memoryContext, 'capabilitiesText'),
     appMap: readContextText(memoryContext, 'appMapText'),
     localTimeContext: readContextText(memoryContext, 'timeContextText'),
     pendingAction: readContextText(memoryContext, 'pendingActionText'),
@@ -86,6 +102,9 @@ ${sections.appliedGrocery}
 
 Grocery / Pantry overlap notes:
 ${sections.groceryPantryOverlap}
+
+Household capabilities:
+${sections.capabilities}
 
 Current app structure:
 ${sections.appMap}

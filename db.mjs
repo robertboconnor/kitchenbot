@@ -6,6 +6,12 @@ import {
   normalizePantrySection,
 } from './inventory-classification.mjs';
 import { normalizeInventoryNameKey } from './inventory-service.mjs';
+import {
+  DEFAULT_ASSISTANT_NAME,
+  DEFAULT_ASSISTANT_TONE,
+  normalizeAssistantName,
+  normalizeAssistantTone,
+} from './kb-persona.mjs';
 
 const dbPath = process.env.DB_PATH || './kitchenbot.db';
 const db = new sqlite3.Database(dbPath);
@@ -195,6 +201,8 @@ async function initializeSchema() {
       assumed_pantry_items_json TEXT NOT NULL DEFAULT '[]',
       default_dinner_portions INTEGER NULL,
       weeknight_cooking_style TEXT NULL,
+      assistant_name TEXT NOT NULL DEFAULT 'KitchenBot',
+      assistant_tone TEXT NOT NULL DEFAULT 'helpful',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -272,6 +280,15 @@ async function initializeSchema() {
          WHERE smart_mode_enabled IS NOT NULL`
       );
     }
+  }
+
+  const householdDefaultsColumns = await all(`PRAGMA table_info(household_defaults)`);
+  const householdDefaultsColumnNames = new Set(householdDefaultsColumns.map((row) => String(row?.name || '').trim()));
+  if (!householdDefaultsColumnNames.has('assistant_name')) {
+    await run(`ALTER TABLE household_defaults ADD COLUMN assistant_name TEXT NOT NULL DEFAULT '${DEFAULT_ASSISTANT_NAME}'`);
+  }
+  if (!householdDefaultsColumnNames.has('assistant_tone')) {
+    await run(`ALTER TABLE household_defaults ADD COLUMN assistant_tone TEXT NOT NULL DEFAULT '${DEFAULT_ASSISTANT_TONE}'`);
   }
 
   const pantryDefaultsRows = await all(
@@ -771,6 +788,8 @@ function mapHouseholdDefaultsRow(row) {
     return {
       defaultDinnerPortions: null,
       weeknightCookingStyle: null,
+      assistantName: DEFAULT_ASSISTANT_NAME,
+      assistantTone: DEFAULT_ASSISTANT_TONE,
     };
   }
   return {
@@ -779,6 +798,8 @@ function mapHouseholdDefaultsRow(row) {
         ? null
         : Number(row.default_dinner_portions),
     weeknightCookingStyle: normalizeWeeknightCookingStyle(row.weeknight_cooking_style),
+    assistantName: normalizeAssistantName(row.assistant_name),
+    assistantTone: normalizeAssistantTone(row.assistant_tone),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -786,7 +807,8 @@ function mapHouseholdDefaultsRow(row) {
 
 export async function getHouseholdDefaults(householdId) {
   const row = await get(
-    `SELECT household_id, assumed_pantry_items_json, default_dinner_portions, weeknight_cooking_style, created_at, updated_at
+    `SELECT household_id, assumed_pantry_items_json, default_dinner_portions, weeknight_cooking_style,
+            assistant_name, assistant_tone, created_at, updated_at
      FROM household_defaults
      WHERE household_id = ?
      LIMIT 1`,
@@ -807,21 +829,34 @@ export async function saveHouseholdDefaults(householdId, defaults = {}) {
     defaults.weeknightCookingStyle === undefined
       ? current.weeknightCookingStyle
       : normalizeWeeknightCookingStyle(defaults.weeknightCookingStyle);
+  const assistantName =
+    defaults.assistantName === undefined
+      ? current.assistantName
+      : normalizeAssistantName(defaults.assistantName);
+  const assistantTone =
+    defaults.assistantTone === undefined
+      ? current.assistantTone
+      : normalizeAssistantTone(defaults.assistantTone);
 
   await run(
     `INSERT INTO household_defaults (
-       household_id, assumed_pantry_items_json, default_dinner_portions, weeknight_cooking_style, updated_at
-     ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+       household_id, assumed_pantry_items_json, default_dinner_portions, weeknight_cooking_style,
+       assistant_name, assistant_tone, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(household_id) DO UPDATE SET
        assumed_pantry_items_json = excluded.assumed_pantry_items_json,
        default_dinner_portions = excluded.default_dinner_portions,
        weeknight_cooking_style = excluded.weeknight_cooking_style,
+       assistant_name = excluded.assistant_name,
+       assistant_tone = excluded.assistant_tone,
        updated_at = CURRENT_TIMESTAMP`,
     [
       householdId,
       '[]',
       defaultDinnerPortions,
       weeknightCookingStyle,
+      assistantName,
+      assistantTone,
     ]
   );
   return getHouseholdDefaults(householdId);

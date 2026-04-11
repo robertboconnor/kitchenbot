@@ -27,6 +27,128 @@ function asNumberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+export function classifyAnthropicUsageFunction(callPurpose) {
+  const purpose = String(callPurpose ?? '').trim();
+  if (!purpose) return 'Other';
+  if (purpose === 'chat_reply') return 'Conversation replies';
+  if (purpose.startsWith('kb_turn_interpretation')) return 'Turn interpretation';
+  if (purpose === 'kb_working_context') return 'Context loading';
+  if (purpose === 'meal_refine' || purpose === 'kb_memory_shape') {
+    return 'Meal planning / refinement';
+  }
+  if (purpose.startsWith('grocery_draft_generation')) return 'Grocery drafting';
+  if (purpose === 'inventory_section_classification') return 'Inventory classification';
+  if (purpose === 'web_search') return 'Web search';
+  if (purpose === 'chat_title') return 'Chat titles';
+  return 'Other';
+}
+
+function compareUsageGroups(a, b) {
+  const aCost = a.estimatedCostAvailable === false ? -1 : Number(a.estimatedCostUsd ?? 0);
+  const bCost = b.estimatedCostAvailable === false ? -1 : Number(b.estimatedCostUsd ?? 0);
+  if (bCost !== aCost) return bCost - aCost;
+  if (b.inputTokens !== a.inputTokens) return b.inputTokens - a.inputTokens;
+  return b.callCount - a.callCount;
+}
+
+export function buildAnthropicUsageReport(rows) {
+  const totals = {
+    callCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    estimatedCostUsd: 0,
+    estimatedCostAvailable: true,
+  };
+
+  const byHousehold = new Map();
+  const byPurpose = new Map();
+  const byFunction = new Map();
+  const byWebSearchEnabled = new Map();
+  const byWebSearchUsage = new Map();
+
+  function bump(map, key, row, costUsd) {
+    const k = String(key);
+    if (!map.has(k)) {
+      map.set(k, {
+        key: k,
+        callCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        estimatedCostUsd: 0,
+        estimatedCostAvailable: true,
+      });
+    }
+    const entry = map.get(k);
+    entry.callCount += 1;
+    entry.inputTokens += Number(row.input_tokens ?? 0) || 0;
+    entry.outputTokens += Number(row.output_tokens ?? 0) || 0;
+    entry.cacheCreationInputTokens += Number(row.cache_creation_input_tokens ?? 0) || 0;
+    entry.cacheReadInputTokens += Number(row.cache_read_input_tokens ?? 0) || 0;
+    if (costUsd == null) {
+      entry.estimatedCostAvailable = false;
+    } else if (entry.estimatedCostAvailable) {
+      entry.estimatedCostUsd += costUsd;
+    }
+  }
+
+  for (const row of rows) {
+    totals.callCount += 1;
+    totals.inputTokens += Number(row.input_tokens ?? 0) || 0;
+    totals.outputTokens += Number(row.output_tokens ?? 0) || 0;
+    totals.cacheCreationInputTokens += Number(row.cache_creation_input_tokens ?? 0) || 0;
+    totals.cacheReadInputTokens += Number(row.cache_read_input_tokens ?? 0) || 0;
+    const costUsd = estimateAnthropicLedgerCostUsd(row);
+    if (costUsd == null) {
+      totals.estimatedCostAvailable = false;
+    } else if (totals.estimatedCostAvailable) {
+      totals.estimatedCostUsd += costUsd;
+    }
+    bump(byHousehold, row.household_id, row, costUsd);
+    bump(byPurpose, row.call_purpose, row, costUsd);
+    bump(byFunction, classifyAnthropicUsageFunction(row.call_purpose), row, costUsd);
+    bump(
+      byWebSearchEnabled,
+      Number(row.web_search_enabled_at_call) === 1 ? 'enabled' : 'disabled',
+      row,
+      costUsd
+    );
+    bump(
+      byWebSearchUsage,
+      Number(row.used_web_search_tool) === 1 ? 'used' : 'not_used',
+      row,
+      costUsd
+    );
+  }
+
+  function finalizeGroups(map) {
+    return Array.from(map.values()).sort(compareUsageGroups);
+  }
+
+  return {
+    totals,
+    byHousehold: finalizeGroups(byHousehold),
+    byPurpose: finalizeGroups(byPurpose),
+    byFunction: finalizeGroups(byFunction),
+    byWebSearchEnabled: finalizeGroups(byWebSearchEnabled),
+    byWebSearchUsage: finalizeGroups(byWebSearchUsage),
+  };
+}
+
+export function detectAnthropicWebSearchUsage(response) {
+  const count = Number(response?.usage?.server_tool_use?.web_search_requests ?? 0);
+  if (Number.isFinite(count) && count > 0) return true;
+  return (Array.isArray(response?.content) ? response.content : []).some((block) => {
+    const type = String(block?.type ?? '').trim();
+    if (type === 'web_search_tool_result') return true;
+    if (type === 'server_tool_use' && String(block?.name ?? '').trim() === 'web_search') return true;
+    return false;
+  });
+}
+
 export function extractAnthropicUsageFields(response) {
   const usage = response?.usage;
   if (!usage || typeof usage !== 'object') return null;
@@ -93,7 +215,10 @@ export async function recordAnthropicUsageFromResponse(response, context = {}) {
       cacheCreationInputTokens: usage.cacheCreationInputTokens,
       cacheReadInputTokens: usage.cacheReadInputTokens,
       webSearchEnabledAtCall: !!context.webSearchEnabledAtCall,
-      usedWebSearchTool: !!context.usedWebSearchTool,
+      usedWebSearchTool:
+        context.usedWebSearchTool == null
+          ? detectAnthropicWebSearchUsage(response)
+          : !!context.usedWebSearchTool,
     });
     return true;
   } catch (e) {

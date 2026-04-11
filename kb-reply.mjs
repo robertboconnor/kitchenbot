@@ -8,7 +8,10 @@ import {
 import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
 import {
+  buildKbAssistantPersonaSystemText,
   buildKbContextSystemText,
+  formatKbRecentConversation,
+  getKbAssistantPersona,
 } from './kb-prompt-context.mjs';
 import {
   formatAppliedWorkingContextText,
@@ -31,6 +34,21 @@ function sanitizeChatTitle(raw) {
     text = text.slice(0, 48).trim();
   }
   return text || '';
+}
+
+function getAssistantNameFromContext(memoryContext = null) {
+  return getKbAssistantPersona(memoryContext).assistantName;
+}
+
+async function resolveAssistantName({ req, routePrompt = '', memoryContext = null, deps }) {
+  if (memoryContext) return getAssistantNameFromContext(memoryContext);
+  if (!deps?.buildKbContextPacket) return getAssistantNameFromContext(null);
+  const resolvedMemoryContext = await deps.buildKbContextPacket(req.householdId, routePrompt, {
+    limit: 6,
+    activeSpeakerName: req.user,
+    capabilities: req.kbCapabilities,
+  }).catch(() => null);
+  return getAssistantNameFromContext(resolvedMemoryContext);
 }
 
 function fallbackChatTitle(messages, routePrompt) {
@@ -307,6 +325,32 @@ function fallbackPantryReply(outcome) {
   return 'I updated the Pantry.';
 }
 
+function fallbackWebSearchReply(outcome) {
+  if (!outcome || typeof outcome !== 'object') return 'I could not complete a live web search.';
+  if (outcome.status === 'disabled') {
+    return safeTrim(outcome.error) || 'Live web search is not enabled for this household.';
+  }
+  if (outcome.status === 'invalid') {
+    return safeTrim(outcome.error) || 'I need a clearer search topic before I can look something up.';
+  }
+  if (outcome.status === 'unavailable') {
+    return safeTrim(outcome.error) || 'I could not complete a live web search right now.';
+  }
+  if (outcome.status === 'no_results') {
+    const query = safeTrim(outcome.query);
+    return query
+      ? `I looked up ${query}, but I did not get useful results back.`
+      : 'I completed a web search, but I did not get useful results back.';
+  }
+  if (outcome.status === 'searched') {
+    const summary = safeTrim(outcome.summary);
+    if (summary) return summary;
+    const query = safeTrim(outcome.query);
+    return query ? `I looked up ${query}.` : 'I looked that up.';
+  }
+  return 'I could not complete a live web search.';
+}
+
 function buildSkillOutcomeFacts(outcomes) {
   return (Array.isArray(outcomes) ? outcomes : [])
     .map((outcome) => {
@@ -330,6 +374,20 @@ function buildSkillOutcomeFacts(outcomes) {
         }
         if (Array.isArray(outcome?.activeConstraints) && outcome.activeConstraints.length > 0) {
           parts.push(`activeConstraints=${outcome.activeConstraints.join('; ')}`);
+        }
+      }
+      if (capability === 'web.search') {
+        if (safeTrim(outcome?.query)) parts.push(`query=${safeTrim(outcome.query)}`);
+        if (safeTrim(outcome?.summary)) parts.push(`summary=${safeTrim(outcome.summary)}`);
+        if (safeTrim(outcome?.howToUse)) parts.push(`howToUse=${safeTrim(outcome.howToUse)}`);
+        if (outcome?.usedWebSearchTool != null) parts.push(`usedWebSearchTool=${outcome.usedWebSearchTool ? 'true' : 'false'}`);
+        if (Array.isArray(outcome?.sources) && outcome.sources.length > 0) {
+          parts.push(
+            `sources=${outcome.sources
+              .map((source) => [safeTrim(source?.title), safeTrim(source?.url)].filter(Boolean).join(' — '))
+              .filter(Boolean)
+              .join(' ; ')}`
+          );
         }
       }
       if (outcome?.defaults && typeof outcome.defaults === 'object') {
@@ -422,6 +480,9 @@ function fallbackSkillOutcomeReply(outcomes) {
       }
       return safeTrim(outcome?.replySummary) || 'I revised the current meal ideas.';
     }
+    if ((outcome?.capability || outcome?.narrationType) === 'web.search') {
+      return fallbackWebSearchReply(outcome);
+    }
   }
   return list
     .map((outcome) => {
@@ -454,6 +515,9 @@ function fallbackSkillOutcomeReply(outcomes) {
         }
         return safeTrim(outcome?.replySummary) || 'I revised the current meal ideas.';
       }
+      if ((outcome?.capability || outcome?.narrationType) === 'web.search') {
+        return fallbackWebSearchReply(outcome);
+      }
       return 'Okay.';
     })
     .filter(Boolean)
@@ -474,9 +538,10 @@ export async function respondWithKbClarify({
   deps,
 }) {
   const reply = safeTrim(question) || 'Can you clarify what you want me to do?';
+  const assistantName = await resolveAssistantName({ req, routePrompt, memoryContext, deps });
   await addMessage(chatId, req.householdId, 'user', name, routePrompt);
   await deps.incrementUserMessageCountForSender?.(req);
-  await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', reply);
+  await addMessage(chatId, req.householdId, 'assistant', assistantName, reply);
   const refreshedWorkingContext = await maybeRefreshWorkingContext({
     anthropic,
     req,
@@ -519,6 +584,7 @@ export async function respondWithKbReply({
     await addMessage(chatId, req.householdId, 'user', name, routePrompt);
     await deps.incrementUserMessageCountForSender?.(req);
   }
+  const assistantName = await resolveAssistantName({ req, routePrompt, memoryContext, deps });
 
   let finalReply = safeTrim(replyText);
   if (!finalReply && replyPlan?.kind === 'generate_reply') {
@@ -537,7 +603,7 @@ export async function respondWithKbReply({
   }
   finalReply = finalReply || 'Okay.';
 
-  await addMessage(chatId, req.householdId, 'assistant', 'KitchenBot', finalReply);
+  await addMessage(chatId, req.householdId, 'assistant', assistantName, finalReply);
   const refreshedWorkingContext = await maybeRefreshWorkingContext({
     anthropic,
     req,
@@ -616,22 +682,22 @@ async function generateKbReply({ anthropic, req, chatId, routePrompt, memoryCont
     (await deps.buildKbContextPacket(req.householdId, routePrompt, {
       limit: 6,
       activeSpeakerName: req.user,
+      capabilities: req.kbCapabilities,
     }));
-
-  const messages = recentConversation.map((message) => ({
-    role: message.role,
-    content:
-      message.role === 'user'
-        ? `${message.name}: ${message.content}`
-        : deps.stripStoredMessageContentForDisplay?.(message.content) ?? String(message.content ?? ''),
-  }));
+  const persona = getKbAssistantPersona(resolvedMemoryContext);
+  const recentConversationText =
+    formatKbRecentConversation(recentConversation, deps, {
+      limit: 20,
+      assistantLabel: persona.assistantName,
+      assistantPersona: resolvedMemoryContext?.assistantPersona,
+    }) || '(none)';
 
   const response = await createLoggedAnthropicMessage(
     anthropic,
     {
       model: resolveAnthropicModelForCallPurpose('chat_reply'),
       max_tokens: 800,
-      system: `You are KitchenBot, a concise household assistant.
+      system: `${buildKbAssistantPersonaSystemText(resolvedMemoryContext)}
 
 Operating rules:
 - Reply naturally unless a real server action already happened.
@@ -646,12 +712,16 @@ Operating rules:
 - Do not mention the time unless it materially helps.
 - Do not invite a bare yes/no follow-up unless the reply corresponds to a real stored next action or a concrete multiple-choice question.
 - If you are offering future help without a stored next action, ask the user to say the action explicitly instead of replying with only "yes".
+- If the user asks who you are, what your name is, or what your tone is supposed to be, answer from the configured assistant persona above.
+- If the user asks whether you can search the web or why you did not look something up, answer from the household capabilities below.
 - Do not mention internal tools, modes, or hidden workflows.
 
 ${buildKbContextSystemText(resolvedMemoryContext)}`,
       messages: [
-        ...messages,
-        { role: 'user', content: routePrompt },
+        {
+          role: 'user',
+          content: `Recent conversation:\n${recentConversationText}\n\nLatest user prompt:\n${routePrompt}`,
+        },
       ],
     },
     {
@@ -680,15 +750,15 @@ async function generateSkillOutcomeReply({ anthropic, req, chatId, routePrompt, 
     (await deps.buildKbContextPacket(req.householdId, routePrompt, {
       limit: 6,
       activeSpeakerName: req.user,
+      capabilities: req.kbCapabilities,
     }));
-
-  const messages = recentConversation.map((message) => ({
-    role: message.role,
-    content:
-      message.role === 'user'
-        ? `${message.name}: ${message.content}`
-        : deps.stripStoredMessageContentForDisplay?.(message.content) ?? String(message.content ?? ''),
-  }));
+  const persona = getKbAssistantPersona(resolvedMemoryContext);
+  const recentConversationText =
+    formatKbRecentConversation(recentConversation, deps, {
+      limit: 16,
+      assistantLabel: persona.assistantName,
+      assistantPersona: resolvedMemoryContext?.assistantPersona,
+    }) || '(none)';
 
   try {
     const response = await createLoggedAnthropicMessage(
@@ -696,7 +766,7 @@ async function generateSkillOutcomeReply({ anthropic, req, chatId, routePrompt, 
       {
         model: resolveAnthropicModelForCallPurpose('chat_reply'),
         max_tokens: 550,
-        system: `You are KitchenBot, a concise household assistant.
+        system: `${buildKbAssistantPersonaSystemText(resolvedMemoryContext)}
 
 You are narrating the real outcomes of one or more already-executed KitchenBot skills.
 
@@ -720,15 +790,15 @@ Rules:
 - Never talk about an ongoing list, draft list, or internal list state.
 - If a grocery write needs a mode choice, ask that question naturally.
 - If memory was saved or updated, confirm it naturally without exposing internal keys.
+- If a web search outcome is present, use its findings naturally and never expose raw tool-call syntax.
 - It is okay to lightly group or summarize grocery preview items, but keep the contents faithful.
 - Do not mention internal tools, modes, or hidden workflows.
 
 ${buildKbContextSystemText(resolvedMemoryContext)}`,
         messages: [
-          ...messages,
           {
             role: 'user',
-            content: `User request: ${routePrompt}\n\nStructured skill outcomes:\n${outcomeFacts}`,
+            content: `Recent conversation:\n${recentConversationText}\n\nUser request: ${routePrompt}\n\nStructured skill outcomes:\n${outcomeFacts}`,
           },
         ],
       },

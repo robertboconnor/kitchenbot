@@ -79,6 +79,14 @@ function formatPendingActionContext(pendingAction) {
   return parts.join('\n');
 }
 
+function formatCapabilitiesContext(capabilities) {
+  const webSearchEnabled = !!capabilities?.webSearchEnabled;
+  return [
+    'Household capabilities:',
+    `- Web search: ${webSearchEnabled ? 'enabled' : 'disabled'}`,
+  ].join('\n');
+}
+
 export function buildPromptContextProfile({ prompt = '', runtimeProposedNextAction = null, workingContext = null } = {}) {
   const text = safeTrim(prompt).toLowerCase();
   const hasWorkingContext = !!normalizeWorkingContext(workingContext);
@@ -94,16 +102,22 @@ export function buildPromptContextProfile({ prompt = '', runtimeProposedNextActi
   const requestsGroceryGeneration =
     /\b(grocery|groceries|grocery list|shopping list)\b/.test(text) &&
     /\b(for|from|give me|make|build|show|ingredients|meal|meals|plan|recipe|recipes)\b/.test(text);
+  const requestsMealPlanning =
+    /\b(meal plan|meal plans|plan meals|plan dinners|meals for|dinners for|weekly meals|weekly dinners|dinner ideas|meal ideas)\b/.test(text) ||
+    (/\b(meal|meals|dinner|dinners)\b/.test(text) &&
+      /\b(plan|planning|create|build|make|sketch|suggest|ideas|for this week|for the week|this week|tonight)\b/.test(text));
   const talksAboutPantry = /\b(pantry|on hand|already have|use what we have|what we have|staples?)\b/.test(text);
   const asksAboutPantryState = /\bwhat'?s in our pantry|what is in our pantry|what do we have in our pantry\b/.test(text);
-  const asksAboutDefaults = /\b(portions?|servings?|weeknight|easy meals?|ambitious|normal meals?)\b/.test(text);
+  const asksAboutDefaults =
+    /\b(default dinner portions?|default portions?|portions?|servings?|cooking style|weeknight|household defaults?|default settings|easy meals?|ambitious|normal meals?)\b/.test(text) ||
+    /\bhow many people (do we|are we going to)? cook(?:ing)? for\b/.test(text);
 
   const includeGrocery = talksAboutGrocery;
   const includePantry =
     asksAboutPantryState ||
     (!asksAboutGroceryState && (talksAboutPantry || requestsGroceryGeneration)) ||
     (talksAboutGrocery && /\b(pantry|on hand|already have|staple|staples)\b/.test(text));
-  const includeDefaults = requestsGroceryGeneration || asksAboutDefaults;
+  const includeDefaults = requestsGroceryGeneration || requestsMealPlanning || asksAboutDefaults;
 
   return {
     includeDefaults,
@@ -117,6 +131,8 @@ export function buildRuntimeKbContext({ baseContext, timeContext, workingContext
   const includeWorkingContext = !!profile?.includeWorkingContext;
   return {
     ...baseContext,
+    capabilities: baseContext?.capabilities || {},
+    capabilitiesText: formatCapabilitiesContext(baseContext?.capabilities || {}),
     appMapText: formatAppMapContext(),
     timeContext,
     timeContextText: formatClientTimeContext(timeContext),

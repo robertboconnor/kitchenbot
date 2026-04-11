@@ -4,6 +4,7 @@ import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, execute
 import { executeHouseholdDefaultsUpdate } from './household-defaults-executor.mjs';
 import { executeMealRefine } from './meal-refine-executor.mjs';
 import { executeGroceryMoveToPantry, executePantryAdd, executePantryMoveToGrocery, executePantryRemove } from './pantry-executor.mjs';
+import { executeWebSearch } from './web-search-executor.mjs';
 import {
   inferMemoryKeyAndValue,
   normalizeMemoryKey,
@@ -177,6 +178,12 @@ function normalizeNameOnlyActionInput(input, context = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const name = safeTrim(raw.name || raw.item || raw.product || raw.payload || raw.text || context.originalPrompt);
   return name ? { name } : null;
+}
+
+function normalizeWebSearchActionInput(input, context = {}) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const query = safeTrim(raw.query || raw.topic || raw.search || raw.payload || raw.text || context.originalPrompt);
+  return query ? { query } : null;
 }
 
 export const KB_SKILLS = {
@@ -395,6 +402,23 @@ export const KB_SKILLS = {
     normalizeActionInput: normalizeMealRefineActionInput,
     execute: executeMealRefine,
   },
+  'web.search': {
+    id: 'web.search',
+    description: 'Search the live web for outside or current information when household web search is enabled.',
+    narrationType: 'web.search',
+    contextProfile: {
+      includeDefaults: true,
+      includeWorkingContext: true,
+    },
+    interpreterDescription:
+      'Search the live web for current or outside information when the household has web search enabled and the request clearly needs it.',
+    exampleAction: {
+      capability: 'web.search',
+      input: { query: 'Masters Champions Dinner menu traditions' },
+    },
+    normalizeActionInput: normalizeWebSearchActionInput,
+    execute: executeWebSearch,
+  },
 };
 
 export function getKbSkill(capability) {
@@ -405,14 +429,24 @@ export function listKbSkills() {
   return Object.values(KB_SKILLS);
 }
 
-export function buildKbInterpreterSkillList() {
-  return listKbSkills()
+function filterSkillsForInterpreter(skills, opts = {}) {
+  return (Array.isArray(skills) ? skills : []).filter((skill) => {
+    if (!skill) return false;
+    if (skill.id === 'web.search' && !opts.webSearchEnabled) return false;
+    return true;
+  });
+}
+
+export function buildKbInterpreterSkillList(opts = {}) {
+  const skills = filterSkillsForInterpreter(listKbSkills(), opts);
+  return skills
     .map((skill) => `${skill.id}: ${skill.interpreterDescription || skill.description}`)
     .join('\n');
 }
 
-export function buildKbInterpreterActionExamples() {
-  return listKbSkills()
+export function buildKbInterpreterActionExamples(opts = {}) {
+  const skills = filterSkillsForInterpreter(listKbSkills(), opts);
+  return skills
     .map((skill) => JSON.stringify(skill.exampleAction))
     .join('\n');
 }
@@ -447,6 +481,7 @@ export function normalizeKbSkillAction(action, context = {}) {
   if (!capability) return null;
   const skill = getKbSkill(capability);
   if (!skill) return null;
+  if (capability === 'web.search' && !context.webSearchEnabled) return null;
   const input = skill.normalizeActionInput ? skill.normalizeActionInput(action.input, context) : action.input ?? {};
   if (input == null || typeof input !== 'object' || Array.isArray(input)) return null;
   return { capability, input };

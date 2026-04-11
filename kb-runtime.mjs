@@ -28,14 +28,17 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
   const workingContext = normalizeWorkingContext(runtimeState.workingContext);
 
   let anthropic = null;
+  let webSearchEnabled = false;
   try {
     const ac = await deps.getAnthropicClient(req.householdId);
     anthropic = ac.client;
+    webSearchEnabled = !!ac.webSearchEnabled;
   } catch (error) {
     if (deps.isAnthropicSdkAuthOrKeyError?.(error)) {
       return res.status(503).json({ reply: deps.ANTHROPIC_KEY_USER_MESSAGE });
     }
   }
+  req.kbCapabilities = { webSearchEnabled };
 
   let turn = decideKbNextActionFollowUp(promptText, runtimeProposedNextAction);
   let contextProfile = turn?.kind === 'execute_action'
@@ -55,6 +58,7 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
     includeDefaults: contextProfile.includeDefaults,
     includePantry: contextProfile.includePantry,
     includeGrocery: contextProfile.includeGrocery,
+    capabilities: { webSearchEnabled },
   });
   let memoryContext = buildRuntimeKbContext({
     baseContext: baseMemoryContext,
@@ -94,6 +98,7 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
         includeDefaults: contextProfile.includeDefaults,
         includePantry: contextProfile.includePantry,
         includeGrocery: contextProfile.includeGrocery,
+        capabilities: { webSearchEnabled },
       });
       memoryContext = buildRuntimeKbContext({
         baseContext: baseMemoryContext,
@@ -114,6 +119,7 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
       memoryContext,
       workingContext,
       deps,
+      webSearchEnabled,
     });
     turn = {
       kind: 'reply_only',

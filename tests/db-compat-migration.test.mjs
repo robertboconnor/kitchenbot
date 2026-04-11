@@ -102,6 +102,14 @@ test('runMigrations patches old Render-era runtime and usage columns compatibly'
         web_search_enabled_at_call INTEGER NOT NULL DEFAULT 0,
         used_web_search_tool INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE household_defaults (
+        household_id INTEGER PRIMARY KEY REFERENCES households(id) ON DELETE CASCADE,
+        assumed_pantry_items_json TEXT NOT NULL DEFAULT '[]',
+        default_dinner_portions INTEGER NULL,
+        weeknight_cooking_style TEXT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
       INSERT INTO households (id, name, household_key, web_search_enabled, smart_mode_enabled)
       VALUES (1, 'Home', 'home', 0, 1);
       INSERT INTO chats (id, household_id, owner, title)
@@ -137,6 +145,11 @@ test('runMigrations patches old Render-era runtime and usage columns compatibly'
   );
   assert.equal(Number(usageRow.smart_mode_enabled), 0);
   assert.equal(Number(usageRow.runtime_enabled), 0);
+
+  const defaultsColumns = await all(checkDb, `PRAGMA table_info(household_defaults)`);
+  const defaultsNames = new Set(defaultsColumns.map((row) => row.name));
+  assert.equal(defaultsNames.has('assistant_name'), true);
+  assert.equal(defaultsNames.has('assistant_tone'), true);
 
   await close(checkDb);
   await fs.rm(tempDir, { recursive: true, force: true });

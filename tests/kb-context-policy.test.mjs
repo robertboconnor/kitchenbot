@@ -32,6 +32,24 @@ test('grocery generation pulls richer context families', () => {
   assert.equal(profile.includeWorkingContext, true);
 });
 
+test('meal planning pulls household defaults even without grocery wording', () => {
+  const profile = buildPromptContextProfile({
+    prompt: 'help me plan 3 dinners for this week',
+    runtimeProposedNextAction: null,
+    workingContext: null,
+  });
+  assert.equal(profile.includeDefaults, true);
+});
+
+test('asking about cooking style pulls household defaults', () => {
+  const profile = buildPromptContextProfile({
+    prompt: 'what do you know about my cooking style?',
+    runtimeProposedNextAction: null,
+    workingContext: null,
+  });
+  assert.equal(profile.includeDefaults, true);
+});
+
 test('profileNeedsRefresh only escalates when new families are required', () => {
   assert.equal(
     profileNeedsRefresh(
