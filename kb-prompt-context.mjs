@@ -61,8 +61,11 @@ export function getKbPromptContextSections(memoryContext = {}) {
     appliedHouseholdDefaults: readContextText(memoryContext, 'appliedDefaultsText'),
     pantryItems: readContextText(memoryContext, 'pantryText'),
     appliedPantry: readContextText(memoryContext, 'appliedPantryText'),
+    pantryContextStatus: safeTrim(memoryContext?.pantryContextStatus) || '(none)',
     groceryItems: readContextText(memoryContext, 'groceryText'),
     appliedGrocery: readContextText(memoryContext, 'appliedGroceryText'),
+    cookbookEntries: readContextText(memoryContext, 'cookbookText'),
+    appliedCookbook: readContextText(memoryContext, 'appliedCookbookText'),
     groceryPantryOverlap: readContextText(memoryContext, 'groceryPantryOverlapText'),
     capabilities: readContextText(memoryContext, 'capabilitiesText'),
     appMap: readContextText(memoryContext, 'appMapText'),
@@ -94,11 +97,20 @@ ${sections.pantryItems}
 Applied pantry assumptions:
 ${sections.appliedPantry}
 
+Pantry context status for this turn:
+${sections.pantryContextStatus}
+
 Current Grocery List tab:
 ${sections.groceryItems}
 
 Applied Grocery List state:
 ${sections.appliedGrocery}
+
+Relevant cookbook entries:
+${sections.cookbookEntries}
+
+Applied cookbook context:
+${sections.appliedCookbook}
 
 Grocery / Pantry overlap notes:
 ${sections.groceryPantryOverlap}

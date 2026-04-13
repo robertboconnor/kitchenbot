@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node kitchenbot.mjs",
     "dev": "node kitchenbot.mjs",
+    "db:households": "node scripts/household-sanity.mjs",
     "test": "node --test"
   },
   "engines": {
@@ -24,6 +25,7 @@
   "license": "UNLICENSED",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
+    "cheerio": "^1.2.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "redis": "^4.7.0",

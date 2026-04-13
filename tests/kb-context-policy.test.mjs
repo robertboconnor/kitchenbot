@@ -1,10 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import {
   buildPromptContextProfile,
   profileNeedsRefresh,
 } from '../kb-context-policy.mjs';
+import { isMealGroceryRelevantTurn } from '../kb-working-context.mjs';
+
+const execFileAsync = promisify(execFile);
 
 test('light cooking advice stays on minimal context', () => {
   const profile = buildPromptContextProfile({
@@ -16,6 +24,7 @@ test('light cooking advice stays on minimal context', () => {
     includeDefaults: false,
     includePantry: false,
     includeGrocery: false,
+    includeCookbook: false,
     includeWorkingContext: false,
   });
 });
@@ -29,6 +38,7 @@ test('grocery generation pulls richer context families', () => {
   assert.equal(profile.includeDefaults, true);
   assert.equal(profile.includePantry, true);
   assert.equal(profile.includeGrocery, true);
+  assert.equal(profile.includeCookbook, false);
   assert.equal(profile.includeWorkingContext, true);
 });
 
@@ -39,6 +49,7 @@ test('meal planning pulls household defaults even without grocery wording', () =
     workingContext: null,
   });
   assert.equal(profile.includeDefaults, true);
+  assert.equal(profile.includeCookbook, false);
 });
 
 test('asking about cooking style pulls household defaults', () => {
@@ -48,21 +59,131 @@ test('asking about cooking style pulls household defaults', () => {
     workingContext: null,
   });
   assert.equal(profile.includeDefaults, true);
+  assert.equal(profile.includeCookbook, false);
 });
 
 test('profileNeedsRefresh only escalates when new families are required', () => {
   assert.equal(
     profileNeedsRefresh(
-      { includeDefaults: false, includePantry: false, includeGrocery: false, includeWorkingContext: false },
-      { includeDefaults: true, includePantry: false, includeGrocery: false, includeWorkingContext: false }
+      { includeDefaults: false, includePantry: false, includeGrocery: false, includeCookbook: false, includeWorkingContext: false },
+      { includeDefaults: true, includePantry: false, includeGrocery: false, includeCookbook: false, includeWorkingContext: false }
     ),
     true
   );
   assert.equal(
     profileNeedsRefresh(
-      { includeDefaults: true, includePantry: true, includeGrocery: false, includeWorkingContext: true },
-      { includeDefaults: true, includePantry: true, includeGrocery: false, includeWorkingContext: true }
+      { includeDefaults: true, includePantry: true, includeGrocery: false, includeCookbook: true, includeWorkingContext: true },
+      { includeDefaults: true, includePantry: true, includeGrocery: false, includeCookbook: true, includeWorkingContext: true }
     ),
     false
   );
+});
+
+test('direct cookbook prompts pull cookbook context without unrelated inventory', () => {
+  const profile = buildPromptContextProfile({
+    prompt: 'what do we have saved in our cookbook?',
+    runtimeProposedNextAction: null,
+    workingContext: null,
+  });
+  assert.equal(profile.includeCookbook, true);
+  assert.equal(profile.includePantry, false);
+  assert.equal(profile.includeGrocery, false);
+});
+
+test('linked recipe provenance follow-ups pull cookbook context', () => {
+  const profile = buildPromptContextProfile({
+    prompt: 'did you actually read the url?',
+    runtimeProposedNextAction: null,
+    workingContext: null,
+  });
+  assert.equal(profile.includeCookbook, true);
+  assert.equal(profile.includePantry, false);
+  assert.equal(profile.includeGrocery, false);
+});
+
+test('recipe follow-ups pull working context when a meal thread is already active', () => {
+  const profile = buildPromptContextProfile({
+    prompt: 'give me the waffle iron recipe',
+    runtimeProposedNextAction: null,
+    workingContext: {
+      topicSummary: 'Three dinner ideas for the week',
+      mealIdeas: ['Bacon-Wrapped Pork Tenderloin', 'Waffle Iron Grilled Cheese Burger', 'Chicken Liver Pate'],
+      subjectItems: ['Waffle Iron Grilled Cheese Burger', 'waffle iron recipe'],
+    },
+  });
+  assert.equal(profile.includeWorkingContext, true);
+});
+
+test('meal/grocery relevance stays generic and uses existing thread continuity', () => {
+  const relevant = isMealGroceryRelevantTurn({
+    prompt: 'show me how to make the one we just picked',
+    workingContext: {
+      topicSummary: 'Planning dinner',
+      mealIdeas: ['Crispy tofu rice bowl', 'Braised short ribs'],
+      subjectItems: ['Crispy tofu rice bowl'],
+    },
+  });
+  assert.equal(relevant, true);
+});
+
+test('working context falls back to the actual recent meal thread when the background model drops it', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-working-context-fallback-'));
+  const dbPath = path.join(tempDir, 'kb-working-context-fallback.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const { refreshKbWorkingContext } = await import(new URL('./kb-working-context.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Working context fallback');
+    await db.addMessage(created.householdId, chatId, 'user', 'Rob', 'help me figure out three dinners this week: something smoky, something crispy in bread, and something cozy with noodles');
+    await db.addMessage(
+      created.householdId,
+      chatId,
+      'assistant',
+      'KitchenBot',
+      '**Smoky:** Smoked brisket burnt ends with charred corn and brioche rolls\\n**Crispy in bread:** Crispy chicken sandwich with hot honey\\n**Cozy with noodles:** Cheesy baked ziti with basil'
+    );
+
+    const anthropic = {
+      messages: {
+        create: async () => ({
+          model: 'claude-haiku-4-5',
+          usage: { input_tokens: 10, output_tokens: 10 },
+          content: [{ type: 'text', text: JSON.stringify({ keep: false }) }],
+        }),
+      },
+    };
+
+    const workingContext = await refreshKbWorkingContext({
+      anthropic,
+      req: { householdId: created.householdId, kbTurnId: 'turn-fallback' },
+      chatId,
+      routePrompt: 'help me figure out three dinners this week: something smoky, something crispy in bread, and something cozy with noodles',
+      currentWorkingContext: null,
+      memoryContext: null,
+      outcomes: [],
+      deps: { stripStoredMessageContentForDisplay: (text) => text },
+    });
+
+    process.stdout.write(JSON.stringify(workingContext));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+
+  const workingContext = JSON.parse(stdout.trim());
+  assert.ok(workingContext);
+  assert.ok(Array.isArray(workingContext.mealIdeas));
+  assert.ok(workingContext.mealIdeas.some((item) => /crispy chicken sandwich/i.test(item)));
+  assert.ok(workingContext.mealIdeas.some((item) => /cheesy baked ziti/i.test(item)));
+
+  await fs.rm(tempDir, { recursive: true, force: true });
 });

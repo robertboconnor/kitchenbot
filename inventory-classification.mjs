@@ -20,6 +20,16 @@ function normalizeNameKey(name) {
   return safeTrim(name).toLowerCase().replace(/\s+/g, ' ');
 }
 
+function normalizeBooleanLike(raw) {
+  if (raw === true || raw === 1 || raw === '1') return true;
+  if (typeof raw === 'string') {
+    const value = safeTrim(raw).toLowerCase();
+    if (value === 'true' || value === 'yes') return true;
+    if (value === 'false' || value === 'no') return false;
+  }
+  return false;
+}
+
 function parseJson(raw, fallback) {
   let text = safeTrim(raw);
   const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)```$/im);
@@ -43,7 +53,7 @@ function inferPantrySectionFallback(rawName) {
   if (!name) return 'other_pantry';
 
   if (
-    /\b(salt|pepper|thyme|oregano|rosemary|basil|parsley|sage|cumin|coriander|turmeric|paprika|smoked paprika|chili powder|ancho|chipotle|cayenne|garlic powder|onion powder|red pepper flakes|bay leaf|seasoning)\b/.test(
+    /\b(salt|pepper|white pepper|black pepper|thyme|oregano|rosemary|basil|parsley|sage|cumin|coriander|turmeric|paprika|smoked paprika|cardamom|sumac|chili powder|ancho|chipotle|cayenne|garlic powder|onion powder|red pepper flakes|bay leaf|seasoning|spice blend|spices|herbs)\b/.test(
       name
     )
   ) {
@@ -88,6 +98,11 @@ function mapPantrySectionToGroceryFallback(rawSection) {
   const section = safeTrim(rawSection).toLowerCase();
   if (['spices_herbs', 'baking', 'sweeteners', 'pasta_grains_dry_goods'].includes(section)) return 'dry';
   return 'other';
+}
+
+function inferProbablyPantryFallbackFromName(rawName) {
+  const pantrySection = inferPantrySectionFallback(rawName);
+  return ['spices_herbs', 'oils_vinegars', 'baking', 'sweeteners', 'pasta_grains_dry_goods'].includes(pantrySection);
 }
 
 function inferGrocerySectionFallback(rawName, sourceSection = '', sourceListType = '') {
@@ -166,10 +181,14 @@ Allowed section keys: ${allowed.join(', ')}
 
 Rules:
 - Return ONLY JSON.
-- Shape: {"items":[{"index":0,"section":"allowed_key"}]}
+- Shape for pantry: {"items":[{"index":0,"section":"allowed_key"}]}
+- Shape for grocery: {"items":[{"index":0,"section":"allowed_key","probablyPantryItem":true|false}]}
 - Choose exactly one allowed section key for each item index.
 - Use the item name as the primary signal.
 - Use amount, sourceSection, and sourceListType only as secondary hints.
+- For grocery items, set probablyPantryItem to true only when the item is usually something households keep on hand in Pantry:
+  spices, herbs, flours, baking items, oils, vinegars, sweeteners, pasta, grains, beans, lentils, or similar dry goods.
+- For grocery items, set probablyPantryItem to false for things that are usually refrigerated.
 - If unsure, choose the best allowed section instead of inventing a new one.`,
         messages: [
           {
@@ -207,7 +226,10 @@ Rules:
       const index = Number(row?.index);
       const section = normalizeExplicitSection(target, row?.section);
       if (!Number.isInteger(index) || !section) continue;
-      out.set(index, section);
+      out.set(index, {
+        section,
+        probablyPantryItem: target === 'grocery' ? normalizeBooleanLike(row?.probablyPantryItem) : false,
+      });
     }
     return out;
   } catch {
@@ -249,12 +271,14 @@ export async function resolveInventoryItems({
     const sourceSection = safeTrim(raw.sourceSection || raw.section);
     const sourceListType = safeTrim(raw.sourceListType);
     const explicitSection = normalizeExplicitSection(normalizedTarget, raw.section);
+    const inheritedProbablyPantryItem = raw?.probablyPantryItem === true;
     cleaned.push({
       name,
       amount,
       sourceSection,
       sourceListType,
       explicitSection,
+      inheritedProbablyPantryItem,
     });
   }
 
@@ -272,19 +296,35 @@ export async function resolveInventoryItems({
   });
 
   return cleaned.map((item, index) => {
+    const classifiedRow = classified.get(index);
     const section =
       item.explicitSection ||
-      classified.get(index) ||
+      classifiedRow?.section ||
       inferInventorySectionFallback({
         target: normalizedTarget,
         name: item.name,
         sourceSection: item.sourceSection,
         sourceListType: item.sourceListType,
       });
-    return {
+    const resolved = {
       name: item.name,
       section,
       amount: item.amount,
     };
+    if (normalizedTarget === 'grocery') {
+      const refrigerated = /\b(milk|cream|cheese|yogurt|butter|egg|eggs|labneh|tofu|sour cream|cottage cheese|cream cheese|kefir)\b/.test(
+        normalizeNameKey(item.name)
+      );
+      let probablyPantryItem = false;
+      if (item.inheritedProbablyPantryItem || item.sourceListType.toLowerCase() === 'pantry') {
+        probablyPantryItem = true;
+      } else if (!refrigerated) {
+        probablyPantryItem =
+          classifiedRow?.probablyPantryItem === true ||
+          inferProbablyPantryFallbackFromName(item.name);
+      }
+      resolved.probablyPantryItem = probablyPantryItem;
+    }
+    return resolved;
   });
 }

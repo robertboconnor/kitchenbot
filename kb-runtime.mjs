@@ -1,8 +1,19 @@
 import { getChatRuntimeState } from './db.mjs';
+import crypto from 'crypto';
 import { interpretKbTurn } from './kb-interpreter.mjs';
 import { normalizeProposedNextAction } from './kb-next-action.mjs';
-import { decideKbNextActionFollowUp, decideKbTurnFallback } from './kb-turn-decider.mjs';
-import { executeKbActions, getKbContextProfileForActions, mergeKbContextProfiles } from './kb-skills.mjs';
+import {
+  decideKbActionIntegrityOverride,
+  decideKbNextActionFollowUp,
+  decideKbProtectedActionTurn,
+  decideKbTurnFallback,
+} from './kb-turn-decider.mjs';
+import {
+  executeKbActions,
+  getKbContextProfileForActions,
+  interpretKbSkillFollowUp,
+  mergeKbContextProfiles,
+} from './kb-skills.mjs';
 import { respondWithKbClarify, respondWithKbReply } from './kb-reply.mjs';
 import {
   buildPromptContextProfile,
@@ -22,6 +33,16 @@ export function resolveClarifyProposedNextAction(turn, runtimeProposedNextAction
 
 export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps }) {
   const promptText = String(prompt ?? '').trim();
+  const turnId = crypto.randomUUID();
+  req.kbTurnId = turnId;
+  await deps.emitKbProgress?.({
+    chatId,
+    householdId: req.householdId,
+    turnId,
+    text: 'Reading context…',
+    phase: 'runtime.read_context',
+    senderRes: res,
+  });
   const timeContext = normalizeClientTimeContext(req.body?.timeContext);
   const runtimeState = await getChatRuntimeState(chatId, req.householdId);
   const runtimeProposedNextAction = normalizeProposedNextAction(runtimeState.proposedNextAction);
@@ -40,7 +61,10 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
   }
   req.kbCapabilities = { webSearchEnabled };
 
-  let turn = decideKbNextActionFollowUp(promptText, runtimeProposedNextAction);
+  let turn =
+    interpretKbSkillFollowUp(promptText, runtimeProposedNextAction, { workingContext, memoryContext: null }) ||
+    decideKbNextActionFollowUp(promptText, runtimeProposedNextAction, workingContext) ||
+    decideKbProtectedActionTurn(promptText);
   let contextProfile = turn?.kind === 'execute_action'
     ? mergeKbContextProfiles(getKbContextProfileForActions(turn.actions), { includeWorkingContext: !!runtimeProposedNextAction })
     : buildPromptContextProfile({ prompt: promptText, runtimeProposedNextAction, workingContext });
@@ -56,6 +80,7 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
     limit: 6,
     activeSpeakerName: name,
     includeDefaults: contextProfile.includeDefaults,
+    includeCookbook: contextProfile.includeCookbook,
     includePantry: contextProfile.includePantry,
     includeGrocery: contextProfile.includeGrocery,
     capabilities: { webSearchEnabled },
@@ -69,12 +94,21 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
   let memoriesByKey = new Map((memoryContext.rows || []).map((row) => [row.key, row.value]));
 
   if (!turn) {
+    await deps.emitKbProgress?.({
+      chatId,
+      householdId: req.householdId,
+      turnId,
+      text: 'Plotting something delicious…',
+      phase: 'runtime.plan',
+      senderRes: res,
+    });
     turn =
     (await interpretKbTurn({
       anthropic,
       req,
       chatId,
       prompt: promptText,
+      turnId,
       activeSpeakerName: name,
       memoryContext,
       runtimeProposedNextAction,
@@ -88,6 +122,11 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
     });
   }
 
+  const integrityOverride = decideKbActionIntegrityOverride(promptText, turn);
+  if (integrityOverride) {
+    turn = integrityOverride;
+  }
+
   if (turn.kind === 'execute_action') {
     const requiredProfile = mergeKbContextProfiles(contextProfile, getKbContextProfileForActions(turn.actions));
     if (profileNeedsRefresh(contextProfile, requiredProfile)) {
@@ -96,6 +135,7 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
         limit: 6,
         activeSpeakerName: name,
         includeDefaults: contextProfile.includeDefaults,
+        includeCookbook: contextProfile.includeCookbook,
         includePantry: contextProfile.includePantry,
         includeGrocery: contextProfile.includeGrocery,
         capabilities: { webSearchEnabled },
@@ -114,6 +154,7 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
       name,
       chatId,
       prompt: promptText,
+      turnId,
       anthropic,
       memories: memoryContext.rows,
       memoryContext,
@@ -140,6 +181,7 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
       res,
       name,
       chatId,
+      turnId,
       routePrompt: turn.routePrompt || promptText,
       question: turn.question,
       proposedNextAction: resolveClarifyProposedNextAction(turn, runtimeProposedNextAction),
@@ -155,6 +197,7 @@ export async function handleKbChatTurn({ req, res, name, chatId, prompt, deps })
       res,
       name,
       chatId,
+      turnId,
     routePrompt: turn.routePrompt || promptText,
       replyText: turn.replyText,
       replyPlan: turn.replyPlan,

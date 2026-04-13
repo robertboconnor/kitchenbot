@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 import { buildClarifyActionState } from '../kb-next-action.mjs';
 import { resolveClarifyProposedNextAction } from '../kb-runtime.mjs';
@@ -44,4 +46,16 @@ test('clarify turn prefers a newly returned clarify action when present', () => 
     existing
   );
   assert.deepEqual(resolved, replacement);
+});
+
+test('runtime planning progress copy stays KitchenBot-ish', async () => {
+  const source = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../kb-runtime.mjs'), 'utf8');
+  assert.match(source, /Plotting something delicious…/);
+  assert.doesNotMatch(source, /Planning the request…/);
+});
+
+test('meal refine progress copy stays KitchenBot-ish too', async () => {
+  const source = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../kb-skills.mjs'), 'utf8');
+  assert.match(source, /Plotting something delicious…/);
+  assert.doesNotMatch(source, /case 'meal\.refine':\s*return 'Planning the request…';/);
 });

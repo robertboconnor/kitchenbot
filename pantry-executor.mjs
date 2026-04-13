@@ -151,7 +151,7 @@ export async function executePantryMoveToGrocery(runtimeAction, context) {
   const match = resolved.item;
   const [resolvedItem] = await resolveInventoryItems({
     target: 'grocery',
-    items: [{ name: match.name, section: '', amount: match.amount, sourceSection: match.section, sourceListType: 'pantry' }],
+    items: [{ name: match.name, section: '', amount: match.amount, sourceSection: match.section, sourceListType: 'pantry', probablyPantryItem: true }],
     anthropic: context.anthropic || null,
     householdId: context.req.householdId,
     chatId: context.chatId,

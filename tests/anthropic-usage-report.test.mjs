@@ -77,3 +77,30 @@ test('buildAnthropicUsageReport rolls visible chat work into meaningful function
   assert.equal(functionCallTotal, report.totals.callCount);
   assert.equal(purposeCallTotal, report.totals.callCount);
 });
+
+test('buildAnthropicUsageReport keeps known cost totals visible when a few rows use unknown models', () => {
+  const rows = [
+    makeRow({ call_purpose: 'chat_reply', model: 'claude-haiku-4-5-20251001', input_tokens: 1000, output_tokens: 200 }),
+    makeRow({ call_purpose: 'chat_reply', model: 'x', input_tokens: 1, output_tokens: 1 }),
+    makeRow({ call_purpose: 'kb_turn_interpretation_primary', model: 'claude-sonnet-4-5-20250929', input_tokens: 2000, output_tokens: 300 }),
+  ];
+
+  const report = buildAnthropicUsageReport(rows);
+  const byFunction = Object.fromEntries(report.byFunction.map((entry) => [entry.key, entry]));
+
+  assert.equal(report.totals.estimatedCostAvailable, true);
+  assert.equal(report.totals.estimatedCostPartial, true);
+  assert.equal(report.totals.estimatedCostKnownCallCount, 2);
+  assert.equal(report.totals.estimatedCostUnknownCallCount, 1);
+  assert.equal(report.totals.estimatedCostUsd > 0, true);
+
+  assert.equal(byFunction['Conversation replies'].estimatedCostAvailable, true);
+  assert.equal(byFunction['Conversation replies'].estimatedCostPartial, true);
+  assert.equal(byFunction['Conversation replies'].estimatedCostKnownCallCount, 1);
+  assert.equal(byFunction['Conversation replies'].estimatedCostUnknownCallCount, 1);
+
+  assert.equal(byFunction['Turn interpretation'].estimatedCostAvailable, true);
+  assert.equal(byFunction['Turn interpretation'].estimatedCostPartial, false);
+  assert.equal(byFunction['Turn interpretation'].estimatedCostKnownCallCount, 1);
+  assert.equal(byFunction['Turn interpretation'].estimatedCostUnknownCallCount, 0);
+});

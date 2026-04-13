@@ -21,7 +21,8 @@ function normalizeCandidateOptions(raw) {
       const label = safeTrim(option?.label || option?.name || option?.value);
       const id = safeTrim(option?.id || String(index + 1));
       if (!label || !id) return null;
-      return { id, label };
+      const value = safeTrim(option?.value || option?.text);
+      return value ? { id, label, value } : { id, label };
     })
     .filter(Boolean);
 }
@@ -38,21 +39,24 @@ export function normalizeProposedNextAction(raw) {
           .map((choice) => {
             const id = safeTrim(choice?.id);
             const label = safeTrim(choice?.label);
+            const capability = safeTrim(choice?.capability);
             const actionInput =
               choice?.actionInput && typeof choice.actionInput === 'object' && !Array.isArray(choice.actionInput)
                 ? choice.actionInput
                 : null;
             if (!id || !label || !actionInput) return null;
-            return { id, label, actionInput };
+            return { id, label, capability: capability || '', actionInput };
           })
           .filter(Boolean)
       : [];
     if (choices.length === 0) return null;
+    const defaultChoiceId = safeTrim(raw.defaultChoiceId);
     return {
       active: true,
       type,
       action,
       choices,
+      defaultChoiceId: choices.some((choice) => choice.id === defaultChoiceId) ? defaultChoiceId : '',
       question: safeTrim(raw.question),
       visibleReplySummary: safeTrim(raw.visibleReplySummary),
     };
@@ -102,4 +106,23 @@ export function buildClarifyActionState({
     visibleReplySummary,
   });
   return normalized;
+}
+
+export function buildChoiceActionState({
+  capability,
+  input = {},
+  choices = [],
+  question = '',
+  visibleReplySummary = '',
+  defaultChoiceId = '',
+}) {
+  return normalizeProposedNextAction({
+    active: true,
+    type: 'choice',
+    action: { capability, input },
+    choices,
+    question,
+    visibleReplySummary,
+    defaultChoiceId,
+  });
 }

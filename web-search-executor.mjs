@@ -1,5 +1,9 @@
 import { getMessages } from './db.mjs';
-import { createLoggedAnthropicMessage, detectAnthropicWebSearchUsage } from './anthropic-usage.mjs';
+import {
+  createLoggedAnthropicMessage,
+  detectAnthropicWebFetchUsage,
+  detectAnthropicWebSearchUsage,
+} from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
 import { buildKbContextSystemText, formatKbRecentConversation } from './kb-prompt-context.mjs';
 
@@ -60,10 +64,72 @@ function extractWebSearchQuery(response, fallbackQuery = '') {
   return safeTrim(fallbackQuery);
 }
 
+function extractWebFetchUrl(response, fallbackUrl = '') {
+  for (const block of Array.isArray(response?.content) ? response.content : []) {
+    if (String(block?.type ?? '').trim() !== 'server_tool_use') continue;
+    if (String(block?.name ?? '').trim() !== 'web_fetch') continue;
+    const url = safeTrim(block?.input?.url);
+    if (url) return url;
+  }
+  return safeTrim(fallbackUrl);
+}
+
+function normalizeRecipeItemList(values, limit = 24, maxLength = 220) {
+  const seen = new Set();
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const text = safeTrim(
+      typeof value === 'string'
+        ? value
+        : value && typeof value === 'object'
+          ? value.text || value.name || value.step || value.summary
+          : ''
+    )
+      .replace(/\s+/g, ' ')
+      .slice(0, maxLength);
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function normalizeRecipeTagList(values, limit = 12, maxLength = 60) {
+  return normalizeRecipeItemList(values, limit, maxLength).map((value) => value.toLowerCase());
+}
+
+function extractWebFetchPageText(response) {
+  const lines = [];
+  for (const block of Array.isArray(response?.content) ? response.content : []) {
+    if (String(block?.type ?? '').trim() !== 'web_fetch_tool_result') continue;
+    for (const entry of Array.isArray(block?.content) ? block.content : []) {
+      const content = safeTrim(entry?.content || entry?.text || entry?.markdown || entry?.body);
+      if (content) lines.push(content);
+    }
+  }
+  return lines.join('\n\n').trim();
+}
+
+function normalizeFetchedPagePayload(raw, sourceUrl = '') {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const sourceTitle = safeTrim(raw.sourceTitle || raw.title).replace(/\s+/g, ' ').slice(0, 160);
+  const pageText = safeTrim(raw.pageText || raw.content || raw.pageContent).slice(0, 24000);
+  const normalizedSourceUrl = /^https?:\/\//i.test(safeTrim(raw.sourceUrl || sourceUrl)) ? safeTrim(raw.sourceUrl || sourceUrl).slice(0, 1000) : '';
+  if (!pageText) return null;
+  return {
+    sourceTitle,
+    sourceUrl: normalizedSourceUrl,
+    pageText,
+  };
+}
+
 export async function executeWebSearch(runtimeAction, context) {
   const {
     req,
     chatId,
+    turnId = '',
     prompt,
     anthropic,
     memoryContext = null,
@@ -135,11 +201,6 @@ Rules:
             max_uses: 3,
           },
         ],
-        tool_choice: {
-          type: 'tool',
-          name: 'web_search',
-          disable_parallel_tool_use: true,
-        },
         messages: [
           {
             role: 'user',
@@ -154,6 +215,10 @@ Rules:
       {
         householdId: req.householdId,
         chatId,
+        turnId,
+        prompt,
+        actionCapability: 'web.search',
+        actionQuery: requestedQuery,
         runtimeEnabled: true,
         callSurface: 'kb_action',
         callPurpose: 'web_search',
@@ -200,6 +265,173 @@ Rules:
       status: 'unavailable',
       query: requestedQuery,
       error: 'I could not complete a live web search right now.',
+    };
+  }
+}
+
+export async function fetchRecipeFromUrl({
+  anthropic,
+  householdId,
+  chatId,
+  turnId = '',
+  prompt = '',
+  url = '',
+  preferredTitle = '',
+  memoryContext = null,
+  deps = {},
+}) {
+  const sourceUrl = safeTrim(url);
+  if (!/^https?:\/\//i.test(sourceUrl)) {
+    return {
+      status: 'invalid',
+      error: 'I need a valid recipe URL before I can read it.',
+      sourceUrl: sourceUrl || '',
+      fetchPerformed: false,
+    };
+  }
+
+  const webSearchEnabled = !!memoryContext?.capabilities?.webSearchEnabled;
+  if (!webSearchEnabled) {
+    return {
+      status: 'disabled',
+      error: 'I could not read that linked recipe because live web search is disabled for this household.',
+      sourceUrl,
+      fetchPerformed: false,
+    };
+  }
+
+  if (!anthropic) {
+    return {
+      status: 'unavailable',
+      error: 'I could not access live web search right now.',
+      sourceUrl,
+      fetchPerformed: false,
+    };
+  }
+
+  const conversation = chatId && householdId
+    ? await getMessages(chatId, householdId)
+    : [];
+  const recentConversation =
+    formatKbRecentConversation(conversation, deps, {
+      limit: 10,
+      assistantPersona: memoryContext?.assistantPersona,
+    }) || '(none)';
+
+  try {
+    const response = await createLoggedAnthropicMessage(
+      anthropic,
+      {
+        model: resolveAnthropicModelForCallPurpose('web_search'),
+        max_tokens: 800,
+        system: `${buildKbContextSystemText(memoryContext)}
+
+You are KitchenBot's linked recipe reader.
+
+Rules:
+- Use the web fetch tool to read the exact recipe URL the user linked.
+- Return ONLY JSON.
+- Shape:
+  {"status":"fetched|no_results|unavailable","sourceTitle":"...","sourceUrl":"...","pageText":"..."}
+- sourceTitle should be the fetched recipe/page title when available.
+- sourceUrl should be the linked recipe URL.
+- pageText should be the most relevant fetched page content for recipe extraction, as plain text or markdown.
+- Do not try to fully normalize the recipe into ingredients/instructions here.
+- If you cannot actually read enough page content, return status no_results or unavailable instead of inventing content.
+- Never use general recipe knowledge or search snippets as a substitute for the linked page.
+- Never claim you fetched the page unless the web fetch tool actually ran on the linked URL.`,
+        tools: [
+          {
+            name: 'web_fetch',
+            type: 'web_fetch_20250910',
+            max_uses: 2,
+          },
+        ],
+        messages: [
+          {
+            role: 'user',
+            content: JSON.stringify({
+              latestUserPrompt: prompt,
+              recipeUrl: sourceUrl,
+              preferredSavedTitle: safeTrim(preferredTitle),
+              recentConversation,
+            }),
+          },
+        ],
+      },
+      {
+        householdId,
+        chatId,
+        turnId,
+        prompt,
+        actionCapability: 'cookbook.save',
+        actionQuery: sourceUrl,
+        runtimeEnabled: true,
+        callSurface: 'kb_action',
+        callPurpose: 'web_fetch',
+        webSearchEnabledAtCall: true,
+      }
+    );
+
+    const text = response.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n')
+      .trim();
+    const parsed = parseJsonObject(text);
+    const fetchPerformed = detectAnthropicWebFetchUsage(response);
+    const fetchedUrl = extractWebFetchUrl(response, sourceUrl);
+    if (!fetchPerformed) {
+      return {
+        status: 'unavailable',
+        error: 'I could not read that linked recipe right now.',
+        sourceUrl,
+        fetchPerformed: false,
+        fetchedExactUrl: false,
+        sourceKind: 'web_fetch',
+        failureReason: 'The exact linked page was not fetched.',
+      };
+    }
+
+    const normalized = normalizeFetchedPagePayload(parsed, sourceUrl) || {
+      sourceTitle: safeTrim(parsed?.sourceTitle || parsed?.title),
+      sourceUrl,
+      pageText: extractWebFetchPageText(response),
+    };
+    if (!safeTrim(normalized.pageText)) {
+      return {
+        status: safeTrim(parsed?.status) === 'no_results' ? 'no_results' : 'unavailable',
+        error: 'I fetched the link, but I could not recover enough page content from it.',
+        sourceUrl,
+        fetchPerformed: true,
+        fetchedExactUrl: fetchedUrl === sourceUrl,
+        sourceKind: 'web_fetch',
+        fetchSucceeded: true,
+        failureReason: 'The linked page was fetched, but it did not yield enough page content for recipe extraction.',
+      };
+    }
+
+    return {
+      status: 'fetched',
+      sourceTitle: normalized.sourceTitle,
+      sourceUrl: normalized.sourceUrl || sourceUrl,
+      pageText: normalized.pageText,
+      fetchPerformed: true,
+      fetchedExactUrl: fetchedUrl === sourceUrl,
+      fetchSucceeded: true,
+      sourceKind: 'web_fetch',
+    };
+  } catch (error) {
+    console.error('Recipe fetch failed:', error?.message || error);
+    return {
+      status: 'unavailable',
+      error: 'I could not read that linked recipe right now.',
+      sourceUrl,
+      fetchPerformed: false,
+      fetchedExactUrl: false,
+      fetchSucceeded: false,
+      sourceKind: 'web_fetch',
+      failureReason: 'The exact linked page could not be fetched.',
     };
   }
 }

@@ -1,4 +1,12 @@
 import { executeMemorySave } from './memory-executor.mjs';
+import {
+  executeCookbookDelete,
+  executeCookbookList,
+  executeCookbookSave,
+  interpretCookbookSaveFollowUp,
+  normalizeCookbookDeleteInput,
+  normalizeCookbookSaveInput,
+} from './cookbook-executor.mjs';
 import { previewGroceryListFromConversation, writeGroceryListFromConversation } from './grocery-executor.mjs';
 import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, executeGroceryUncheck } from './grocery-action-executor.mjs';
 import { executeHouseholdDefaultsUpdate } from './household-defaults-executor.mjs';
@@ -10,9 +18,46 @@ import {
   normalizeMemoryKey,
   normalizeMemoryValue,
 } from './kb-memory-policy.mjs';
+import { normalizeWorkingContext } from './kb-working-context.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
+}
+
+function progressTextForNarrationType(narrationType) {
+  switch (String(narrationType ?? '').trim()) {
+    case 'memory.save':
+      return 'Saving memory…';
+    case 'cookbook.save':
+      return 'Saving to cookbook…';
+    case 'cookbook.list':
+      return 'Looking through cookbook…';
+    case 'cookbook.delete':
+      return 'Updating cookbook…';
+    case 'grocery.write':
+      return 'Updating the grocery list…';
+    case 'grocery.preview':
+      return 'Planning the grocery list…';
+    case 'grocery.remove':
+    case 'grocery.check':
+    case 'grocery.uncheck':
+    case 'grocery.clear':
+      return 'Checking grocery list…';
+    case 'household.defaults.update':
+      return 'Updating household defaults…';
+    case 'pantry.add':
+    case 'pantry.remove':
+      return 'Updating pantry…';
+    case 'pantry.move_to_grocery':
+    case 'grocery.move_to_pantry':
+      return 'Updating pantry and grocery list…';
+    case 'meal.refine':
+      return 'Plotting something delicious…';
+    case 'web.search':
+      return 'Searching the web…';
+    default:
+      return '';
+  }
 }
 
 function normalizeMemorySaveActionInput(input, context = {}) {
@@ -42,13 +87,66 @@ function normalizeMemorySaveActionInput(input, context = {}) {
   return null;
 }
 
-function normalizeGroceryWriteActionInput(input) {
-  const mode = safeTrim(input?.mode).toLowerCase();
-  return mode && ['append', 'replace', 'prune'].includes(mode) ? { mode } : {};
+function normalizeGroceryWriteActionInput(input, context = {}) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const out = {};
+  const mode = safeTrim(raw.mode).toLowerCase();
+  if (mode && ['append', 'replace'].includes(mode)) out.mode = mode;
+  const source = safeTrim(raw.source).toLowerCase();
+  if (source) out.source = source;
+  if (Array.isArray(raw.items)) {
+    const items = raw.items
+      .map((item) => ({
+        name: safeTrim(typeof item === 'string' ? item : item?.name),
+        amount: safeTrim(item?.amount),
+        section: safeTrim(item?.section),
+      }))
+      .filter((item) => item.name);
+    if (items.length > 0) out.items = items;
+  }
+  if (!Array.isArray(out.items) || out.items.length === 0) {
+    const inferredItems = inferExplicitGroceryItemsFromPrompt(context.originalPrompt);
+    if (inferredItems.length > 0) {
+      out.items = inferredItems;
+      out.source = out.source || 'explicit_items';
+    }
+  }
+  if ((!Array.isArray(out.items) || out.items.length === 0) && /\b(add|buy|get|put|all|them|those|ingredients?)\b/i.test(safeTrim(context.originalPrompt))) {
+    const inferredItems = buildIngredientItemsFromWorkingContext(context.workingContext || context.memoryContext?.workingContext);
+    if (inferredItems.length > 0) {
+      out.items = inferredItems;
+      out.source = out.source || 'offered_items';
+    }
+  }
+  return out;
 }
 
 function normalizeGroceryPreviewActionInput() {
   return {};
+}
+
+function inferExplicitGroceryItemsFromPrompt(promptRaw) {
+  const prompt = safeTrim(promptRaw)
+    .replace(/[.!?]+$/, '')
+    .replace(/\s+/g, ' ');
+  if (!prompt) return [];
+  const lower = prompt.toLowerCase();
+  if (!/\b(grocery list|groceries|shopping list)\b/.test(lower)) return [];
+  const match =
+    prompt.match(/\b(?:add|buy|get|put|grab|pick up)\s+(.+?)\s+(?:to|on|onto|in)\s+(?:our|my|the)\s+(?:grocery list|groceries|shopping list)\b/i) ||
+    prompt.match(/\b(?:add|buy|get|put|grab|pick up)\s+(.+?)\s+(?:to|on|onto|in)\s+(?:the\s+)?list\b/i);
+  if (!match) return [];
+  const payload = safeTrim(match[1]);
+  if (!payload) return [];
+  if (/\b(this|that|those|these|it|them|ingredients?|recipe|meal|everything|all of it|all of them|necessary items|needed items)\b/i.test(payload)) {
+    return [];
+  }
+  return payload
+    .split(/\s*,\s*|\s+\band\b\s+/i)
+    .map((item) => safeTrim(item))
+    .filter(Boolean)
+    .map((name) => ({ name, amount: '', section: '' }))
+    .slice(0, 12);
 }
 
 function normalizeEmptyActionInput() {
@@ -182,8 +280,110 @@ function normalizeNameOnlyActionInput(input, context = {}) {
 
 function normalizeWebSearchActionInput(input, context = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-  const query = safeTrim(raw.query || raw.topic || raw.search || raw.payload || raw.text || context.originalPrompt);
+  const workingContext = normalizeWorkingContext(context.workingContext || context.memoryContext?.workingContext);
+  const originalPrompt = safeTrim(context.originalPrompt);
+  const fallbackPrompt = /\b(search|look up|lookup|google|find)\b/i.test(originalPrompt) ? '' : originalPrompt;
+  const query = safeTrim(
+    raw.query ||
+    raw.topic ||
+    raw.search ||
+    raw.payload ||
+    raw.text ||
+    (workingContext?.offeredSearchTopic && /\b(search|look up|lookup|google|find|that|it|just that|sure)\b/i.test(originalPrompt)
+      ? workingContext.offeredSearchTopic
+      : fallbackPrompt)
+  );
   return query ? { query } : null;
+}
+
+function isAffirmativeFollowUp(prompt) {
+  const text = safeTrim(prompt).toLowerCase();
+  if (!text) return false;
+  return /^(yes|yeah|yep|sure|ok|okay|do it|go ahead|all|that|just that|search it|search that|add them|add it|those)$/i.test(text) ||
+    /\b(search the web|look it up|look that up|add them|add those|add all|all of them)\b/.test(text);
+}
+
+function buildIngredientItemsFromWorkingContext(workingContext) {
+  const context = normalizeWorkingContext(workingContext);
+  return (Array.isArray(context?.offeredIngredients) ? context.offeredIngredients : [])
+    .map((name) => ({ name: safeTrim(name), amount: '', section: '' }))
+    .filter((item) => item.name);
+}
+
+function interpretWebSearchFollowUp(prompt, nextAction, context = {}) {
+  const action = nextAction?.action;
+  if (safeTrim(action?.capability) !== 'web.search') return null;
+  const existingQuery = safeTrim(action?.input?.query);
+  if (!existingQuery) return null;
+  if (/^(no|nope|cancel|stop|never mind|nevermind)$/i.test(safeTrim(prompt))) {
+    return { kind: 'reply_only', routePrompt: prompt, replyText: 'Okay, I will leave that search alone.' };
+  }
+  if (!isAffirmativeFollowUp(prompt)) return null;
+  const normalizedAction = normalizeKbSkillAction(
+    {
+      capability: 'web.search',
+      input: action?.input || {},
+    },
+    {
+      webSearchEnabled: !!context.memoryContext?.capabilities?.webSearchEnabled,
+      workingContext: context.workingContext,
+      memoryContext: context.memoryContext,
+      originalPrompt: prompt,
+    }
+  );
+  if (!normalizedAction) return null;
+  return {
+    kind: 'execute_action',
+    actions: [normalizedAction],
+    routePrompt: prompt,
+  };
+}
+
+function interpretGroceryWriteFollowUp(prompt, nextAction, context = {}) {
+  const action = nextAction?.action;
+  if (safeTrim(action?.capability) !== 'grocery.write') return null;
+  const actionInput = action?.input && typeof action.input === 'object' && !Array.isArray(action.input) ? action.input : {};
+  const source = safeTrim(actionInput.source).toLowerCase();
+  if (!['offered_items', 'draft_chat_offer'].includes(source)) return null;
+  if (/^(no|nope|cancel|stop|never mind|nevermind)$/i.test(safeTrim(prompt))) {
+    return { kind: 'reply_only', routePrompt: prompt, replyText: 'Okay, I left the Grocery List tab alone.' };
+  }
+  const text = safeTrim(prompt).toLowerCase();
+  if (source === 'draft_chat_offer') {
+    if (!isAffirmativeFollowUp(prompt) && !/\b(add|write|put|get|buy|go ahead|do it)\b/.test(text)) return null;
+    return {
+      kind: 'execute_action',
+      actions: [{
+        capability: 'grocery.write',
+        input: {
+          source: 'draft_chat_offer',
+          ...(safeTrim(actionInput.mode) ? { mode: safeTrim(actionInput.mode).toLowerCase() } : {}),
+        },
+      }],
+      routePrompt: prompt,
+    };
+  }
+  const offeredItems = Array.isArray(actionInput.items) && actionInput.items.length > 0
+    ? actionInput.items
+    : buildIngredientItemsFromWorkingContext(context.workingContext || context.memoryContext?.workingContext);
+  if (offeredItems.length === 0) return null;
+  const names = offeredItems.map((item) => safeTrim(item?.name).toLowerCase()).filter(Boolean);
+  const refersToOfferedSet =
+    isAffirmativeFollowUp(prompt) ||
+    /\b(add|buy|get|put|ingredients?)\b/.test(text) ||
+    names.some((name) => text.includes(name));
+  if (!refersToOfferedSet) return null;
+  return {
+    kind: 'execute_action',
+    actions: [{
+      capability: 'grocery.write',
+      input: {
+        source: 'offered_items',
+        items: offeredItems,
+      },
+    }],
+    routePrompt: prompt,
+  };
 }
 
 export const KB_SKILLS = {
@@ -201,12 +401,64 @@ export const KB_SKILLS = {
     normalizeActionInput: normalizeMemorySaveActionInput,
     execute: executeMemorySave,
   },
+  'cookbook.save': {
+    id: 'cookbook.save',
+    description: 'Save the current recipe, meal idea, or web-inspired dish to the household cookbook.',
+    narrationType: 'cookbook.save',
+    contextProfile: {
+      includeDefaults: true,
+      includeCookbook: true,
+      includeWorkingContext: true,
+    },
+    interpreterDescription:
+      'Save the current recipe, meal idea, or recent web-inspired dish into the household cookbook when the user clearly asks to save it.',
+    exampleAction: {
+      capability: 'cookbook.save',
+      input: { request: 'save this recipe to our cookbook' },
+    },
+    normalizeActionInput: normalizeCookbookSaveInput,
+    interpretFollowUp: interpretCookbookSaveFollowUp,
+    execute: executeCookbookSave,
+  },
+  'cookbook.list': {
+    id: 'cookbook.list',
+    description: 'List the recipes and meal ideas saved in the household cookbook.',
+    narrationType: 'cookbook.list',
+    contextProfile: {
+      includeCookbook: true,
+    },
+    interpreterDescription:
+      'List saved cookbook entries when the user asks what recipes or saved meals are already in the household cookbook.',
+    exampleAction: {
+      capability: 'cookbook.list',
+      input: {},
+    },
+    normalizeActionInput: normalizeEmptyActionInput,
+    execute: executeCookbookList,
+  },
+  'cookbook.delete': {
+    id: 'cookbook.delete',
+    description: 'Delete a saved recipe or meal idea from the household cookbook.',
+    narrationType: 'cookbook.delete',
+    contextProfile: {
+      includeCookbook: true,
+    },
+    interpreterDescription:
+      'Delete a saved cookbook entry when the user clearly says to remove or delete a recipe from the household cookbook.',
+    exampleAction: {
+      capability: 'cookbook.delete',
+      input: { name: 'Lemony Orzo Chicken Skillet' },
+    },
+    normalizeActionInput: normalizeCookbookDeleteInput,
+    execute: executeCookbookDelete,
+  },
   'grocery.write': {
     id: 'grocery.write',
     description: 'Write grocery items into the household grocery list based on the conversation.',
     narrationType: 'grocery.write',
     contextProfile: {
       includeDefaults: true,
+      includeCookbook: true,
       includePantry: true,
       includeGrocery: true,
       includeWorkingContext: true,
@@ -218,6 +470,7 @@ export const KB_SKILLS = {
       input: {},
     },
     normalizeActionInput: normalizeGroceryWriteActionInput,
+    interpretFollowUp: interpretGroceryWriteFollowUp,
     execute: writeGroceryListFromConversation,
   },
   'grocery.preview': {
@@ -226,6 +479,7 @@ export const KB_SKILLS = {
     narrationType: 'grocery.preview',
     contextProfile: {
       includeDefaults: true,
+      includeCookbook: true,
       includePantry: true,
       includeGrocery: true,
       includeWorkingContext: true,
@@ -391,13 +645,14 @@ export const KB_SKILLS = {
     narrationType: 'meal.refine',
     contextProfile: {
       includeDefaults: true,
+      includeCookbook: true,
       includeWorkingContext: true,
     },
     interpreterDescription:
-      'Revise the current meal ideas in this chat when the user asks to swap, tweak, redo, or adjust one of the meals under discussion.',
+      'Revise the current meal ideas in this chat when the user swaps, narrows, confirms, or tweaks one of the meals under discussion. This includes natural selections like choosing the roast chicken, picking the fish one, making the handheld one tacos, or asking to make one slot spicier or lighter.',
     exampleAction: {
       capability: 'meal.refine',
-      input: { request: 'make one of those vegetarian' },
+      input: { request: 'make the roast chicken' },
     },
     normalizeActionInput: normalizeMealRefineActionInput,
     execute: executeMealRefine,
@@ -408,6 +663,7 @@ export const KB_SKILLS = {
     narrationType: 'web.search',
     contextProfile: {
       includeDefaults: true,
+      includeCookbook: true,
       includeWorkingContext: true,
     },
     interpreterDescription:
@@ -417,6 +673,7 @@ export const KB_SKILLS = {
       input: { query: 'Masters Champions Dinner menu traditions' },
     },
     normalizeActionInput: normalizeWebSearchActionInput,
+    interpretFollowUp: interpretWebSearchFollowUp,
     execute: executeWebSearch,
   },
 };
@@ -448,12 +705,17 @@ export function buildKbInterpreterActionExamples(opts = {}) {
   const skills = filterSkillsForInterpreter(listKbSkills(), opts);
   return skills
     .map((skill) => JSON.stringify(skill.exampleAction))
+    .concat([
+      JSON.stringify({ capability: 'grocery.write', input: { items: [{ name: 'powdered sugar' }], source: 'explicit_items' } }),
+      JSON.stringify({ capability: 'grocery.write', input: { mode: 'replace' } }),
+    ])
     .join('\n');
 }
 
 export function mergeKbContextProfiles(...profiles) {
   const out = {
     includeDefaults: false,
+    includeCookbook: false,
     includePantry: false,
     includeGrocery: false,
     includeWorkingContext: false,
@@ -461,6 +723,7 @@ export function mergeKbContextProfiles(...profiles) {
   for (const profile of profiles) {
     if (!profile || typeof profile !== 'object') continue;
     if (profile.includeDefaults) out.includeDefaults = true;
+    if (profile.includeCookbook) out.includeCookbook = true;
     if (profile.includePantry) out.includePantry = true;
     if (profile.includeGrocery) out.includeGrocery = true;
     if (profile.includeWorkingContext) out.includeWorkingContext = true;
@@ -498,10 +761,20 @@ export function buildKbHelpText() {
   ].join('\n');
 }
 
+export function interpretKbSkillFollowUp(prompt, nextAction, context = {}) {
+  const action = nextAction?.action;
+  const capability = safeTrim(action?.capability);
+  if (!capability) return null;
+  const skill = getKbSkill(capability);
+  if (!skill?.interpretFollowUp) return null;
+  return skill.interpretFollowUp(prompt, nextAction, context) || null;
+}
+
 export async function executeKbActions(actions, context) {
   const list = Array.isArray(actions) ? actions : [];
   const outcomes = [];
   let nextWorkingContext = null;
+  const seenActionKeys = new Set();
 
   await context.deps.addMessage(context.chatId, context.req.householdId, 'user', context.name, context.prompt);
   await context.deps.incrementUserMessageCountForSender?.(context.req);
@@ -514,6 +787,14 @@ export async function executeKbActions(actions, context) {
 
   for (const action of list) {
     const id = String(action?.capability ?? '').trim();
+    if (id === 'web.search') {
+      const queryKey = safeTrim(action?.input?.query).toLowerCase().replace(/\s+/g, ' ');
+      const dedupeKey = `web.search:${queryKey}`;
+      if (queryKey && seenActionKeys.has(dedupeKey)) {
+        continue;
+      }
+      if (queryKey) seenActionKeys.add(dedupeKey);
+    }
     const skill = getKbSkill(id);
     if (!skill) {
       return {
@@ -521,6 +802,17 @@ export async function executeKbActions(actions, context) {
         outcomes,
         userMessageAlreadyPersisted: true,
       };
+    }
+    const progressText = progressTextForNarrationType(skill.narrationType || skill.id);
+    if (progressText) {
+      await context.deps.emitKbProgress?.({
+        chatId: context.chatId,
+        householdId: context.req.householdId,
+        turnId: context.turnId,
+        text: progressText,
+        phase: skill.narrationType || skill.id,
+        senderRes: context.res,
+      });
     }
     const outcome = await skill.execute(action, {
       ...context,

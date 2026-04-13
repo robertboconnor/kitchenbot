@@ -69,7 +69,7 @@ test('assistant persona remains available even when structured defaults are gate
       includeGrocery: false,
       activeSpeakerName: 'Rob',
     });
-    console.log(JSON.stringify({
+    process.stdout.write(JSON.stringify({
       householdDefaults: context.householdDefaults,
       assistantPersona: context.assistantPersona,
     }));

@@ -2,6 +2,7 @@ export function buildKbRuntimeDeps({
   ANTHROPIC_KEY_USER_MESSAGE,
   addMessage,
   broadcastToChat,
+  emitKbProgress,
   clearChatRuntimeState,
   getAnthropicClient,
   buildKbContextPacket,
@@ -10,7 +11,6 @@ export function buildKbRuntimeDeps({
   mergeGroceryItemsFromAi,
   normalizeGroceryItemsForPost,
   normalizeInventoryNameKey,
-  pruneStaleGroceryItemsForChat,
   stripStoredMessageContentForDisplay,
   clearGroceryItems,
 }) {
@@ -18,6 +18,7 @@ export function buildKbRuntimeDeps({
     ANTHROPIC_KEY_USER_MESSAGE,
     addMessage,
     broadcastToChat,
+    emitKbProgress,
     clearChatRuntimeState,
     getAnthropicClient,
     buildKbContextPacket,
@@ -26,7 +27,6 @@ export function buildKbRuntimeDeps({
     mergeGroceryItemsFromAi,
     normalizeGroceryItemsForPost,
     normalizeInventoryNameKey,
-    pruneStaleGroceryItemsForChat,
     stripStoredMessageContentForDisplay,
     clearGroceryItems,
   };

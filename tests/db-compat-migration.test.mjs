@@ -120,6 +120,10 @@ test('runMigrations patches old Render-era runtime and usage columns compatibly'
         household_id, chat_id, smart_mode_enabled, call_surface, call_purpose, model, request_kind,
         input_tokens, output_tokens, web_search_enabled_at_call, used_web_search_tool
       ) VALUES (1, 10, 0, 'chat', 'reply', 'claude', 'create', 12, 34, 0, 0);
+      INSERT INTO anthropic_usage_ledger (
+        household_id, chat_id, smart_mode_enabled, call_surface, call_purpose, model, request_kind,
+        input_tokens, output_tokens, web_search_enabled_at_call, used_web_search_tool
+      ) VALUES (1, 0, 1, 'kb_action', 'meal_refine', 'x', 'create', 1, 1, 0, 0);
     `
   );
   await close(seedDb);
@@ -138,6 +142,11 @@ test('runMigrations patches old Render-era runtime and usage columns compatibly'
   const usageColumns = await all(checkDb, `PRAGMA table_info(anthropic_usage_ledger)`);
   const usageNames = new Set(usageColumns.map((row) => row.name));
   assert.equal(usageNames.has('runtime_enabled'), true);
+  assert.equal(usageNames.has('turn_id'), true);
+  assert.equal(usageNames.has('action_capability'), true);
+  assert.equal(usageNames.has('action_query'), true);
+  assert.equal(usageNames.has('prompt_hash'), true);
+  assert.equal(usageNames.has('prompt_excerpt'), true);
 
   const usageRow = await get(
     checkDb,
@@ -146,10 +155,25 @@ test('runMigrations patches old Render-era runtime and usage columns compatibly'
   assert.equal(Number(usageRow.smart_mode_enabled), 0);
   assert.equal(Number(usageRow.runtime_enabled), 0);
 
+  const migratedLegacyUsageRow = await get(
+    checkDb,
+    `SELECT chat_id, model
+     FROM anthropic_usage_ledger
+     WHERE call_purpose = 'meal_refine'
+     ORDER BY id DESC
+     LIMIT 1`
+  );
+  assert.equal(migratedLegacyUsageRow.chat_id, null);
+  assert.equal(migratedLegacyUsageRow.model, 'claude-sonnet-4-5');
+
   const defaultsColumns = await all(checkDb, `PRAGMA table_info(household_defaults)`);
   const defaultsNames = new Set(defaultsColumns.map((row) => row.name));
   assert.equal(defaultsNames.has('assistant_name'), true);
   assert.equal(defaultsNames.has('assistant_tone'), true);
+
+  const groceryColumns = await all(checkDb, `PRAGMA table_info(grocery_items)`);
+  const groceryNames = new Set(groceryColumns.map((row) => row.name));
+  assert.equal(groceryNames.has('probably_pantry_item'), true);
 
   await close(checkDb);
   await fs.rm(tempDir, { recursive: true, force: true });

@@ -15,12 +15,12 @@ import {
   findPantryItemById,
   getGroceryItems,
   updateGroceryItemAmount,
+  updateGroceryItemProbablyPantry,
   backfillGroceryItemSourceChatIfSafe,
   updateGroceryItem,
   deleteGroceryItem,
   deletePantryItem,
   clearGroceryItems,
-  pruneStaleGroceryItemsForChat,
   listAllHouseholdsSummary,
   updateHouseholdUserChatColor,
   runMigrations,
@@ -48,6 +48,10 @@ import {
   getKbMemoryByTypeAndLabel,
   listKbMemories,
   saveKbMemory,
+  listCookbookEntries,
+  getCookbookEntryById,
+  saveCookbookEntry,
+  deleteCookbookEntry,
   getHouseholdDefaults,
   saveHouseholdDefaults,
   clearChatRuntimeState,
@@ -62,6 +66,15 @@ import {
   normalizeMemoryType,
   normalizePersonNotes,
 } from './kb-memory-store.mjs';
+import {
+  buildCookbookRecordForStorage,
+  COOKBOOK_CATEGORY_OPTIONS,
+  getCookbookCategoryLabel,
+  getCookbookDisplayProvenance,
+  getCookbookDisplaySource,
+  getCookbookDisplayTitle,
+  isFailedCookbookPlaceholder,
+} from './cookbook-store.mjs';
 import {
   buildAnthropicUsageReport,
   classifyAnthropicUsageFunction,
@@ -85,11 +98,13 @@ import { DEFAULT_ASSISTANT_NAME } from './kb-persona.mjs';
 import 'dotenv/config';
 import os from 'os';
 import http from 'http';
+import { pathToFileURL } from 'url';
 import express from 'express';
 import { createClient } from 'redis';
 import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
 import crypto from 'crypto';
+import { renderClientBootTags } from './app-shell.mjs';
 
 async function incrementUserMessageCountForSender(req) {
   void req;
@@ -170,6 +185,97 @@ function normalizeUsageFilterBoolean(raw) {
   return null;
 }
 
+function describeAnthropicHouseholdStatus(household) {
+  const mode = household?.anthropic_key_mode || 'shared';
+  const hasKey = !!(household?.anthropic_api_key && String(household.anthropic_api_key).trim());
+  if (mode === 'shared') {
+    return {
+      mode,
+      hasKey,
+      usingSharedKey: true,
+      statusText: "This household is using Rob's Anthropic key.",
+      statusBrief: 'Using shared key',
+      keyStatus: 'shared',
+    };
+  }
+  if (hasKey) {
+    return {
+      mode,
+      hasKey,
+      usingSharedKey: false,
+      statusText: 'Household key configured.',
+      statusBrief: 'Household key configured',
+      keyStatus: 'household_configured',
+    };
+  }
+  return {
+    mode,
+    hasKey,
+    usingSharedKey: false,
+    statusText: 'Household key missing.',
+    statusBrief: 'Household key missing',
+    keyStatus: 'household_missing',
+  };
+}
+
+function buildAnthropicUsageReportResponse(rows, households, options = {}) {
+  const householdNameById = new Map((households || []).map((hh) => [Number(hh.id), hh.name]));
+  const report = buildAnthropicUsageReport(rows);
+  const recentRows = rows.slice(0, 100).map((row) => ({
+    id: row.id,
+    createdAt: row.created_at,
+    householdId: Number(row.household_id),
+    householdName: householdNameById.get(Number(row.household_id)) || `Household ${row.household_id}`,
+    chatId: row.chat_id != null ? Number(row.chat_id) : null,
+    turnId: row.turn_id ? String(row.turn_id) : '',
+    actionCapability: row.action_capability ? String(row.action_capability) : '',
+    actionQuery: row.action_query ? String(row.action_query) : '',
+    promptHash: row.prompt_hash ? String(row.prompt_hash) : '',
+    promptExcerpt: row.prompt_excerpt ? String(row.prompt_excerpt) : '',
+    runtimeEnabled: Number(row.runtime_enabled ?? 1) === 1,
+    callSurface: row.call_surface,
+    callPurpose: row.call_purpose,
+    callFunction: classifyAnthropicUsageFunction(row.call_purpose),
+    model: row.model,
+    requestKind: row.request_kind,
+    inputTokens: Number(row.input_tokens ?? 0) || 0,
+    outputTokens: Number(row.output_tokens ?? 0) || 0,
+    cacheCreationInputTokens: Number(row.cache_creation_input_tokens ?? 0) || 0,
+    cacheReadInputTokens: Number(row.cache_read_input_tokens ?? 0) || 0,
+    webSearchEnabledAtCall: Number(row.web_search_enabled_at_call) === 1,
+    usedWebSearchTool: Number(row.used_web_search_tool) === 1,
+    estimatedCostUsd: estimateAnthropicLedgerCostUsd(row),
+  }));
+
+  const byHousehold = report.byHousehold.map((entry) => ({
+    ...entry,
+    householdId: Number(entry.key),
+    householdName: householdNameById.get(Number(entry.key)) || `Household ${entry.key}`,
+  }));
+
+  return {
+    filtersApplied: options.filtersApplied || {},
+    totals: report.totals,
+    byFunction: report.byFunction,
+    byHousehold,
+    byWebSearchUsage: report.byWebSearchUsage,
+    byPurpose: report.byPurpose,
+    recentRows,
+    ...(options.household ? { household: options.household } : {}),
+  };
+}
+
+function collapseUsagePreviewText(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function truncateUsagePreviewText(value, limit = 80) {
+  const text = collapseUsagePreviewText(value);
+  if (!text) return '';
+  if (text.length <= limit) return text;
+  return text.slice(0, Math.max(0, limit - 1)).trimEnd() + '…';
+}
+
 function weeklyPlanDraftHasMeaningfulContent(draft) {
   if (!draft || typeof draft !== 'object') return false;
   const label = String(draft.label ?? '').trim();
@@ -225,6 +331,7 @@ function createBoundInventoryServices() {
     getAnthropicClient,
     getGroceryItems,
     updateGroceryItemAmount,
+    updateGroceryItemProbablyPantry,
     backfillGroceryItemSourceChatIfSafe,
     addGroceryItems,
   });
@@ -248,7 +355,7 @@ function formatWeeklyPlanDraftForPrompt(draft) {
   return truncateSmartModeContext(parts.join(' | '), 1200) || '(none yet)';
 }
 
-async function requireHousehold(req, res, next) {
+export async function requireHousehold(req, res, next) {
   try {
     if (await needsBootstrap()) {
       return res.status(503).json({ error: 'bootstrap_required' });
@@ -284,7 +391,7 @@ if (!COOKIE_SECRET) {
  *   adminDisplayName?: string,
  * }} payload
  */
-function signToken(payload) {
+export function signToken(payload) {
   const householdId = Number(payload.householdId);
   const userId = Number(payload.userId);
   const displayName = String(payload.displayName ?? '');
@@ -324,7 +431,7 @@ function setAuthCookie(res, token) {
   res.setHeader('Set-Cookie', cookieParts.join('; '));
 }
 
-function verifyToken(token) {
+export function verifyToken(token) {
   if (!token || !token.startsWith('v2.')) return null;
   const without = token.slice(3);
   const lastDot = without.lastIndexOf('.');
@@ -403,7 +510,7 @@ function getUserFromRequest(req) {
   return verifyToken(token);
 }
 
-async function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const auth = getUserFromRequest(req);
   if (!auth) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -684,53 +791,67 @@ app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdmin
       getAnthropicUsageLedgerAllRows(filters),
       listAllHouseholdsSummary(),
     ]);
+    return res.json(
+      buildAnthropicUsageReportResponse(rows, households, {
+        filtersApplied: {
+          householdId,
+          startDate: req.query.startDate ? String(req.query.startDate) : null,
+          endDate: req.query.endDate ? String(req.query.endDate) : null,
+          callPurpose: filters.callPurpose || null,
+          callSurface: filters.callSurface || null,
+          webSearchEnabled: filters.webSearchEnabledAtCall,
+          usedWebSearchTool: filters.usedWebSearchTool,
+        },
+      })
+    );
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
 
-    const householdNameById = new Map(households.map((hh) => [Number(hh.id), hh.name]));
-    const report = buildAnthropicUsageReport(rows);
-    const recentRows = rows.slice(0, 100).map((row) => ({
-      id: row.id,
-      createdAt: row.created_at,
-      householdId: Number(row.household_id),
-      householdName: householdNameById.get(Number(row.household_id)) || `Household ${row.household_id}`,
-      chatId: row.chat_id != null ? Number(row.chat_id) : null,
-      runtimeEnabled: Number(row.runtime_enabled ?? 1) === 1,
-      callSurface: row.call_surface,
-      callPurpose: row.call_purpose,
-      callFunction: classifyAnthropicUsageFunction(row.call_purpose),
-      model: row.model,
-      requestKind: row.request_kind,
-      inputTokens: Number(row.input_tokens ?? 0) || 0,
-      outputTokens: Number(row.output_tokens ?? 0) || 0,
-      cacheCreationInputTokens: Number(row.cache_creation_input_tokens ?? 0) || 0,
-      cacheReadInputTokens: Number(row.cache_read_input_tokens ?? 0) || 0,
-      webSearchEnabledAtCall: Number(row.web_search_enabled_at_call) === 1,
-      usedWebSearchTool: Number(row.used_web_search_tool) === 1,
-      estimatedCostUsd: estimateAnthropicLedgerCostUsd(row),
-    }));
-
-    const byHousehold = report.byHousehold.map((entry) => ({
-      ...entry,
-      householdId: Number(entry.key),
-      householdName: householdNameById.get(Number(entry.key)) || `Household ${entry.key}`,
-    }));
-
-    return res.json({
-      filtersApplied: {
-        householdId,
-        startDate: req.query.startDate ? String(req.query.startDate) : null,
-        endDate: req.query.endDate ? String(req.query.endDate) : null,
-        callPurpose: filters.callPurpose || null,
-        callSurface: filters.callSurface || null,
-        webSearchEnabled: filters.webSearchEnabledAtCall,
-        usedWebSearchTool: filters.usedWebSearchTool,
-      },
-      totals: report.totals,
-      byHousehold,
-      byFunction: report.byFunction,
-      byPurpose: report.byPurpose,
-      byWebSearchUsage: report.byWebSearchUsage,
-      recentRows,
-    });
+app.get('/settings/household/anthropic-usage', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+  try {
+    const startDate = isoDayStartUtc(req.query.startDate);
+    const endDateExclusive = isoNextDayStartUtc(req.query.endDate);
+    const filters = {
+      householdId: req.householdId,
+      startDate,
+      endDate: endDateExclusive,
+      webSearchEnabledAtCall: normalizeUsageFilterBoolean(req.query.webSearchEnabled),
+      usedWebSearchTool: normalizeUsageFilterBoolean(req.query.usedWebSearchUsed),
+    };
+    const [rows, households, household] = await Promise.all([
+      getAnthropicUsageLedgerAllRows(filters),
+      listAllHouseholdsSummary(),
+      getHouseholdById(req.householdId),
+    ]);
+    if (!household) {
+      return res.status(404).json({ error: 'Household not found' });
+    }
+    const anthropic = describeAnthropicHouseholdStatus(household);
+    return res.json(
+      buildAnthropicUsageReportResponse(rows, households, {
+        filtersApplied: {
+          householdId: req.householdId,
+          startDate: req.query.startDate ? String(req.query.startDate) : null,
+          endDate: req.query.endDate ? String(req.query.endDate) : null,
+          webSearchEnabled: filters.webSearchEnabledAtCall,
+          usedWebSearchTool: filters.usedWebSearchTool,
+        },
+        household: {
+          id: household.id,
+          name: household.name,
+          key: household.household_key,
+          anthropicKeyMode: anthropic.mode,
+          webSearchEnabled: Number(household.web_search_enabled) === 1,
+          usingSharedKey: anthropic.usingSharedKey,
+          statusText: anthropic.statusText,
+          statusBrief: anthropic.statusBrief,
+          keyStatus: anthropic.keyStatus,
+        },
+      })
+    );
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'Server error' });
@@ -1263,11 +1384,15 @@ app.get('/', (req, res) => {
           gap: 12px;
           min-height: calc(100vh - 28px);
           margin: 0;
+          width: 100%;
+          max-width: 560px;
+          margin-inline: auto;
         }
 
         #login-brand {
           text-align: center;
           margin-bottom: 8px;
+          width: 100%;
         }
 
         #login-brand .login-logo {
@@ -1369,6 +1494,9 @@ app.get('/', (req, res) => {
           margin: 0;
           padding: 0;
           border: none;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
         }
 
         #login-form h2,
@@ -1434,6 +1562,8 @@ app.get('/', (req, res) => {
           font-size: 14px;
           outline: none;
           min-width: 120px;
+          width: 100%;
+          box-sizing: border-box;
         }
 
         #login-household-key:focus,
@@ -1580,15 +1710,21 @@ app.get('/', (req, res) => {
           line-height: 1.5;
         }
 
+        .settings-subview {
+          min-width: 0;
+        }
+
         .settings-card-grid,
         .settings-admin-grid {
           display: grid;
           gap: 14px;
           grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+          min-width: 0;
         }
 
         .settings-admin-grid--wide {
           grid-column: 1 / -1;
+          min-width: 0;
         }
 
         .settings-card {
@@ -1597,6 +1733,8 @@ app.get('/', (req, res) => {
           border-radius: 18px;
           padding: 16px 18px;
           box-shadow: 0 12px 30px rgba(148, 163, 184, 0.12);
+          min-width: 0;
+          overflow-x: hidden;
         }
 
         .settings-card h3,
@@ -1686,6 +1824,7 @@ app.get('/', (req, res) => {
         }
 
         #settings-panel input[type='text'],
+        #settings-panel input[type='date'],
         #settings-panel input[type='number'],
         #settings-panel input[type='password'],
         #settings-panel select {
@@ -1738,6 +1877,52 @@ app.get('/', (req, res) => {
           align-items: center;
         }
 
+        .cookbook-toolbar {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          align-items: flex-end;
+        }
+
+        .cookbook-filter-field {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          min-width: 150px;
+          flex: 0 1 220px;
+        }
+
+        .cookbook-filter-field--search {
+          min-width: 220px;
+          flex: 1 1 320px;
+          max-width: 420px;
+        }
+
+        .cookbook-filter-field span {
+          font-size: 12px;
+          color: var(--text-soft);
+          font-weight: 600;
+        }
+
+        .cookbook-filter-field input,
+        .cookbook-filter-field select {
+          width: 100%;
+          padding: 9px 12px;
+          border-radius: 12px;
+          border: 1px solid var(--border-subtle);
+          font-size: 14px;
+          background: rgba(255, 255, 255, 0.95);
+          color: var(--text-main);
+          outline: none;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+        }
+
+        .cookbook-filter-field input:focus,
+        .cookbook-filter-field select:focus {
+          border-color: var(--accent);
+          box-shadow: 0 0 0 2px rgba(255, 122, 162, 0.2);
+        }
+
         .settings-divider {
           height: 1px;
           background: linear-gradient(90deg, rgba(148,163,184,0.08), rgba(148,163,184,0.32), rgba(148,163,184,0.08));
@@ -1771,6 +1956,22 @@ app.get('/', (req, res) => {
           border-radius: 16px;
           background: rgba(248, 250, 252, 0.82);
           border: 1px solid rgba(226, 232, 240, 0.92);
+          min-width: 0;
+          overflow-x: hidden;
+        }
+
+        .settings-admin-detail-card,
+        .admin-report-title,
+        .admin-report-note,
+        .admin-report-empty,
+        .admin-report-stat,
+        .admin-report-section,
+        .admin-report-table,
+        .admin-report-table th,
+        .admin-report-table td {
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          font-variant-ligatures: none;
+          text-rendering: optimizeLegibility;
         }
 
         .admin-report-empty {
@@ -1825,6 +2026,7 @@ app.get('/', (req, res) => {
           border-radius: 14px;
           background: rgba(255, 255, 255, 0.92);
           border: 1px solid rgba(226, 232, 240, 0.92);
+          min-width: 0;
         }
 
         .admin-report-section h5 {
@@ -1843,6 +2045,9 @@ app.get('/', (req, res) => {
         }
 
         .admin-report-table-wrap {
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
           overflow-x: auto;
         }
 
@@ -2239,6 +2444,10 @@ app.get('/', (req, res) => {
 
         .g-item-checked {
           background: #e5e7eb;
+        }
+
+        .g-item-checked .g-text-main,
+        .g-item-checked .g-text-amount {
           text-decoration: line-through;
           opacity: 0.7;
         }
@@ -2254,6 +2463,31 @@ app.get('/', (req, res) => {
 
         .g-delete:hover {
           background: #fee2e2;
+        }
+
+        .g-delete.g-move-to-pantry-ready {
+          border-color: rgba(34, 197, 94, 0.32);
+          background: rgba(220, 252, 231, 0.95);
+          color: #166534;
+        }
+
+        .g-delete.g-move-to-pantry-ready:hover {
+          background: rgba(187, 247, 208, 0.98);
+        }
+
+        .g-delete.g-action-working,
+        .g-delete:disabled.g-action-working {
+          border-color: rgba(59, 130, 246, 0.28);
+          background: rgba(219, 234, 254, 0.95);
+          color: #1d4ed8;
+          cursor: wait;
+          opacity: 1;
+        }
+
+        .g-delete.g-action-working:hover {
+          background: rgba(219, 234, 254, 0.95);
+          transform: none;
+          box-shadow: none;
         }
 
         #grocery-actions {
@@ -2395,6 +2629,26 @@ app.get('/', (req, res) => {
 
         #typing-indicator:empty {
           display: none;
+        }
+
+        #chat-new-message {
+          display: none;
+          align-self: center;
+          flex-shrink: 0;
+          padding: 6px 12px;
+          margin: 2px 0 6px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 122, 162, 0.32);
+          background: rgba(255, 255, 255, 0.96);
+          color: var(--accent-strong);
+          font-size: 12px;
+          font-weight: 600;
+          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+        }
+
+        #chat-new-message:hover {
+          background: var(--accent-soft);
+          border-color: rgba(255, 122, 162, 0.5);
         }
 
         #input-area {
@@ -2635,6 +2889,14 @@ app.get('/', (req, res) => {
             max-width: none !important;
           }
 
+          .cookbook-filter-field,
+          .cookbook-filter-field--search {
+            width: 100%;
+            min-width: 0;
+            max-width: none;
+            flex: 1 1 100%;
+          }
+
           .settings-actions-row button,
           .settings-admin-selectors button {
             width: 100%;
@@ -2760,11 +3022,13 @@ app.get('/', (req, res) => {
         <div id="chat" class="panel panel-active"></div>
 
         <div id="typing-indicator" aria-live="polite"></div>
+        <button id="chat-new-message" type="button">New message</button>
 
         <div id="grocery-panel" class="panel" style="display:none;">
           <div id="grocery-subtabs" style="display:flex;gap:8px;margin-bottom:14px;">
             <button id="grocery-subtab-list" type="button" class="settings-subtab-btn settings-subtab-active">Grocery List</button>
             <button id="grocery-subtab-pantry" type="button" class="settings-subtab-btn">Pantry</button>
+            <button id="grocery-subtab-cookbook" type="button" class="settings-subtab-btn">Cookbook</button>
           </div>
           <div id="grocery-subview-list" class="grocery-subview">
             <div id="grocery-manual-add">
@@ -2867,12 +3131,90 @@ app.get('/', (req, res) => {
               </div>
             </div>
           </div>
+          <div id="grocery-subview-cookbook" class="grocery-subview" style="display:none;">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div style="font-size:14px;color:var(--text-soft);">
+                Save recipes and meal ideas from chat, then reuse them for planning and grocery lists.
+              </div>
+              <div id="cookbook-toolbar" class="cookbook-toolbar">
+                <label for="cookbook-category-filter" class="cookbook-filter-field">
+                  <span>Category</span>
+                  <select id="cookbook-category-filter">
+                    <option value="">All categories</option>
+                    <option value="uncategorized">Uncategorized</option>
+                  </select>
+                </label>
+                <label for="cookbook-tag-filter" class="cookbook-filter-field">
+                  <span>Tag</span>
+                  <select id="cookbook-tag-filter">
+                    <option value="">All tags</option>
+                  </select>
+                </label>
+                <label for="cookbook-search-filter" class="cookbook-filter-field cookbook-filter-field--search">
+                  <span>Search</span>
+                  <input id="cookbook-search-filter" type="search" placeholder="Search titles, tags, ingredients, notes…" />
+                </label>
+              </div>
+              <div id="cookbook-empty" style="display:none;padding:16px;border:1px dashed var(--border-subtle);border-radius:14px;background:rgba(255,255,255,0.7);color:var(--text-soft);">
+                Your cookbook is empty right now. Try asking KitchenBot to “save that recipe” or “add this meal idea to our cookbook.”
+              </div>
+              <div id="cookbook-list" style="display:grid;gap:12px;"></div>
+              <div id="cookbook-detail-view" style="display:none;background:rgba(255,255,255,0.9);border:1px solid var(--border-subtle);border-radius:18px;padding:18px;gap:14px;flex-direction:column;">
+                <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+                  <div style="display:flex;flex-direction:column;gap:4px;">
+                    <button id="cookbook-detail-back" type="button" style="align-self:flex-start;">Back to cookbook</button>
+                    <div id="cookbook-detail-meta" style="font-size:13px;color:var(--text-soft);"></div>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <button id="cookbook-detail-edit" type="button">Edit recipe</button>
+                    <button id="cookbook-detail-cancel" type="button" style="display:none;">Cancel</button>
+                    <button id="cookbook-detail-save" type="button" style="display:none;">Save changes</button>
+                  </div>
+                </div>
+                <div style="display:grid;gap:14px;">
+                  <label style="display:grid;gap:6px;">
+                    <span style="font-weight:700;">Title</span>
+                    <input id="cookbook-detail-title" type="text" />
+                  </label>
+                  <label style="display:grid;gap:6px;">
+                    <span style="font-weight:700;">Category</span>
+                    <select id="cookbook-detail-category">
+                      <option value="">Uncategorized</option>
+                    </select>
+                  </label>
+                  <label style="display:grid;gap:6px;">
+                    <span style="font-weight:700;">Summary</span>
+                    <textarea id="cookbook-detail-summary" rows="6" style="min-height:140px;resize:vertical;"></textarea>
+                  </label>
+                  <label style="display:grid;gap:6px;">
+                    <span style="font-weight:700;">Ingredients</span>
+                    <textarea id="cookbook-detail-ingredients" rows="18" style="min-height:360px;resize:vertical;"></textarea>
+                  </label>
+                  <label style="display:grid;gap:6px;">
+                    <span style="font-weight:700;">Instructions</span>
+                    <textarea id="cookbook-detail-instructions" rows="18" style="min-height:360px;resize:vertical;"></textarea>
+                  </label>
+                  <label style="display:grid;gap:6px;">
+                    <span style="font-weight:700;">Notes</span>
+                    <textarea id="cookbook-detail-notes" rows="7" style="min-height:170px;resize:vertical;"></textarea>
+                  </label>
+                  <label style="display:grid;gap:6px;">
+                    <span style="font-weight:700;">Tags</span>
+                    <input id="cookbook-detail-tags" type="text" placeholder="comma-separated tags" />
+                  </label>
+                  <div id="cookbook-detail-source" style="font-size:13px;color:var(--text-soft);"></div>
+                  <div id="cookbook-detail-message" style="font-size:13px;color:var(--text-soft);"></div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div id="settings-panel" class="panel" style="display: none;">
           <h2 style="margin-top: 0;">Settings</h2>
           <div id="settings-subnav" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px;">
             <button type="button" id="settings-subtab-my-btn" class="settings-subtab-btn settings-subtab-active">My household</button>
+            <button type="button" id="settings-subtab-usage-btn" class="settings-subtab-btn" style="display: none;">Anthropic usage</button>
             <button type="button" id="settings-subtab-admin-btn" class="settings-subtab-btn" style="display: none;">Global admin</button>
           </div>
 
@@ -2891,6 +3233,10 @@ app.get('/', (req, res) => {
                   <span class="settings-pill-note">Session household</span>
                 </div>
                 <div class="settings-meta-grid">
+                  <div class="settings-meta-item">
+                    <span class="label">Household id</span>
+                    <span class="value"><code id="my-settings-hh-id"></code></span>
+                  </div>
                   <div class="settings-meta-item">
                     <span class="label">Household name</span>
                     <span class="value" id="my-settings-hh-name"></span>
@@ -2956,7 +3302,7 @@ app.get('/', (req, res) => {
                             <option value="helpful">Helpful (recommended)</option>
                             <option value="concise">Concise</option>
                             <option value="witty">Witty</option>
-                            <option value="thirsty">Thirsty</option>
+                            <option value="thirsty">Drag Queen</option>
                           </select>
                         </div>
                       </div>
@@ -2968,10 +3314,9 @@ app.get('/', (req, res) => {
                         <div class="settings-form-field" style="max-width: 220px;">
                           <label for="my-settings-defaults-style">Cooking style</label>
                           <select id="my-settings-defaults-style">
-                            <option value="">No default</option>
-                            <option value="easy">easy</option>
-                            <option value="normal">normal</option>
-                            <option value="ambitious">ambitious</option>
+                            <option value="easy">Easy</option>
+                            <option value="normal">Normal</option>
+                            <option value="ambitious">Ambitious</option>
                           </select>
                         </div>
                       </div>
@@ -3045,6 +3390,43 @@ app.get('/', (req, res) => {
             <div id="my-settings-msg"></div>
           </div>
 
+          <div id="settings-view-usage" class="settings-subview" style="display: none;">
+            <h3 style="margin-top: 0;">Anthropic usage</h3>
+            <p class="settings-page-intro">
+              Review Anthropic call volume and estimated cost for your current household.
+            </p>
+            <section class="settings-card settings-admin-grid--wide">
+              <div class="settings-card-header">
+                <div>
+                  <h3>Household usage</h3>
+                  <p class="settings-card-subtitle">This report is automatically scoped to your current household and helps owners monitor shared-key vs BYO-key usage.</p>
+                </div>
+              </div>
+              <div id="owner-usage-status-note" class="settings-inline-banner" style="margin-bottom: 12px; font-size: 13px;"></div>
+              <div class="settings-admin-selectors" style="margin-bottom: 10px;">
+                <div class="settings-form-field" style="max-width: 170px;">
+                  <label for="owner-usage-start-date">Start date</label>
+                  <input id="owner-usage-start-date" type="date" />
+                </div>
+                <div class="settings-form-field" style="max-width: 170px;">
+                  <label for="owner-usage-end-date">End date</label>
+                  <input id="owner-usage-end-date" type="date" />
+                </div>
+                <div class="settings-form-field" style="max-width: 180px;">
+                  <label for="owner-usage-websearch-used">Web search used</label>
+                  <select id="owner-usage-websearch-used">
+                    <option value="all">All</option>
+                    <option value="used">Used</option>
+                    <option value="not_used">Not used</option>
+                  </select>
+                </div>
+                <button type="button" id="owner-usage-refresh">Refresh usage</button>
+              </div>
+              <div id="owner-usage-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
+              <div id="owner-usage-report" class="settings-admin-detail-card" style="font-size: 13px;"></div>
+            </section>
+          </div>
+
           <div id="settings-view-admin" class="settings-subview" style="display: none;">
             <h3 style="margin-top: 0;">Global admin</h3>
             <p class="settings-page-intro">
@@ -3111,14 +3493,6 @@ app.get('/', (req, res) => {
                   <div class="settings-form-field" style="max-width: 200px;">
                     <label for="admin-usage-household-select">Household</label>
                     <select id="admin-usage-household-select"></select>
-                  </div>
-                  <div class="settings-form-field" style="max-width: 180px;">
-                    <label for="admin-usage-websearch-setting">Web search setting</label>
-                    <select id="admin-usage-websearch-setting">
-                      <option value="all">All</option>
-                      <option value="enabled">Enabled</option>
-                      <option value="disabled">Disabled</option>
-                    </select>
                   </div>
                   <div class="settings-form-field" style="max-width: 180px;">
                     <label for="admin-usage-websearch-used">Web search used</label>
@@ -3209,3027 +3583,7 @@ app.get('/', (req, res) => {
       </div>
 
       <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-      <script>
-        const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-        const useMobileEnterBehavior =
-          isMobile ||
-          (!!window.matchMedia &&
-            window.matchMedia('(pointer: coarse)').matches &&
-            window.matchMedia('(hover: none)').matches);
-        const loginArea = document.getElementById('login-area');
-        const appArea = document.getElementById('app');
-        const loginHouseholdKeyInput = document.getElementById('login-household-key');
-        const loginFindHouseholdButton = document.getElementById('login-find-household');
-        const loginNameSelect = document.getElementById('login-name');
-        const loginPasswordInput = document.getElementById('login-password');
-        const loginButton = document.getElementById('login-button');
-        const loginAuthForm = document.getElementById('login-auth-form');
-        const loginStatus = document.getElementById('login-status');
-        const speakerName = document.getElementById('speaker-name');
-        const menuButton = document.getElementById('menu-button');
-        const sidebar = document.getElementById('sidebar');
-        const sidebarBackdrop = document.getElementById('sidebar-backdrop');
-        const chatListEl = document.getElementById('chat-list');
-        const newChatButton = document.getElementById('new-chat');
-        const chat = document.getElementById('chat');
-        const groceryPanel = document.getElementById('grocery-panel');
-        const settingsPanel = document.getElementById('settings-panel');
-        const tabChat = document.getElementById('tab-chat');
-        const tabGroceries = document.getElementById('tab-groceries');
-        const tabSettings = document.getElementById('tab-settings');
-        const inputArea = document.getElementById('input-area');
-        const groceryRefreshButton = document.getElementById('grocery-refresh');
-        const groceryClearButton = document.getElementById('grocery-clear');
-        const grocerySubtabList = document.getElementById('grocery-subtab-list');
-        const grocerySubtabPantry = document.getElementById('grocery-subtab-pantry');
-        const grocerySubviewList = document.getElementById('grocery-subview-list');
-        const grocerySubviewPantry = document.getElementById('grocery-subview-pantry');
-        const groceryAddName = document.getElementById('grocery-add-name');
-        const groceryAddAmount = document.getElementById('grocery-add-amount');
-        const groceryAddSection = document.getElementById('grocery-add-section');
-        const groceryAddSubmit = document.getElementById('grocery-add-submit');
-        const pantryAddName = document.getElementById('pantry-add-name');
-        const pantryAddAmount = document.getElementById('pantry-add-amount');
-        const pantryAddSection = document.getElementById('pantry-add-section');
-        const pantryAddSubmit = document.getElementById('pantry-add-submit');
-        const promptInput = document.getElementById('prompt');
-        const sendButton = document.getElementById('send');
-        const logoutButton = document.getElementById('logout');
-        const typingIndicator = document.getElementById('typing-indicator');
-        let cachedAdminHouseholds = null;
-        let currentSettingsSubView = 'my';
-
-        const groceryLists = {
-          produce: document.getElementById('g-list-produce'),
-          meat: document.getElementById('g-list-meat'),
-          dairy: document.getElementById('g-list-dairy'),
-          frozen: document.getElementById('g-list-frozen'),
-          dry: document.getElementById('g-list-dry'),
-          other: document.getElementById('g-list-other'),
-        };
-        const pantryLists = {
-          spices_herbs: document.getElementById('p-list-spices_herbs'),
-          oils_vinegars: document.getElementById('p-list-oils_vinegars'),
-          baking: document.getElementById('p-list-baking'),
-          sweeteners: document.getElementById('p-list-sweeteners'),
-          condiments_sauces: document.getElementById('p-list-condiments_sauces'),
-          pasta_grains_dry_goods: document.getElementById('p-list-pasta_grains_dry_goods'),
-          other_pantry: document.getElementById('p-list-other_pantry'),
-        };
-
-        let currentChatId = null;
-        let currentUserName = null;
-        let currentHouseholdId = null;
-        let currentUserId = null;
-        let currentAssistantName = 'KitchenBot';
-        let isCurrentUserOwner = false;
-        let currentGroceriesSubview = 'list';
-        let godModeReadOnly = false;
-        let editingSmartMemoryId = null;
-        let editingSmartMemoryNoteIndex = null;
-        /** Normalized display name (trim + lower) -> chat color key */
-        let displayNameToColor = {};
-        const CHAT_COLOR_OPTIONS = [
-          { key: 'pink', label: 'Pink' },
-          { key: 'blue', label: 'Blue' },
-          { key: 'mint', label: 'Mint' },
-          { key: 'lavender', label: 'Lavender' },
-          { key: 'peach', label: 'Peach' },
-        ];
-        function normalizeDisplayNameKey(name) {
-          return String(name ?? '').trim().toLowerCase();
-        }
-        function normalizeToneValue(value) {
-          const key = String(value ?? '').trim().toLowerCase();
-          if (key === 'sexy') return 'thirsty';
-          if (key === 'sassy') return 'witty';
-          if (key === 'friendly') return 'helpful';
-          return ['helpful', 'concise', 'witty', 'thirsty'].includes(key) ? key : 'helpful';
-        }
-        function rebuildDisplayNameToColorFromMeChatColors(chatColors) {
-          displayNameToColor = {};
-          if (chatColors && typeof chatColors === 'object' && !Array.isArray(chatColors)) {
-            for (const k of Object.keys(chatColors)) {
-              const nk = normalizeDisplayNameKey(k);
-              if (nk) displayNameToColor[nk] = chatColors[k];
-            }
-          }
-        }
-        function rebuildDisplayNameToColorFromSettingsUsers(users) {
-          displayNameToColor = {};
-          for (const u of users || []) {
-            const nk = normalizeDisplayNameKey(u.displayName);
-            if (nk) displayNameToColor[nk] = u.chatColor || 'blue';
-          }
-        }
-        function userMessageBubbleClass(displayName) {
-          const nk = normalizeDisplayNameKey(displayName);
-          const raw = nk ? displayNameToColor[nk] : undefined;
-          const k =
-            typeof raw === 'string' && raw.trim()
-              ? raw.trim().toLowerCase()
-              : 'blue';
-          const ok = CHAT_COLOR_OPTIONS.some((o) => o.key === k);
-          return 'user-msg-chat-' + (ok ? k : 'blue');
-        }
-        let chatsCache = [];
-        let lastDeletedGrocery = null;
-        let lastDeletedTimeout = null;
-        let lastMePayload = null;
-        /** Last persisted message count from /history per chat (DB rows only). */
-        const lastPersistedMessageCountByChatId = new Map();
-        /**
-         * Sender-only ephemeral !command turns (session memory): merged after each loadHistory.
-         * anchor = persisted row count when the exchange happened; seq = stable order for same anchor.
-         */
-        const ephemeralExchangesByChatId = new Map();
-        const nextEphemeralSeqByChatId = new Map();
-
-        /** @returns {'God mode' | 'Demo mode' | 'Read-only mode'} */
-        function impersonationReadOnlyModeLabel() {
-          if (!lastMePayload || !lastMePayload.isImpersonating) return 'Read-only mode';
-          return lastMePayload.isGlobalAdmin === true ? 'God mode' : 'Demo mode';
-        }
-
-        function impersonationReadOnlyNoticeText() {
-          const mode = impersonationReadOnlyModeLabel();
-          if (mode === 'Read-only mode') {
-            return 'Read-only mode. Exit to make changes.';
-          }
-          if (mode === 'God mode') {
-            return 'God Mode is read-only. Exit God Mode to make changes.';
-          }
-          return 'Demo mode is read-only. Exit Demo Mode to make changes.';
-        }
-
-        /** Maps server 403 God Mode copy to Demo Mode when the session is read-only Demo impersonation. */
-        function mapServerReadOnlyErrorMessage(rawError) {
-          const s = rawError == null ? '' : String(rawError);
-          if (!godModeReadOnly || !lastMePayload || !lastMePayload.isImpersonating) {
-            return s || 'Request failed.';
-          }
-          if (/God Mode is read-only|Exit God Mode to make changes/i.test(s)) {
-            return impersonationReadOnlyNoticeText();
-          }
-          return s || 'Request failed.';
-        }
-
-        function applyGodModeFromMe(data) {
-          if (data && typeof data.name === 'string' && data.householdId != null) {
-            lastMePayload = data;
-          }
-          const ro = !!(data && data.impersonationReadOnly && data.isImpersonating);
-          godModeReadOnly = ro;
-          const banner = document.getElementById('god-mode-banner');
-          const textEl = document.getElementById('god-mode-banner-text');
-          if (banner && textEl) {
-            if (data && data.isImpersonating) {
-              textEl.textContent = '';
-              const strong = document.createElement('strong');
-              strong.textContent =
-                'Viewing as ' +
-                String(data.name || 'user') +
-                ' in ' +
-                String(data.householdName || 'this household');
-              textEl.appendChild(strong);
-              textEl.appendChild(document.createElement('br'));
-              const sub = document.createElement('span');
-              sub.style.opacity = '0.92';
-              sub.textContent =
-                data.isGlobalAdmin === true ? 'Read-only God Mode' : 'Read-only Demo Mode';
-              textEl.appendChild(sub);
-              banner.style.display = 'flex';
-              const exitBtn = document.getElementById('god-mode-exit-btn');
-              if (exitBtn) {
-                exitBtn.textContent =
-                  data.isGlobalAdmin === true ? 'Exit God Mode' : 'Exit Demo Mode';
-              }
-            } else {
-              textEl.textContent = '';
-              banner.style.display = 'none';
-              const exitBtn = document.getElementById('god-mode-exit-btn');
-              if (exitBtn) exitBtn.textContent = 'Exit God Mode';
-            }
-          }
-          if (promptInput) {
-            promptInput.readOnly = ro;
-            promptInput.style.opacity = ro ? '0.65' : '';
-          }
-          if (sendButton) {
-            sendButton.disabled = ro;
-            sendButton.style.opacity = ro ? '0.5' : '';
-          }
-          if (newChatButton) {
-            newChatButton.disabled = ro;
-            newChatButton.style.opacity = ro ? '0.5' : '';
-          }
-          const gas = document.getElementById('settings-anthropic-owner-key-save');
-          const sas = document.getElementById('settings-add-submit');
-          const memSave = document.getElementById('my-settings-memory-save');
-          const memorySaveButton = document.getElementById('my-settings-memory-save');
-          const adminModeSave = document.getElementById('admin-anthropic-mode-save');
-          const adminNewHh = document.getElementById('admin-new-hh-submit');
-          const demoViewBtn = document.getElementById('settings-demo-view-btn');
-          if (gas) gas.disabled = ro;
-          if (sas) sas.disabled = ro;
-          if (memSave) memSave.disabled = ro;
-          if (memorySaveButton) memorySaveButton.disabled = ro;
-          if (demoViewBtn) demoViewBtn.disabled = ro;
-          if (adminModeSave) adminModeSave.disabled = ro;
-          if (adminNewHh) adminNewHh.disabled = ro;
-          if (groceryAddName) {
-            groceryAddName.readOnly = ro;
-            groceryAddName.style.opacity = ro ? '0.65' : '';
-          }
-          if (groceryAddAmount) {
-            groceryAddAmount.readOnly = ro;
-            groceryAddAmount.style.opacity = ro ? '0.65' : '';
-          }
-          if (groceryAddSection) groceryAddSection.disabled = ro;
-          if (groceryAddSubmit) groceryAddSubmit.disabled = ro;
-          if (groceryClearButton) groceryClearButton.disabled = ro;
-          if (pantryAddName) {
-            pantryAddName.readOnly = ro;
-            pantryAddName.style.opacity = ro ? '0.65' : '';
-          }
-          if (pantryAddAmount) {
-            pantryAddAmount.readOnly = ro;
-            pantryAddAmount.style.opacity = ro ? '0.65' : '';
-          }
-          if (pantryAddSection) pantryAddSection.disabled = ro;
-          if (pantryAddSubmit) pantryAddSubmit.disabled = ro;
-        }
-
-        let typingWs = null;
-        const typingUsers = new Set();
-        let typingStopTimeout = null;
-        let weAreStreamingThisChat = false;
-        let remoteStreamBodyEl = null;
-
-        const headerEl = document.getElementById('header');
-
-        function formatTypingText(users) {
-          const arr = Array.from(users).filter(u => u && u !== currentUserName);
-          if (arr.length === 0) return '';
-          if (arr.length === 1) return arr[0] + ' is typing…';
-          if (arr.length === 2) return arr[0] + ' and ' + arr[1] + ' are typing…';
-          return arr.slice(0, -1).join(', ') + ', and ' + arr[arr.length - 1] + ' are typing…';
-        }
-
-        function updateTypingIndicator() {
-          if (chat.style.display === 'none') {
-            typingIndicator.textContent = '';
-            return;
-          }
-          typingIndicator.textContent = formatTypingText(typingUsers);
-        }
-
-        function teardownRealtimeUi() {
-          if (typingWs) {
-            typingWs.close();
-            typingWs = null;
-          }
-          typingUsers.clear();
-          typingIndicator.textContent = '';
-          if (typingStopTimeout) clearTimeout(typingStopTimeout);
-          typingStopTimeout = null;
-          remoteStreamBodyEl = null;
-          weAreStreamingThisChat = false;
-        }
-
-        function sendTypingViewing() {
-          if (!typingWs || typingWs.readyState !== 1) return;
-          if (currentHouseholdId == null || !Number.isFinite(Number(currentHouseholdId))) return;
-          typingWs.send(JSON.stringify({ type: 'viewing', householdId: currentHouseholdId, chatId: currentChatId }));
-          typingUsers.clear();
-          updateTypingIndicator();
-        }
-
-        function connectTypingWs() {
-          if (!currentUserName || currentHouseholdId == null || currentUserId == null) return;
-          if (!Number.isFinite(Number(currentHouseholdId)) || !Number.isFinite(Number(currentUserId))) return;
-          const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-          const url = proto + '//' + location.host;
-          try {
-            const ws = new WebSocket(url);
-            ws.onopen = () => {
-              ws.send(
-                JSON.stringify({
-                  type: 'identify',
-                  householdId: currentHouseholdId,
-                  userId: currentUserId,
-                  user: currentUserName,
-                })
-              );
-              sendTypingViewing();
-            };
-            ws.onmessage = (event) => {
-              try {
-                const msg = JSON.parse(event.data);
-                const msgChatId = msg.chatId != null ? Number(msg.chatId) : null;
-                const msgHid = msg.householdId != null ? Number(msg.householdId) : null;
-                if (msg.type === 'chat_updated' && msgChatId === currentChatId) {
-                  if (msgHid != null && currentHouseholdId != null && msgHid !== Number(currentHouseholdId)) {
-                    return;
-                  }
-                  if (msg.user && msg.user === currentUserName) {
-                    return;
-                  }
-                  remoteStreamBodyEl = null;
-                  if (!weAreStreamingThisChat) loadHistory();
-                  return;
-                }
-                if (msg.type === 'stream_delta' && msgChatId === currentChatId) {
-                  if (msgHid != null && currentHouseholdId != null && msgHid !== Number(currentHouseholdId)) {
-                    return;
-                  }
-                  // Prevent the sending client from applying the same assistant stream chunk twice.
-                  if (weAreStreamingThisChat) {
-                    return;
-                  }
-                  if (!remoteStreamBodyEl) {
-                    const wrap = document.createElement('div');
-                    wrap.className = 'message assistant';
-                    const author = document.createElement('span');
-                    author.className = 'message-author';
-                    author.textContent = currentAssistantName || 'KitchenBot';
-                    wrap.appendChild(author);
-                    const body = document.createElement('div');
-                    body.className = 'message-body';
-                    wrap.appendChild(body);
-                    chat.appendChild(wrap);
-                    remoteStreamBodyEl = body;
-                    chat.scrollTop = chat.scrollHeight;
-                  }
-                  if (remoteStreamBodyEl && msg.delta) {
-                    remoteStreamBodyEl.appendChild(document.createTextNode(msg.delta));
-                    chat.scrollTop = chat.scrollHeight;
-                  }
-                  return;
-                }
-                if (msg.type === 'user_typing' || msg.type === 'user_stopped_typing') {
-                  if (currentHouseholdId == null || !Number.isFinite(Number(currentHouseholdId))) return;
-                  if (msgHid == null || msgHid !== Number(currentHouseholdId)) return;
-                  if (msgChatId != null && msgChatId !== currentChatId) return;
-                  if (msg.userId != null && currentUserId != null && Number(msg.userId) === Number(currentUserId)) return;
-                  if (msg.user === currentUserName) return;
-                  if (msg.type === 'user_typing') {
-                    typingUsers.add(msg.user);
-                    updateTypingIndicator();
-                  } else {
-                    typingUsers.delete(msg.user);
-                    updateTypingIndicator();
-                  }
-                }
-              } catch (e) {}
-            };
-            ws.onclose = () => {
-              typingWs = null;
-            };
-            typingWs = ws;
-          } catch (e) {}
-        }
-
-        function showApp(name) {
-          loginArea.style.display = 'none';
-          appArea.style.display = 'flex';
-          appArea.style.flexDirection = 'column';
-          headerEl.classList.remove('hide-tabs');
-          if (name) {
-            speakerName.textContent = name;
-          }
-        }
-
-        function showBootstrapForm() {
-          const bf = document.getElementById('bootstrap-form');
-          const lf = document.getElementById('login-form');
-          const blk = document.getElementById('bootstrap-blocked');
-          if (blk) blk.style.display = 'none';
-          if (bf) bf.classList.add('bootstrap-form-visible');
-          if (lf) lf.classList.remove('login-form-visible');
-        }
-
-        function showBootstrapBlocked() {
-          const bf = document.getElementById('bootstrap-form');
-          const lf = document.getElementById('login-form');
-          const blk = document.getElementById('bootstrap-blocked');
-          if (bf) bf.classList.remove('bootstrap-form-visible');
-          if (lf) lf.classList.remove('login-form-visible');
-          if (blk) blk.style.display = 'block';
-        }
-
-        function showLoginFormOnly() {
-          const bf = document.getElementById('bootstrap-form');
-          const lf = document.getElementById('login-form');
-          const blk = document.getElementById('bootstrap-blocked');
-          if (blk) blk.style.display = 'none';
-          if (bf) bf.classList.remove('bootstrap-form-visible');
-          if (lf) lf.classList.add('login-form-visible');
-        }
-
-        function showLogin() {
-          loginArea.style.display = 'block';
-          appArea.style.display = 'none';
-          headerEl.classList.add('hide-tabs');
-          showLoginFormOnly();
-          if (tabSettings) tabSettings.style.display = 'none';
-          setActiveTab('chat');
-        }
-
-        function setActiveTab(tab) {
-          clearEntityMemoryUiMessage();
-          tabChat.classList.toggle('tab-active', tab === 'chat');
-          tabGroceries.classList.toggle('tab-active', tab === 'groceries');
-          if (tabSettings) tabSettings.classList.toggle('tab-active', tab === 'settings');
-          chat.style.display = tab === 'chat' ? 'flex' : 'none';
-          groceryPanel.style.display = tab === 'groceries' ? 'flex' : 'none';
-          if (settingsPanel) settingsPanel.style.display = tab === 'settings' ? 'flex' : 'none';
-          if (inputArea) inputArea.style.display = tab === 'chat' ? 'flex' : 'none';
-          if (tab === 'groceries') setGroceriesSubview(currentGroceriesSubview);
-          if (tab === 'settings') loadSettingsPanel();
-        }
-
-        function closeSidebarAndGoToChatTab() {
-          setActiveTab('chat');
-          sidebar.classList.remove('open');
-          sidebarBackdrop.classList.remove('open');
-        }
-
-        function syncEntityMemoriesWrapVisibility(runtimeEnabled) {
-          const w = document.getElementById('my-settings-entity-memories-wrap');
-          if (w) w.style.display = isCurrentUserOwner && runtimeEnabled ? '' : 'none';
-        }
-
-        function syncMemoriesWrapVisibility() {
-          syncEntityMemoriesWrapVisibility(true);
-        }
-
-        function clearEntityMemoryUiMessage() {
-          const el = document.getElementById('my-settings-entity-memories-msg');
-          clearSettingsUiMessage(el);
-        }
-
-        function clearHouseholdDefaultsUiMessage() {
-          const el = document.getElementById('my-settings-defaults-msg');
-          clearSettingsUiMessage(el);
-        }
-
-        function setSettingsUiMessage(el, text, { sticky = false } = {}) {
-          if (!el) return;
-          el.textContent = text || '';
-          el.dataset.sticky = sticky && text ? 'true' : 'false';
-        }
-
-        function clearSettingsUiMessage(el, { force = false } = {}) {
-          if (!el) return;
-          if (!force && el.dataset.sticky === 'true') return;
-          el.textContent = '';
-          el.dataset.sticky = 'false';
-        }
-
-        function clearStickySettingsMessages() {
-          clearSettingsUiMessage(document.getElementById('my-settings-entity-memories-msg'), { force: true });
-          clearSettingsUiMessage(document.getElementById('my-settings-defaults-msg'), { force: true });
-          clearSettingsUiMessage(document.getElementById('my-settings-msg'), { force: true });
-          clearSettingsUiMessage(document.getElementById('settings-anthropic-owner-key-msg'), { force: true });
-        }
-
-        function resetSmartMemoryEditForm() {
-          editingSmartMemoryId = null;
-          editingSmartMemoryNoteIndex = null;
-          const typeIn = document.getElementById('my-settings-memory-type');
-          const labelIn = document.getElementById('my-settings-memory-label');
-          const summaryIn = document.getElementById('my-settings-memory-summary');
-          const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
-          if (typeIn) typeIn.value = 'person';
-          if (labelIn) labelIn.value = '';
-          if (summaryIn) summaryIn.value = '';
-          if (cancelBtn) cancelBtn.style.display = 'none';
-        }
-
-        function stripMemoryDisplayWrappers(s) {
-          let t = String(s ?? '').trim();
-          while (t.length >= 2 && t.startsWith('\`') && t.endsWith('\`')) {
-            t = t.slice(1, -1).trim();
-          }
-          if (t.length >= 2) {
-            const a = t[0];
-            const b = t[t.length - 1];
-            if ((a === '"' || a === "'") && a === b) {
-              t = t.slice(1, -1).trim();
-            }
-          }
-          return t;
-        }
-
-
-        async function loadMemoryNotesEditor() {
-          const listEl = document.getElementById('my-settings-entity-memories-list');
-          const memMsg = document.getElementById('my-settings-entity-memories-msg');
-          if (!listEl || !isCurrentUserOwner) return;
-          try {
-            const r = await fetch('/settings/household/memory-notes');
-            if (!r.ok) {
-              listEl.innerHTML = '';
-              if (memMsg) memMsg.textContent = 'Could not load saved memories.';
-              return;
-            }
-            const data = await r.json();
-            listEl.innerHTML = '';
-            listEl.className = 'settings-memory-list';
-            const all = Array.isArray(data.memories) ? data.memories : [];
-            const people = all.filter((m) => m.memoryType === 'person');
-            const householdNotes = all.filter((m) => m.memoryType !== 'person');
-
-            function buildSection(title, emptyText) {
-              const section = document.createElement('div');
-              section.className = 'settings-memory-group';
-              const heading = document.createElement('div');
-              heading.className = 'settings-memory-group-title';
-              heading.textContent = title;
-              section.appendChild(heading);
-              if (!emptyText) return section;
-              const empty = document.createElement('div');
-              empty.className = 'settings-memory-empty';
-              empty.textContent = emptyText;
-              section.appendChild(empty);
-              return section;
-            }
-
-            const peopleSection = buildSection('People', people.length ? '' : 'No people saved yet.');
-            if (people.length) {
-              const count = document.createElement('span');
-              count.className = 'count';
-              count.textContent = people.length + ' saved';
-              peopleSection.firstChild.appendChild(count);
-            }
-            for (const m of people) {
-              const card = document.createElement('div');
-              card.className = 'settings-memory-row';
-              const top = document.createElement('div');
-              top.className = 'settings-memory-row-main';
-              const label = document.createElement('strong');
-              label.className = 'settings-memory-row-title';
-              label.textContent = String(m.label || '');
-              const chip = document.createElement('span');
-              chip.className = 'settings-memory-chip';
-              chip.textContent = 'Person';
-              top.appendChild(chip);
-              top.appendChild(label);
-              const notes = Array.isArray(m.attributes && m.attributes.notes) ? m.attributes.notes : [];
-              const summary = document.createElement('div');
-              summary.className = 'settings-memory-row-body';
-              summary.textContent =
-                notes.length === 1 ? '1 saved preference' : notes.length + ' saved preferences';
-              top.appendChild(summary);
-              const actions = document.createElement('div');
-              actions.className = 'settings-memory-actions';
-              const delPersonBtn = document.createElement('button');
-              delPersonBtn.type = 'button';
-              delPersonBtn.textContent = 'Delete person';
-              delPersonBtn.addEventListener('click', async () => {
-                if (!confirm('Delete all Smart memory for "' + m.label + '"?')) return;
-                const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id), { method: 'DELETE' });
-                const errBody = await dr.json().catch(() => ({}));
-                setSettingsUiMessage(
-                  memMsg,
-                  dr.ok ? 'Person deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed',
-                  { sticky: dr.ok }
-                );
-                if (dr.ok) {
-                  resetSmartMemoryEditForm();
-                  await loadMemoryNotesEditor();
-                }
-              });
-              actions.appendChild(delPersonBtn);
-              card.appendChild(top);
-              card.appendChild(actions);
-              const noteList = document.createElement('div');
-              noteList.className = 'settings-memory-note-list';
-              if (!notes.length) {
-                const empty = document.createElement('div');
-                empty.className = 'settings-memory-empty';
-                empty.textContent = '(No saved notes yet)';
-                noteList.appendChild(empty);
-              }
-              notes.forEach((note, idx) => {
-                const row = document.createElement('div');
-                row.className = 'settings-memory-note-item';
-                const text = document.createElement('div');
-                text.className = 'settings-memory-row-body';
-                text.textContent = note && note.text ? note.text : '';
-                row.appendChild(text);
-                const noteActions = document.createElement('div');
-                noteActions.className = 'settings-memory-actions';
-                const editBtn = document.createElement('button');
-                editBtn.type = 'button';
-                editBtn.textContent = 'Edit';
-                editBtn.addEventListener('click', () => {
-                  editingSmartMemoryId = m.id;
-                  editingSmartMemoryNoteIndex = idx;
-                  const typeIn = document.getElementById('my-settings-memory-type');
-                  const labelIn = document.getElementById('my-settings-memory-label');
-                  const summaryIn = document.getElementById('my-settings-memory-summary');
-                  const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
-                  if (typeIn) typeIn.value = 'person';
-                  if (labelIn) labelIn.value = m.label || '';
-                  if (summaryIn) summaryIn.value = note && note.text ? note.text : '';
-                  if (cancelBtn) cancelBtn.style.display = '';
-                  clearEntityMemoryUiMessage();
-                });
-                noteActions.appendChild(editBtn);
-                const delBtn = document.createElement('button');
-                delBtn.type = 'button';
-                delBtn.textContent = 'Delete';
-                delBtn.addEventListener('click', async () => {
-                  if (!confirm('Delete this saved note for "' + m.label + '"?')) return;
-                  const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id) + '?noteIndex=' + encodeURIComponent(idx), { method: 'DELETE' });
-                  const errBody = await dr.json().catch(() => ({}));
-                  setSettingsUiMessage(
-                    memMsg,
-                    dr.ok ? 'Saved note deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed',
-                    { sticky: dr.ok }
-                  );
-                  if (dr.ok) {
-                    resetSmartMemoryEditForm();
-                    await loadMemoryNotesEditor();
-                  }
-                });
-                noteActions.appendChild(delBtn);
-                row.appendChild(noteActions);
-                noteList.appendChild(row);
-              });
-              card.appendChild(noteList);
-              peopleSection.appendChild(card);
-            }
-            listEl.appendChild(peopleSection);
-
-            const householdSection = buildSection('Household-wide', householdNotes.length ? '' : 'No household-wide memory saved yet.');
-            if (householdNotes.length) {
-              const count = document.createElement('span');
-              count.className = 'count';
-              count.textContent = householdNotes.length + ' saved';
-              householdSection.firstChild.appendChild(count);
-            }
-            for (const m of householdNotes) {
-              const row = document.createElement('div');
-              row.className = 'settings-memory-row';
-              const kv = document.createElement('div');
-              kv.className = 'settings-memory-row-main';
-              const chip = document.createElement('span');
-              chip.className = 'settings-memory-chip';
-              chip.textContent = 'Household';
-              kv.appendChild(chip);
-              const strong = document.createElement('strong');
-              strong.className = 'settings-memory-row-title';
-              strong.textContent = String(m.label || '');
-              kv.appendChild(strong);
-              const span = document.createElement('span');
-              span.className = 'settings-memory-row-body';
-              span.textContent = m.summary;
-              kv.appendChild(span);
-              row.appendChild(kv);
-              const actions = document.createElement('div');
-              actions.className = 'settings-memory-actions';
-              const editBtn = document.createElement('button');
-              editBtn.type = 'button';
-              editBtn.textContent = 'Edit';
-              editBtn.addEventListener('click', () => {
-                editingSmartMemoryId = m.id;
-                editingSmartMemoryNoteIndex = null;
-                const typeIn = document.getElementById('my-settings-memory-type');
-                const labelIn = document.getElementById('my-settings-memory-label');
-                const summaryIn = document.getElementById('my-settings-memory-summary');
-                const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
-                if (typeIn) typeIn.value = 'household_note';
-                if (labelIn) labelIn.value = m.label || '';
-                if (summaryIn) summaryIn.value = m.summary || '';
-                if (cancelBtn) cancelBtn.style.display = '';
-                clearEntityMemoryUiMessage();
-              });
-              actions.appendChild(editBtn);
-              const delBtn = document.createElement('button');
-              delBtn.type = 'button';
-              delBtn.textContent = 'Delete';
-              delBtn.addEventListener('click', async () => {
-                if (!confirm('Delete household preference "' + m.label + '"?')) return;
-                const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id), { method: 'DELETE' });
-                const errBody = await dr.json().catch(() => ({}));
-                setSettingsUiMessage(
-                  memMsg,
-                  dr.ok ? 'Household preference deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed',
-                  { sticky: dr.ok }
-                );
-                if (dr.ok) {
-                  resetSmartMemoryEditForm();
-                  await loadMemoryNotesEditor();
-                }
-              });
-              actions.appendChild(delBtn);
-              row.appendChild(actions);
-              householdSection.appendChild(row);
-            }
-            listEl.appendChild(householdSection);
-            clearSettingsUiMessage(memMsg);
-          } catch (e) {
-            listEl.innerHTML = '';
-            setSettingsUiMessage(memMsg, 'Load failed.');
-          }
-        }
-
-        async function loadHouseholdDefaultsEditor() {
-          const portionsEl = document.getElementById('my-settings-defaults-portions');
-          const styleEl = document.getElementById('my-settings-defaults-style');
-          const assistantNameEl = document.getElementById('my-settings-defaults-assistant-name');
-          const assistantToneEl = document.getElementById('my-settings-defaults-assistant-tone');
-          const msgEl = document.getElementById('my-settings-defaults-msg');
-          if (!portionsEl || !styleEl || !assistantNameEl || !assistantToneEl || !isCurrentUserOwner) return;
-          try {
-            const r = await fetch('/settings/household/defaults');
-            if (!r.ok) {
-              if (msgEl) msgEl.textContent = 'Could not load KitchenBot settings.';
-              return;
-            }
-            const data = await r.json();
-            const defaults = data.defaults || {};
-            portionsEl.value =
-              defaults.defaultDinnerPortions == null || !Number.isFinite(Number(defaults.defaultDinnerPortions))
-                ? ''
-                : String(Number(defaults.defaultDinnerPortions));
-            styleEl.value = defaults.weeknightCookingStyle || '';
-            assistantNameEl.value = defaults.assistantName || 'KitchenBot';
-            assistantToneEl.value = normalizeToneValue(defaults.assistantTone);
-            currentAssistantName = defaults.assistantName || 'KitchenBot';
-            clearSettingsUiMessage(msgEl);
-          } catch (e) {
-            setSettingsUiMessage(msgEl, 'Load failed.');
-          }
-        }
-
-        async function loadMyHouseholdView() {
-          const msgEl = document.getElementById('my-settings-msg');
-          const nameEl = document.getElementById('my-settings-hh-name');
-          const keyEl = document.getElementById('my-settings-hh-key');
-          const listEl = document.getElementById('my-settings-users-list');
-          if (!listEl || !nameEl || !keyEl) return;
-          try {
-            const r = await fetch('/settings/household');
-            if (!r.ok) {
-              if (msgEl) msgEl.textContent = 'Could not load settings.';
-              return;
-            }
-            const data = await r.json();
-            isCurrentUserOwner = !!data.canManageHouseholdSettings;
-            currentAssistantName =
-              (data.defaults && typeof data.defaults.assistantName === 'string' && data.defaults.assistantName.trim()) ||
-              currentAssistantName ||
-              'KitchenBot';
-            syncMemoriesWrapVisibility();
-            syncEntityMemoriesWrapVisibility(true);
-            nameEl.textContent = data.household.name;
-            keyEl.textContent = data.household.key;
-            rebuildDisplayNameToColorFromSettingsUsers(data.users);
-            if (currentChatId) {
-              try {
-                await loadHistory();
-              } catch (e) {}
-            }
-            listEl.innerHTML = '';
-            for (const u of data.users) {
-              const row = document.createElement('div');
-              row.className = 'settings-user-row';
-              const label = document.createElement('span');
-              label.className = 'settings-user-name';
-              label.textContent = u.displayName;
-              const roleCol = document.createElement('div');
-              roleCol.className = 'settings-user-row-role-col';
-              const roleWrap = document.createElement('div');
-              roleWrap.className = 'settings-user-inline-controls';
-              const roleLbl = document.createElement('span');
-              roleLbl.textContent = 'Role';
-              const roleSel = document.createElement('select');
-              roleSel.setAttribute('aria-label', 'Role for ' + u.displayName);
-              [['owner', 'Owner'], ['member', 'Member']].forEach(([val, lab]) => {
-                const o = document.createElement('option');
-                o.value = val;
-                o.textContent = lab;
-                roleSel.appendChild(o);
-              });
-              roleSel.value = u.role === 'owner' ? 'owner' : 'member';
-              let prevRole = roleSel.value;
-              const roleBtn = document.createElement('button');
-              roleBtn.type = 'button';
-              roleBtn.textContent = 'Update role';
-              const roleFeedback = document.createElement('div');
-              roleFeedback.className = 'settings-user-row-role-feedback';
-              roleFeedback.setAttribute('aria-live', 'polite');
-              const isSelf = u.id === data.currentUser.id;
-              function syncRoleButtonState() {
-                if (isSelf) return;
-                roleBtn.disabled = roleSel.value === prevRole;
-              }
-              if (isSelf) {
-                roleSel.disabled = true;
-                roleBtn.disabled = true;
-              } else {
-                roleSel.addEventListener('change', () => {
-                  clearEntityMemoryUiMessage();
-                  roleFeedback.textContent = '';
-                  syncRoleButtonState();
-                });
-                syncRoleButtonState();
-              }
-              roleBtn.addEventListener('click', async () => {
-                clearEntityMemoryUiMessage();
-                const newRole = roleSel.value;
-                if (newRole === prevRole) {
-                  roleFeedback.textContent = 'No changes';
-                  roleFeedback.style.color = 'var(--text-soft)';
-                  return;
-                }
-                const originalBtnText = 'Update role';
-                roleBtn.textContent = 'Saving...';
-                roleBtn.disabled = true;
-                if (!isSelf) roleSel.disabled = true;
-                roleFeedback.textContent = '';
-                try {
-                  const rr = await fetch('/settings/household/users/' + u.id + '/role', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ role: newRole }),
-                  });
-                  const errBody = await rr.json().catch(() => ({}));
-                  if (rr.ok) {
-                    prevRole = newRole;
-                    roleFeedback.textContent = 'Role updated';
-                    roleFeedback.style.color = 'var(--accent-strong)';
-                    row.classList.add('settings-user-row-role-flash');
-                    setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
-                  } else {
-                    roleFeedback.textContent =
-                      mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update role';
-                    roleFeedback.style.color = '#b91c1c';
-                    roleSel.value = prevRole;
-                  }
-                } catch (e) {
-                  roleFeedback.textContent = 'Request failed';
-                  roleFeedback.style.color = '#b91c1c';
-                  roleSel.value = prevRole;
-                } finally {
-                  roleBtn.textContent = originalBtnText;
-                  if (!isSelf) roleSel.disabled = false;
-                  if (!isSelf) syncRoleButtonState();
-                }
-              });
-              roleWrap.appendChild(roleLbl);
-              roleWrap.appendChild(roleSel);
-              roleWrap.appendChild(roleBtn);
-              roleCol.appendChild(roleWrap);
-              roleCol.appendChild(roleFeedback);
-              const pinCol = document.createElement('div');
-              pinCol.className = 'settings-user-row-role-col';
-              const pinRow = document.createElement('div');
-              pinRow.className = 'settings-user-inline-controls';
-              const pinLbl = document.createElement('span');
-              pinLbl.textContent = 'PIN';
-              const pinIn = document.createElement('input');
-              pinIn.type = 'password';
-              pinIn.placeholder = 'new PIN';
-              pinIn.autocomplete = 'new-password';
-              const btn = document.createElement('button');
-              btn.type = 'button';
-              btn.textContent = 'Update PIN';
-              const pinFeedback = document.createElement('div');
-              pinFeedback.className = 'settings-user-row-role-feedback';
-              pinFeedback.setAttribute('aria-live', 'polite');
-              let pinSaving = false;
-              function syncPinButton() {
-                if (pinSaving) return;
-                btn.disabled = pinIn.value.trim() === '';
-              }
-              syncPinButton();
-              pinIn.addEventListener('input', () => {
-                clearEntityMemoryUiMessage();
-                pinFeedback.textContent = '';
-                syncPinButton();
-              });
-              btn.addEventListener('click', async () => {
-                clearEntityMemoryUiMessage();
-                if (pinSaving) return;
-                const pin = pinIn.value.trim();
-                if (!pin) {
-                  pinFeedback.textContent = 'Enter a PIN.';
-                  pinFeedback.style.color = 'var(--text-soft)';
-                  return;
-                }
-                pinSaving = true;
-                btn.disabled = true;
-                pinIn.disabled = true;
-                btn.textContent = 'Saving...';
-                pinFeedback.textContent = '';
-                try {
-                  const rr = await fetch('/settings/household/users/' + u.id + '/pin', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pin }),
-                  });
-                  const errBody = await rr.json().catch(() => ({}));
-                  if (rr.ok) {
-                    pinIn.value = '';
-                    pinFeedback.textContent = 'PIN updated';
-                    pinFeedback.style.color = 'var(--accent-strong)';
-                    row.classList.add('settings-user-row-role-flash');
-                    setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
-                  } else {
-                    pinFeedback.textContent =
-                      mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update PIN';
-                    pinFeedback.style.color = '#b91c1c';
-                  }
-                } catch (e) {
-                  pinFeedback.textContent = 'Request failed';
-                  pinFeedback.style.color = '#b91c1c';
-                } finally {
-                  pinSaving = false;
-                  pinIn.disabled = false;
-                  btn.textContent = 'Update PIN';
-                  syncPinButton();
-                }
-              });
-              pinRow.appendChild(pinLbl);
-              pinRow.appendChild(pinIn);
-              pinRow.appendChild(btn);
-              pinCol.appendChild(pinRow);
-              pinCol.appendChild(pinFeedback);
-              row.appendChild(label);
-              row.appendChild(roleCol);
-              row.appendChild(pinCol);
-              const prefGrid = document.createElement('div');
-              prefGrid.className = 'settings-user-pref-grid';
-              const colorCol = document.createElement('div');
-              colorCol.className = 'settings-user-row-role-col';
-              const colorWrap = document.createElement('div');
-              colorWrap.className = 'settings-user-inline-controls';
-              const colorLbl = document.createElement('span');
-              colorLbl.textContent = 'Chat color';
-              const colorSel = document.createElement('select');
-              colorSel.setAttribute('aria-label', 'Chat color for ' + u.displayName);
-              CHAT_COLOR_OPTIONS.forEach((opt) => {
-                const o = document.createElement('option');
-                o.value = opt.key;
-                o.textContent = opt.label;
-                colorSel.appendChild(o);
-              });
-              colorSel.value = u.chatColor || 'blue';
-              let prevChatColor = colorSel.value;
-              const colorFeedback = document.createElement('div');
-              colorFeedback.className = 'settings-user-row-role-feedback';
-              colorFeedback.setAttribute('aria-live', 'polite');
-              let chatColorSaving = false;
-              colorSel.addEventListener('change', async () => {
-                clearEntityMemoryUiMessage();
-                if (chatColorSaving) return;
-                const attempted = colorSel.value;
-                chatColorSaving = true;
-                colorSel.disabled = true;
-                colorFeedback.textContent = 'Saving...';
-                colorFeedback.style.color = 'var(--text-soft)';
-                try {
-                  const rr = await fetch('/settings/household/users/' + u.id + '/chat-color', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chatColor: attempted }),
-                  });
-                  const errBody = await rr.json().catch(() => ({}));
-                  if (rr.ok) {
-                    displayNameToColor[normalizeDisplayNameKey(u.displayName)] = attempted;
-                    prevChatColor = attempted;
-                    colorSel.value = attempted;
-                    colorFeedback.textContent = 'Chat color updated';
-                    colorFeedback.style.color = 'var(--accent-strong)';
-                    row.classList.add('settings-user-row-role-flash');
-                    setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
-                    if (currentChatId) await loadHistory();
-                  } else {
-                    colorSel.value = prevChatColor;
-                    colorFeedback.textContent =
-                      mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update chat color';
-                    colorFeedback.style.color = '#b91c1c';
-                  }
-                } catch (e) {
-                  colorSel.value = prevChatColor;
-                  colorFeedback.textContent = 'Request failed';
-                  colorFeedback.style.color = '#b91c1c';
-                } finally {
-                  chatColorSaving = false;
-                  colorSel.disabled = false;
-                }
-              });
-              colorWrap.appendChild(colorLbl);
-              colorWrap.appendChild(colorSel);
-              colorCol.appendChild(colorWrap);
-              colorCol.appendChild(colorFeedback);
-              prefGrid.appendChild(colorCol);
-              row.appendChild(prefGrid);
-              listEl.appendChild(row);
-            }
-            if (msgEl) msgEl.textContent = '';
-            await loadHouseholdDefaultsEditor();
-            await loadMemoryNotesEditor();
-          } catch (e) {
-            if (msgEl) msgEl.textContent = 'Load failed.';
-          }
-        }
-
-        async function loadSettingsPanel() {
-          await loadMyHouseholdView();
-          const isGa = await loadAnthropicSection();
-          const subAdminBtn = document.getElementById('settings-subtab-admin-btn');
-          if (subAdminBtn) subAdminBtn.style.display = isGa ? 'inline-block' : 'none';
-          if (!isGa) {
-            currentSettingsSubView = 'my';
-          }
-          if (isGa) {
-            await loadGlobalAdminView();
-          }
-          showSettingsSubView(currentSettingsSubView);
-          if (lastMePayload) applyGodModeFromMe(lastMePayload);
-        }
-
-        function loadGlobalAdminView() {
-          return refreshAdminHouseholdsList();
-        }
-
-        function showSettingsSubView(view) {
-          clearEntityMemoryUiMessage();
-          const myV = document.getElementById('settings-view-my');
-          const adminV = document.getElementById('settings-view-admin');
-          const myBtn = document.getElementById('settings-subtab-my-btn');
-          const adminBtn = document.getElementById('settings-subtab-admin-btn');
-          if (view === 'admin' && adminBtn && adminBtn.style.display === 'none') {
-            view = 'my';
-          }
-          currentSettingsSubView = view;
-          if (view === 'admin') {
-            if (myV) myV.style.display = 'none';
-            if (adminV) adminV.style.display = 'block';
-            if (myBtn) myBtn.classList.remove('settings-subtab-active');
-            if (adminBtn) adminBtn.classList.add('settings-subtab-active');
-          } else {
-            if (myV) myV.style.display = 'block';
-            if (adminV) adminV.style.display = 'none';
-            if (myBtn) myBtn.classList.add('settings-subtab-active');
-            if (adminBtn) adminBtn.classList.remove('settings-subtab-active');
-          }
-        }
-
-        function updateAdminAnthropicFormVisibility() {
-          const sharedRadio = document.getElementById('admin-anthropic-mode-shared');
-          const help = document.getElementById('admin-anthropic-shared-help');
-          const isShared = sharedRadio && sharedRadio.checked;
-          if (help) help.style.display = isShared ? 'block' : 'none';
-        }
-
-        function escapeAdminHtml(value) {
-          return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-        }
-
-        function formatAdminUsageUsd(value, available = true) {
-          if (!available) return 'Unavailable';
-          const n = Number(value);
-          if (!Number.isFinite(n)) return 'Unavailable';
-          return '$' + n.toFixed(4);
-        }
-
-        function renderAdminUsageSection(title, rows, labelKey, description) {
-          if (!Array.isArray(rows) || rows.length === 0) {
-            return (
-              '<section class="admin-report-section"><h5>' +
-              escapeAdminHtml(title) +
-              '</h5>' +
-              (description
-                ? '<div class="admin-report-note">' + escapeAdminHtml(description) + '</div>'
-                : '') +
-              '<div class="admin-report-empty">No rows.</div></section>'
-            );
-          }
-          let html =
-            '<section class="admin-report-section"><h5>' +
-            escapeAdminHtml(title) +
-            '</h5>' +
-            (description
-              ? '<div class="admin-report-note">' + escapeAdminHtml(description) + '</div>'
-              : '') +
-            '<div class="admin-report-table-wrap"><table class="admin-report-table">' +
-            '<thead><tr><th>' +
-            escapeAdminHtml(labelKey) +
-            '</th><th class="num">Calls</th><th class="num">In</th><th class="num">Out</th><th class="num">Est. cost</th></tr></thead><tbody>';
-          for (const row of rows) {
-            const label = row.householdName || row.key || '—';
-            html +=
-              '<tr><td>' +
-              escapeAdminHtml(label) +
-              '</td><td class="num">' +
-              escapeAdminHtml(row.callCount != null ? row.callCount : 0) +
-              '</td><td class="num">' +
-              escapeAdminHtml(row.inputTokens != null ? row.inputTokens : 0) +
-              '</td><td class="num">' +
-              escapeAdminHtml(row.outputTokens != null ? row.outputTokens : 0) +
-              '</td><td class="num">' +
-              escapeAdminHtml(
-                formatAdminUsageUsd(row.estimatedCostUsd, row.estimatedCostAvailable !== false)
-              ) +
-              '</td></tr>';
-          }
-          html += '</tbody></table></div></section>';
-          return html;
-        }
-
-        function renderAdminUsageReport(reportData) {
-          const root = document.getElementById('admin-usage-report');
-          if (!root) return;
-          if (!reportData || !reportData.totals) {
-            root.innerHTML = '<span class="admin-report-empty">No usage data yet.</span>';
-            return;
-          }
-          const totals = reportData.totals || {};
-          let html = '<div class="admin-report-title">Anthropic call ledger</div>';
-          html += '<div class="admin-report-stats">';
-          html += '<div class="admin-report-stat"><span class="label">Calls</span><span class="value">' + escapeAdminHtml(totals.callCount != null ? totals.callCount : 0) + '</span></div>';
-          html += '<div class="admin-report-stat"><span class="label">Input tokens</span><span class="value">' + escapeAdminHtml(totals.inputTokens != null ? totals.inputTokens : 0) + '</span></div>';
-          html += '<div class="admin-report-stat"><span class="label">Output tokens</span><span class="value">' + escapeAdminHtml(totals.outputTokens != null ? totals.outputTokens : 0) + '</span></div>';
-          html += '<div class="admin-report-stat"><span class="label">Estimated cost</span><span class="value">' +
-            escapeAdminHtml(formatAdminUsageUsd(totals.estimatedCostUsd, totals.estimatedCostAvailable !== false)) +
-            '</span></div>';
-          html += '</div>';
-          html += '<div class="admin-report-grid">';
-          html += renderAdminUsageSection(
-            'Where usage went',
-            reportData.byFunction || [],
-            'Function',
-            'A single visible KitchenBot turn often spans several internal calls, including interpretation, context loading, reply writing, and web search.'
-          );
-          html += renderAdminUsageSection('By household', reportData.byHousehold || [], 'Household');
-          html += renderAdminUsageSection('By actual web search usage', reportData.byWebSearchUsage || [], 'Usage');
-          html += '</div>';
-          const recentRows = Array.isArray(reportData.recentRows) ? reportData.recentRows : [];
-          html += '<section class="admin-report-section" style="margin-top:12px;"><h5>Recent calls</h5>';
-          if (recentRows.length === 0) {
-            html += '<div class="admin-report-empty">No rows.</div>';
-          } else {
-            html +=
-              '<div class="admin-report-table-wrap"><table class="admin-report-table">' +
-              '<thead><tr><th>Time</th><th>Household</th><th>Purpose</th><th>Model</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th></tr></thead><tbody>';
-            for (const row of recentRows) {
-              html +=
-                '<tr><td>' +
-                escapeAdminHtml(row.createdAt || '—') +
-                '</td><td>' +
-                escapeAdminHtml(row.householdName || row.householdId || '—') +
-                '</td><td>' +
-                escapeAdminHtml(row.callPurpose || '—') +
-                '</td><td>' +
-                escapeAdminHtml(row.model || '—') +
-                '</td><td class="num">' +
-                escapeAdminHtml(row.inputTokens != null ? row.inputTokens : 0) +
-                '</td><td class="num">' +
-                escapeAdminHtml(row.outputTokens != null ? row.outputTokens : 0) +
-                '</td><td class="num">' +
-                escapeAdminHtml(formatAdminUsageUsd(row.estimatedCostUsd, row.estimatedCostUsd != null)) +
-                '</td></tr>';
-            }
-            html += '</tbody></table></div>';
-          }
-          html += '</section>';
-          html += renderAdminUsageSection(
-            'Raw internal purposes',
-            reportData.byPurpose || [],
-            'Purpose',
-            'This is the low-level engineering breakdown of the raw call_purpose values written to the ledger.'
-          );
-          root.innerHTML = html;
-        }
-
-        async function refreshAdminUsageReport() {
-          const msgEl = document.getElementById('admin-usage-msg');
-          const reportEl = document.getElementById('admin-usage-report');
-          const startEl = document.getElementById('admin-usage-start-date');
-          const endEl = document.getElementById('admin-usage-end-date');
-          const hhEl = document.getElementById('admin-usage-household-select');
-          const wsSettingEl = document.getElementById('admin-usage-websearch-setting');
-          const wsUsedEl = document.getElementById('admin-usage-websearch-used');
-          if (!reportEl || !startEl || !endEl || !hhEl || !wsSettingEl || !wsUsedEl) return;
-          if (msgEl) msgEl.textContent = 'Loading usage…';
-          try {
-            const qs = new URLSearchParams();
-            if (startEl.value) qs.set('startDate', startEl.value);
-            if (endEl.value) qs.set('endDate', endEl.value);
-            if (hhEl.value && hhEl.value !== 'all') qs.set('householdId', hhEl.value);
-            if (wsSettingEl.value && wsSettingEl.value !== 'all') qs.set('webSearchEnabled', wsSettingEl.value);
-            if (wsUsedEl.value && wsUsedEl.value !== 'all') qs.set('usedWebSearch', wsUsedEl.value);
-            const r = await fetch('/admin/usage-report?' + qs.toString());
-            const data = await r.json().catch(() => ({}));
-            if (!r.ok) {
-              if (msgEl) msgEl.textContent = data.error || 'Failed to load usage.';
-              return;
-            }
-            renderAdminUsageReport(data);
-            if (msgEl) msgEl.textContent = '';
-          } catch (e) {
-            if (msgEl) msgEl.textContent = 'Failed to load usage.';
-          }
-        }
-
-        function renderAdminHouseholdDetail(detailData) {
-          const hh = detailData && detailData.household;
-          if (!hh) return;
-          const usage = detailData.usage;
-          const nameEl = document.getElementById('admin-detail-name');
-          const keyEl = document.getElementById('admin-detail-key');
-          const tbody = document.getElementById('admin-detail-users-body');
-          const banner = document.getElementById('admin-editing-banner');
-          const usageEl = document.getElementById('admin-detail-usage');
-          const pinGlobalMsg = document.getElementById('admin-pin-global-msg');
-          if (pinGlobalMsg) pinGlobalMsg.textContent = '';
-          if (nameEl) nameEl.textContent = hh.name;
-          if (keyEl) keyEl.textContent = hh.householdKey;
-          if (banner) {
-            banner.textContent =
-              'Editing: #' + hh.id + ' — ' + hh.name + ' (household key: ' + hh.householdKey + ')';
-          }
-          if (usageEl) {
-            if (usage) {
-              let html =
-                '<div class="settings-admin-usage-summary"><h5>Message usage (stored messages)</h5>' +
-                '<div>Total messages (this household): <strong>' +
-                (usage.totalMessages != null ? usage.totalMessages : 0) +
-                '</strong></div>';
-              html +=
-                '<div style="margin-top:6px;">Latest message: <strong>' +
-                (usage.latestMessageAt ? String(usage.latestMessageAt) : '—') +
-                '</strong></div>';
-              html += '<div style="margin-top:10px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-soft);">User messages by name</div>';
-              const rows = usage.messagesByUser || [];
-              if (rows.length === 0) {
-                html += '<div class="admin-report-empty" style="margin-top:6px;">No user messages yet.</div>';
-              } else {
-                html += '<ul>';
-                for (const row of rows) {
-                  html +=
-                    '<li>' +
-                    (row.displayName || '—') +
-                    ': ' +
-                    (row.count != null ? row.count : 0) +
-                    '</li>';
-                }
-                html += '</ul>';
-              }
-              html += '</div>';
-              usageEl.innerHTML = html;
-            } else {
-              usageEl.innerHTML = '';
-            }
-          }
-          if (tbody) {
-            tbody.innerHTML = '';
-            for (const u of hh.users || []) {
-              const tr = document.createElement('tr');
-              const td1 = document.createElement('td');
-              td1.textContent = u.displayName;
-              const td2 = document.createElement('td');
-              td2.textContent = u.role;
-              const td3 = document.createElement('td');
-              const pinIn = document.createElement('input');
-              pinIn.type = 'password';
-              pinIn.placeholder = 'new PIN';
-              pinIn.autocomplete = 'new-password';
-              pinIn.style.maxWidth = '120px';
-              pinIn.disabled = godModeReadOnly;
-              const btn = document.createElement('button');
-              btn.type = 'button';
-              btn.textContent = 'Set PIN';
-              btn.style.marginLeft = '8px';
-              btn.disabled = godModeReadOnly;
-              btn.addEventListener('click', async () => {
-                const pin = pinIn.value.trim();
-                if (!pin) {
-                  if (pinGlobalMsg) pinGlobalMsg.textContent = 'Enter a PIN for ' + u.displayName + '.';
-                  return;
-                }
-                const rr = await fetch(
-                  '/admin/households/' + encodeURIComponent(hh.id) + '/users/' + encodeURIComponent(u.id) + '/pin',
-                  {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pin }),
-                  }
-                );
-                const errBody = await rr.json().catch(() => ({}));
-                if (pinGlobalMsg) {
-                  pinGlobalMsg.textContent = rr.ok
-                    ? 'PIN updated for #' + hh.id + ' — ' + hh.name + ' / user "' + u.displayName + '" (id ' + u.id + ').'
-                    : mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update PIN.';
-                }
-                if (rr.ok) pinIn.value = '';
-              });
-              td3.appendChild(pinIn);
-              td3.appendChild(btn);
-              const td4 = document.createElement('td');
-              if (!godModeReadOnly) {
-                const viewAsBtn = document.createElement('button');
-                viewAsBtn.type = 'button';
-                viewAsBtn.textContent = 'View as';
-                viewAsBtn.addEventListener('click', async () => {
-                  try {
-                    const rr = await fetch('/admin/impersonate', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ householdId: hh.id, userId: u.id }),
-                    });
-                    const errBody = await rr.json().catch(() => ({}));
-                    if (!rr.ok) {
-                      if (pinGlobalMsg) {
-                        pinGlobalMsg.textContent = errBody.error || 'Could not start God Mode.';
-                      }
-                      return;
-                    }
-                    const meR = await fetch('/me');
-                    if (!meR.ok) {
-                      showLogin();
-                      return;
-                    }
-                    const meData = await meR.json();
-                    await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
-                  } catch (e) {
-                    if (pinGlobalMsg) pinGlobalMsg.textContent = 'Request failed.';
-                  }
-                });
-                td4.appendChild(viewAsBtn);
-              } else {
-                td4.textContent = '—';
-              }
-              tr.appendChild(td1);
-              tr.appendChild(td2);
-              tr.appendChild(td3);
-              tr.appendChild(td4);
-              tbody.appendChild(tr);
-            }
-          }
-        }
-
-        async function loadAdminAnthropicForSelected() {
-          const sel = document.getElementById('admin-anthropic-household-select');
-          const hid = sel && sel.value ? Number(sel.value) : NaN;
-          const sharedRadio = document.getElementById('admin-anthropic-mode-shared');
-          const hhRadio = document.getElementById('admin-anthropic-mode-household');
-          const statEl = document.getElementById('admin-anthropic-selected-status');
-          const msgEl = document.getElementById('admin-anthropic-msg');
-          if (!sharedRadio || !hhRadio || !Number.isFinite(hid)) return;
-          try {
-            const rDetail = await fetch('/admin/households/' + encodeURIComponent(hid));
-            if (rDetail.ok) {
-              const detailData = await rDetail.json();
-              if (detailData.household) {
-                renderAdminHouseholdDetail(detailData);
-                if (cachedAdminHouseholds) {
-                  const ix = cachedAdminHouseholds.findIndex((h) => h.id === hid);
-                  if (ix >= 0) cachedAdminHouseholds[ix] = detailData.household;
-                }
-              }
-            }
-            const r = await fetch('/settings/anthropic?householdId=' + encodeURIComponent(hid));
-            if (!r.ok) return;
-            const d = await r.json();
-            if (d.household.anthropicKeyMode === 'household') {
-              hhRadio.checked = true;
-            } else {
-              sharedRadio.checked = true;
-            }
-            const webCb = document.getElementById('admin-web-search-enabled');
-            if (webCb) {
-              webCb.checked = !!d.household.webSearchEnabled;
-              webCb.disabled = godModeReadOnly;
-            }
-            const webSaveBtn = document.getElementById('admin-web-search-save');
-            if (webSaveBtn) webSaveBtn.disabled = godModeReadOnly;
-            if (statEl) {
-              statEl.textContent =
-                'Anthropic: ' +
-                (d.statusBrief || d.statusText || '') +
-                ' · Web search: ' +
-                (d.household.webSearchEnabled ? 'on' : 'off') +
-                ' · Runtime: Smart only';
-            }
-            updateAdminAnthropicFormVisibility();
-            if (msgEl) msgEl.textContent = '';
-            const webMsg = document.getElementById('admin-web-search-msg');
-            if (webMsg) webMsg.textContent = '';
-          } catch (e) {}
-        }
-
-        async function refreshAdminHouseholdsList() {
-          const listEl = document.getElementById('settings-admin-households-list');
-          const sel = document.getElementById('admin-anthropic-household-select');
-          const usageSel = document.getElementById('admin-usage-household-select');
-          if (!listEl && !sel && !usageSel) return;
-          try {
-            const r = await fetch('/admin/households');
-            if (!r.ok) return;
-            const data = await r.json();
-            const households = data.households || [];
-            cachedAdminHouseholds = households;
-            const prevSel = sel && sel.value;
-            const prevUsageSel = usageSel && usageSel.value;
-            if (listEl) {
-              listEl.innerHTML = '';
-              listEl.className = 'settings-admin-household-list';
-              for (const hh of households) {
-                const row = document.createElement('div');
-                row.className = 'settings-admin-household-row';
-                const main = document.createElement('div');
-                main.className = 'settings-admin-household-row-main';
-                const n =
-                  hh.totalMessages != null && Number.isFinite(Number(hh.totalMessages))
-                    ? Number(hh.totalMessages)
-                    : 0;
-                const msgLabel = n === 1 ? 'msg' : 'msgs';
-                const name = document.createElement('strong');
-                name.className = 'settings-admin-household-name';
-                name.textContent = '#' + hh.id + ' — ' + hh.name;
-                const meta = document.createElement('div');
-                meta.className = 'settings-admin-household-meta';
-                meta.textContent =
-                  'Key ' +
-                  hh.householdKey +
-                  ' • ' +
-                  n +
-                  ' ' +
-                  msgLabel +
-                  ' • ' +
-                  hh.anthropicStatusLabel;
-                main.appendChild(name);
-                main.appendChild(meta);
-                const tags = document.createElement('div');
-                tags.className = 'settings-admin-household-tags';
-                const webTag = document.createElement('span');
-                webTag.className =
-                  'settings-admin-tag' + (hh.webSearchEnabled ? ' settings-admin-tag--on' : '');
-                webTag.textContent = hh.webSearchEnabled ? 'Web search on' : 'Web search off';
-                tags.appendChild(webTag);
-                row.appendChild(main);
-                row.appendChild(tags);
-                listEl.appendChild(row);
-              }
-            }
-            if (sel) {
-              sel.innerHTML = '';
-              for (const hh of households) {
-                const opt = document.createElement('option');
-                opt.value = String(hh.id);
-                opt.textContent = '#' + hh.id + ' — ' + hh.name;
-                sel.appendChild(opt);
-              }
-              if (prevSel && households.some((h) => String(h.id) === prevSel)) {
-                sel.value = prevSel;
-              } else if (households.length) {
-                sel.selectedIndex = 0;
-              }
-              await loadAdminAnthropicForSelected();
-            }
-            if (usageSel) {
-              usageSel.innerHTML = '';
-              const allOpt = document.createElement('option');
-              allOpt.value = 'all';
-              allOpt.textContent = 'All households';
-              usageSel.appendChild(allOpt);
-              for (const hh of households) {
-                const opt = document.createElement('option');
-                opt.value = String(hh.id);
-                opt.textContent = '#' + hh.id + ' — ' + hh.name;
-                usageSel.appendChild(opt);
-              }
-              if (prevUsageSel && (prevUsageSel === 'all' || households.some((h) => String(h.id) === prevUsageSel))) {
-                usageSel.value = prevUsageSel;
-              } else {
-                usageSel.value = 'all';
-              }
-            }
-            await refreshAdminUsageReport();
-          } catch (e) {}
-        }
-
-        function initializeAdminUsageFilters() {
-          const startEl = document.getElementById('admin-usage-start-date');
-          const endEl = document.getElementById('admin-usage-end-date');
-          if (!startEl || !endEl) return;
-          if (!endEl.value) {
-            const end = new Date();
-            endEl.value = end.toISOString().slice(0, 10);
-          }
-          if (!startEl.value) {
-            const start = new Date();
-            start.setDate(start.getDate() - 7);
-            startEl.value = start.toISOString().slice(0, 10);
-          }
-        }
-
-        async function loadAnthropicSection() {
-          const statusEl = document.getElementById('settings-anthropic-status');
-          const ownerSection = document.getElementById('settings-anthropic-owner-key-section');
-          const ownerKeyInput = document.getElementById('settings-anthropic-owner-key');
-          const ownerMsg = document.getElementById('settings-anthropic-owner-key-msg');
-          try {
-            const r = await fetch('/settings/anthropic');
-            if (!r.ok) return false;
-            const d = await r.json();
-            if (statusEl) {
-              statusEl.textContent = d.statusText || '';
-            }
-            if (ownerSection && ownerKeyInput) {
-              if (d.canEditKey) {
-                ownerSection.style.display = 'block';
-                ownerKeyInput.value = '';
-              } else {
-                ownerSection.style.display = 'none';
-                ownerKeyInput.value = '';
-              }
-              if (ownerMsg) ownerMsg.textContent = '';
-            }
-            return !!d.isGlobalAdmin;
-          } catch (e) {
-            return false;
-          }
-        }
-
-        async function refreshOwnerSettingsTab() {
-          if (!tabSettings) return;
-          try {
-            const r = await fetch('/settings/household');
-            tabSettings.style.display = r.ok ? '' : 'none';
-          } catch (e) {
-            tabSettings.style.display = 'none';
-          }
-        }
-
-        function sendTyping(isTyping) {
-          if (godModeReadOnly) return;
-          if (!typingWs || typingWs.readyState !== 1 || !currentChatId) return;
-          if (currentHouseholdId == null || !Number.isFinite(Number(currentHouseholdId))) return;
-          typingWs.send(
-            JSON.stringify({
-              type: isTyping ? 'typing' : 'stopped_typing',
-              householdId: currentHouseholdId,
-              chatId: currentChatId,
-            })
-          );
-        }
-
-        function resizePromptInput() {
-          if (!promptInput) return;
-          const cs = getComputedStyle(promptInput);
-          const lh = parseFloat(cs.lineHeight);
-          const lineHeight = Number.isFinite(lh) ? lh : 14 * 1.4;
-          const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-          const maxLines = 5;
-          const maxHeight = Math.ceil(lineHeight * maxLines + padY);
-          promptInput.style.height = 'auto';
-          const sh = promptInput.scrollHeight;
-          const h = Math.min(sh, maxHeight);
-          promptInput.style.height = h + 'px';
-          promptInput.style.maxHeight = maxHeight + 'px';
-          promptInput.style.overflowY = sh > maxHeight ? 'auto' : 'hidden';
-        }
-
-        promptInput.addEventListener('keydown', (event) => {
-          if (event.key !== 'Enter') return;
-          if (event.isComposing) return;
-          if (useMobileEnterBehavior) return;
-          if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
-          event.preventDefault();
-          sendButton.click();
-        });
-
-        promptInput.addEventListener('input', () => {
-          resizePromptInput();
-          if (godModeReadOnly) return;
-          if (!currentChatId) return;
-          sendTyping(true);
-          if (typingStopTimeout) clearTimeout(typingStopTimeout);
-          typingStopTimeout = setTimeout(() => {
-            typingStopTimeout = null;
-            sendTyping(false);
-          }, 2000);
-        });
-        resizePromptInput();
-
-        document.addEventListener(
-          'click',
-          (event) => {
-            const target = event.target;
-            if (!(target instanceof Element)) return;
-            const actionable = target.closest(
-              'button, a, select, summary, [role="button"], input[type="checkbox"], input[type="radio"]'
-            );
-            if (!actionable) return;
-            clearStickySettingsMessages();
-          },
-          true
-        );
-
-        function renderMarkdown(text) {
-          if (typeof marked === 'undefined') return document.createTextNode(text);
-          try {
-            const html = marked.parse(String(text), { gfm: true, breaks: true });
-            const wrap = document.createElement('span');
-            wrap.className = 'md-wrap';
-            wrap.innerHTML = html;
-            return wrap;
-          } catch (e) {
-            return document.createTextNode(text);
-          }
-        }
-
-        function addMessage(role, name, content) {
-          if (content === undefined && typeof name === 'string' && name.includes(': ')) {
-            const idx = name.indexOf(': ');
-            content = name.slice(idx + 2);
-            name = name.slice(0, idx);
-          } else if (content === undefined) {
-            content = name;
-            name = role === 'user' ? (speakerName && speakerName.textContent) || 'User' : currentAssistantName || 'KitchenBot';
-          }
-          const div = document.createElement('div');
-          div.className = 'message ' + role;
-          if (role === 'user') {
-            div.classList.add(userMessageBubbleClass(name));
-          }
-          const author = document.createElement('span');
-          author.className = 'message-author';
-          author.textContent = name;
-          div.appendChild(author);
-          const body = document.createElement('div');
-          body.className = 'message-body';
-          if (role === 'assistant') {
-            body.appendChild(renderMarkdown(content));
-          } else {
-            body.textContent = content;
-          }
-          div.appendChild(body);
-          chat.appendChild(div);
-          chat.scrollTop = chat.scrollHeight;
-        }
-
-        async function loadHistory() {
-          if (!currentChatId) return;
-          remoteStreamBodyEl = null;
-          const response = await fetch('/history?chatId=' + encodeURIComponent(currentChatId));
-          if (!response.ok) {
-            if (response.status === 401) {
-              showLogin();
-            }
-            return;
-          }
-          const data = await response.json();
-          currentAssistantName = data.assistantName || currentAssistantName || 'KitchenBot';
-          const persisted = data.conversation || [];
-          const cid = Number(currentChatId);
-          lastPersistedMessageCountByChatId.set(cid, persisted.length);
-
-          chat.innerHTML = '';
-
-          const epList = ephemeralExchangesByChatId.get(cid) || [];
-          const sortedEp = [...epList].sort((a, b) => a.anchor - b.anchor || a.seq - b.seq);
-          let pIdx = 0;
-          let dbEmitted = 0;
-          for (const ep of sortedEp) {
-            while (dbEmitted < ep.anchor && pIdx < persisted.length) {
-              const m = persisted[pIdx++];
-              addMessage(m.role, m.name, m.content);
-              dbEmitted++;
-            }
-            addMessage('user', ep.userName, ep.user);
-            addMessage('assistant', currentAssistantName || 'KitchenBot', ep.assistant);
-          }
-          while (pIdx < persisted.length) {
-            const m = persisted[pIdx++];
-            addMessage(m.role, m.name, m.content);
-          }
-          sendTypingViewing();
-        }
-
-        async function loadGroceries() {
-          try {
-            const response = await fetch('/groceries');
-            if (!response.ok) {
-              return;
-            }
-            const data = await response.json();
-
-            Object.values(groceryLists).forEach(list => {
-              list.innerHTML = '';
-            });
-
-            for (const item of data.items || []) {
-              const li = document.createElement('li');
-              li.className = 'g-item' + (item.checked ? ' g-item-checked' : '');
-              li.dataset.id = item.id;
-              li.dataset.section = item.section;
-
-              const left = document.createElement('div');
-              left.className = 'g-left';
-
-              const checkbox = document.createElement('input');
-              checkbox.type = 'checkbox';
-              checkbox.checked = !!item.checked;
-              checkbox.disabled = godModeReadOnly;
-              checkbox.addEventListener('change', async () => {
-                li.classList.toggle('g-item-checked', checkbox.checked);
-                try {
-                  await fetch('/groceries/' + item.id, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ checked: checkbox.checked })
-                  });
-                } catch (e) {}
-              });
-              left.appendChild(checkbox);
-
-              const textContainer = document.createElement('div');
-              textContainer.className = 'g-text-wrap';
-              const main = document.createElement('div');
-              main.className = 'g-text-main';
-              main.textContent = item.name;
-              const amount = document.createElement('div');
-              amount.className = 'g-text-amount';
-              amount.textContent = item.amount || '';
-              textContainer.appendChild(main);
-              if (item.amount) {
-                textContainer.appendChild(amount);
-              }
-
-              left.appendChild(textContainer);
-
-              li.appendChild(left);
-
-              const actions = document.createElement('div');
-              actions.className = 'g-actions';
-
-              const moveBtn = document.createElement('button');
-              moveBtn.className = 'g-delete';
-              moveBtn.textContent = 'Move to pantry';
-              moveBtn.title = 'Move to Pantry';
-              moveBtn.disabled = godModeReadOnly;
-              moveBtn.addEventListener('click', async () => {
-                try {
-                  await fetch('/groceries/' + item.id + '/move-to-pantry', { method: 'POST' });
-                  await Promise.all([loadGroceries(), loadPantry()]);
-                } catch (e) {}
-              });
-              actions.appendChild(moveBtn);
-
-              const del = document.createElement('button');
-              del.className = 'g-delete';
-              del.textContent = '×';
-              del.disabled = godModeReadOnly;
-              del.addEventListener('click', async () => {
-                const removedItem = { ...item };
-                li.remove();
-                try {
-                  await fetch('/groceries/' + item.id, { method: 'DELETE' });
-                } catch (e) {}
-
-                if (lastDeletedTimeout) {
-                  clearTimeout(lastDeletedTimeout);
-                  lastDeletedTimeout = null;
-                }
-                lastDeletedGrocery = removedItem;
-
-                let undoBar = document.getElementById('grocery-undo');
-                if (!undoBar) {
-                  undoBar = document.createElement('div');
-                  undoBar.id = 'grocery-undo';
-                  undoBar.style.position = 'fixed';
-                  undoBar.style.bottom = '16px';
-                  undoBar.style.left = '50%';
-                  undoBar.style.transform = 'translateX(-50%)';
-                  undoBar.style.background = '#111827';
-                  undoBar.style.color = '#f9fafb';
-                  undoBar.style.padding = '6px 10px';
-                  undoBar.style.borderRadius = '999px';
-                  undoBar.style.fontSize = '12px';
-                  undoBar.style.display = 'flex';
-                  undoBar.style.alignItems = 'center';
-                  undoBar.style.gap = '6px';
-                  const textSpan = document.createElement('span');
-                  textSpan.textContent = 'Item deleted';
-                  const undoBtn = document.createElement('button');
-                  undoBtn.textContent = 'Undo';
-                  undoBtn.style.background = '#f9fafb';
-                  undoBtn.style.color = '#111827';
-                  undoBtn.style.borderRadius = '999px';
-                  undoBtn.style.border = 'none';
-                  undoBtn.style.fontSize = '12px';
-                  undoBtn.style.padding = '3px 8px';
-                  undoBtn.addEventListener('click', async () => {
-                    if (!lastDeletedGrocery) return;
-                    const toRestore = lastDeletedGrocery;
-                    lastDeletedGrocery = null;
-                    undoBar.remove();
-                    try {
-                      await fetch('/groceries', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ items: [toRestore] }),
-                      });
-                      await loadGroceries();
-                    } catch (e) {}
-                  });
-                  undoBar.appendChild(textSpan);
-                  undoBar.appendChild(undoBtn);
-                  document.body.appendChild(undoBar);
-                }
-
-                lastDeletedTimeout = setTimeout(() => {
-                  const bar = document.getElementById('grocery-undo');
-                  if (bar) bar.remove();
-                  lastDeletedGrocery = null;
-                  lastDeletedTimeout = null;
-                }, 3000);
-              });
-              actions.appendChild(del);
-              li.appendChild(actions);
-
-              const targetList = groceryLists[item.section] || groceryLists.other;
-              targetList.appendChild(li);
-            }
-
-            groceryClearButton.style.display = isCurrentUserOwner ? '' : 'none';
-          } catch (e) {
-            // ignore for now
-          }
-        }
-
-        async function loadPantry() {
-          try {
-            const response = await fetch('/pantry');
-            if (!response.ok) return;
-            const data = await response.json();
-
-            Object.values(pantryLists).forEach((list) => {
-              list.innerHTML = '';
-            });
-
-            for (const item of data.items || []) {
-              const li = document.createElement('li');
-              li.className = 'g-item';
-              li.dataset.id = item.id;
-              li.dataset.section = item.section;
-
-              const left = document.createElement('div');
-              left.className = 'g-left';
-
-              const textContainer = document.createElement('div');
-              textContainer.className = 'g-text-wrap';
-              const main = document.createElement('div');
-              main.className = 'g-text-main';
-              main.textContent = item.name;
-              textContainer.appendChild(main);
-              if (item.amount) {
-                const amount = document.createElement('div');
-                amount.className = 'g-text-amount';
-                amount.textContent = item.amount || '';
-                textContainer.appendChild(amount);
-              }
-              left.appendChild(textContainer);
-              li.appendChild(left);
-
-              const actions = document.createElement('div');
-              actions.className = 'g-actions';
-
-              const moveBtn = document.createElement('button');
-              moveBtn.className = 'g-delete';
-              moveBtn.textContent = 'Move to grocery';
-              moveBtn.title = 'Move to Grocery List';
-              moveBtn.disabled = godModeReadOnly;
-              moveBtn.addEventListener('click', async () => {
-                try {
-                  await fetch('/pantry/' + item.id + '/move-to-groceries', { method: 'POST' });
-                  await Promise.all([loadPantry(), loadGroceries()]);
-                } catch (e) {}
-              });
-              actions.appendChild(moveBtn);
-
-              const del = document.createElement('button');
-              del.className = 'g-delete';
-              del.textContent = '×';
-              del.disabled = godModeReadOnly;
-              del.addEventListener('click', async () => {
-                try {
-                  await fetch('/pantry/' + item.id, { method: 'DELETE' });
-                  await loadPantry();
-                } catch (e) {}
-              });
-              actions.appendChild(del);
-              li.appendChild(actions);
-
-              const targetList = pantryLists[item.section] || pantryLists.other_pantry;
-              targetList.appendChild(li);
-            }
-          } catch (e) {
-            // ignore for now
-          }
-        }
-
-        function setGroceriesSubview(view) {
-          currentGroceriesSubview = view === 'pantry' ? 'pantry' : 'list';
-          if (grocerySubtabList) grocerySubtabList.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'list');
-          if (grocerySubtabPantry) grocerySubtabPantry.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'pantry');
-          if (grocerySubviewList) grocerySubviewList.style.display = currentGroceriesSubview === 'list' ? '' : 'none';
-          if (grocerySubviewPantry) grocerySubviewPantry.style.display = currentGroceriesSubview === 'pantry' ? '' : 'none';
-        }
-
-        function renderChats() {
-          chatListEl.innerHTML = '';
-          for (const chatInfo of chatsCache) {
-            const li = document.createElement('li');
-            li.className = 'chat-list-item' + (chatInfo.id === currentChatId ? ' active' : '');
-            const titleSpan = document.createElement('span');
-            titleSpan.className = 'title';
-            titleSpan.textContent = chatInfo.title || 'Untitled chat';
-            const metaSpan = document.createElement('span');
-            metaSpan.className = 'meta';
-            metaSpan.textContent = chatInfo.created_at ? new Date(chatInfo.created_at).toLocaleDateString() : '';
-
-            const contentDiv = document.createElement('div');
-            contentDiv.style.flex = '1';
-            contentDiv.style.minWidth = '0';
-            contentDiv.appendChild(titleSpan);
-            contentDiv.appendChild(metaSpan);
-
-            li.appendChild(contentDiv);
-
-            if (isCurrentUserOwner && !godModeReadOnly) {
-              const delBtn = document.createElement('button');
-              delBtn.textContent = '×';
-              delBtn.className = 'g-delete';
-              delBtn.style.marginLeft = '4px';
-              if (chatInfo.id === currentChatId) {
-                delBtn.disabled = true;
-                delBtn.style.opacity = '0.4';
-              }
-              delBtn.addEventListener('click', async (event) => {
-                event.stopPropagation();
-                if (chatInfo.id === currentChatId) return;
-                if (!confirm('Delete this chat?')) return;
-                try {
-                  const resp = await fetch('/chats/' + chatInfo.id, { method: 'DELETE' });
-                  if (!resp.ok) return;
-                  chatsCache = chatsCache.filter(c => c.id !== chatInfo.id);
-                  if (currentChatId === chatInfo.id) {
-                    currentChatId = chatsCache.length ? chatsCache[0].id : null;
-                    chat.innerHTML = '';
-                    if (currentChatId) {
-                      await loadHistory();
-                    }
-                  }
-                  renderChats();
-                  try {
-                    await refreshAdminHouseholdsList();
-                  } catch (e) {}
-                } catch (e) {}
-              });
-              li.appendChild(delBtn);
-            }
-
-            li.addEventListener('click', async () => {
-              currentChatId = chatInfo.id;
-              closeSidebarAndGoToChatTab();
-              renderChats();
-              await loadHistory();
-            });
-            chatListEl.appendChild(li);
-          }
-        }
-
-        async function loadChatsAndEnsureOne() {
-          const response = await fetch('/chats');
-          if (!response.ok) {
-            throw new Error('Failed to load chats');
-          }
-          const data = await response.json();
-          chatsCache = data.chats || [];
-          if (chatsCache.length === 0) {
-            if (godModeReadOnly) {
-              currentChatId = null;
-              chat.innerHTML = '';
-              renderChats();
-              return;
-            }
-            const createResp = await fetch('/chats', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title: 'New chat' }),
-            });
-            if (!createResp.ok) throw new Error('Failed to create chat');
-            const created = await createResp.json();
-            currentChatId = created.id;
-            chatsCache.unshift({ id: created.id, owner: created.owner, title: created.title, created_at: new Date().toISOString() });
-          } else {
-            currentChatId = chatsCache[0].id;
-          }
-          renderChats();
-        }
-
-        async function checkAuth() {
-          try {
-            const bs = await fetch('/bootstrap/status');
-            if (!bs.ok) {
-              loginArea.style.display = 'block';
-              appArea.style.display = 'none';
-              headerEl.classList.add('hide-tabs');
-              showLoginFormOnly();
-              return;
-            }
-            const bsData = await bs.json();
-            if (bsData.needsBootstrap) {
-              loginArea.style.display = 'block';
-              appArea.style.display = 'none';
-              headerEl.classList.add('hide-tabs');
-              if (bsData.allowPublicBootstrap === false) {
-                showBootstrapBlocked();
-              } else {
-                showBootstrapForm();
-              }
-              return;
-            }
-
-            showLoginFormOnly();
-            const response = await fetch('/me');
-            if (!response.ok) {
-              showLogin();
-              return;
-            }
-            const data = await response.json();
-            await rehydrateAuthenticatedApp(data, { forceChatTab: true, resetSessionView: true });
-          } catch (error) {
-            showLogin();
-          }
-        }
-
-        async function rehydrateAuthenticatedApp(meData, opts = {}) {
-          const forceChatTab = opts.forceChatTab !== false;
-          const resetSessionView = opts.resetSessionView !== false;
-          teardownRealtimeUi();
-          if (resetSessionView) {
-            currentChatId = null;
-            chatsCache = [];
-            chat.innerHTML = '';
-            sidebar.classList.remove('open');
-            sidebarBackdrop.classList.remove('open');
-            lastPersistedMessageCountByChatId.clear();
-            ephemeralExchangesByChatId.clear();
-            nextEphemeralSeqByChatId.clear();
-          }
-          currentUserName = meData.name;
-          currentHouseholdId = meData.householdId != null ? Number(meData.householdId) : null;
-          currentUserId = meData.userId != null ? Number(meData.userId) : null;
-          isCurrentUserOwner = !!meData.isOwner;
-          applyGodModeFromMe(meData);
-          syncMemoriesWrapVisibility();
-          rebuildDisplayNameToColorFromMeChatColors(meData.chatColors);
-          showApp(meData.name);
-          if (forceChatTab) setActiveTab('chat');
-          await loadChatsAndEnsureOne();
-          await loadHistory();
-          connectTypingWs();
-          refreshOwnerSettingsTab();
-        }
-
-        tabChat.addEventListener('click', () => {
-          setActiveTab('chat');
-        });
-
-        tabGroceries.addEventListener('click', async () => {
-          setActiveTab('groceries');
-          await Promise.all([loadGroceries(), loadPantry()]);
-        });
-
-        if (grocerySubtabList) {
-          grocerySubtabList.addEventListener('click', () => {
-            setGroceriesSubview('list');
-          });
-        }
-        if (grocerySubtabPantry) {
-          grocerySubtabPantry.addEventListener('click', () => {
-            setGroceriesSubview('pantry');
-          });
-        }
-
-        if (tabSettings) {
-          tabSettings.addEventListener('click', () => {
-            setActiveTab('settings');
-          });
-        }
-
-        const settingsAddSubmit = document.getElementById('settings-add-submit');
-        const adminAnthropicShared = document.getElementById('admin-anthropic-mode-shared');
-        const adminAnthropicHousehold = document.getElementById('admin-anthropic-mode-household');
-        const adminAnthropicHouseholdSelect = document.getElementById('admin-anthropic-household-select');
-        if (adminAnthropicShared) adminAnthropicShared.addEventListener('change', updateAdminAnthropicFormVisibility);
-        if (adminAnthropicHousehold) adminAnthropicHousehold.addEventListener('change', updateAdminAnthropicFormVisibility);
-        if (adminAnthropicHouseholdSelect) {
-          adminAnthropicHouseholdSelect.addEventListener('change', () => {
-            loadAdminAnthropicForSelected();
-          });
-        }
-        initializeAdminUsageFilters();
-        const adminUsageRefresh = document.getElementById('admin-usage-refresh');
-        if (adminUsageRefresh) {
-          adminUsageRefresh.addEventListener('click', async () => {
-            await refreshAdminUsageReport();
-          });
-        }
-        const adminUsageHouseholdSelect = document.getElementById('admin-usage-household-select');
-        if (adminUsageHouseholdSelect) {
-          adminUsageHouseholdSelect.addEventListener('change', () => {
-            refreshAdminUsageReport();
-          });
-        }
-        const adminUsageStartDate = document.getElementById('admin-usage-start-date');
-        if (adminUsageStartDate) {
-          adminUsageStartDate.addEventListener('change', () => {
-            refreshAdminUsageReport();
-          });
-        }
-        const adminUsageEndDate = document.getElementById('admin-usage-end-date');
-        if (adminUsageEndDate) {
-          adminUsageEndDate.addEventListener('change', () => {
-            refreshAdminUsageReport();
-          });
-        }
-        const adminUsageWebSearchSetting = document.getElementById('admin-usage-websearch-setting');
-        if (adminUsageWebSearchSetting) {
-          adminUsageWebSearchSetting.addEventListener('change', () => {
-            refreshAdminUsageReport();
-          });
-        }
-        const adminUsageWebSearchUsed = document.getElementById('admin-usage-websearch-used');
-        if (adminUsageWebSearchUsed) {
-          adminUsageWebSearchUsed.addEventListener('change', () => {
-            refreshAdminUsageReport();
-          });
-        }
-
-        const adminAnthropicModeSave = document.getElementById('admin-anthropic-mode-save');
-        if (adminAnthropicModeSave) {
-          adminAnthropicModeSave.addEventListener('click', async () => {
-            const sel = document.getElementById('admin-anthropic-household-select');
-            const hid = sel && sel.value ? Number(sel.value) : NaN;
-            const msgEl = document.getElementById('admin-anthropic-msg');
-            if (!Number.isFinite(hid)) {
-              if (msgEl) msgEl.textContent = 'Select a household.';
-              return;
-            }
-            const shared = document.getElementById('admin-anthropic-mode-shared');
-            const mode = shared && shared.checked ? 'shared' : 'household';
-            try {
-              const r = await fetch('/settings/anthropic/mode', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ householdId: hid, anthropicKeyMode: mode }),
-              });
-              const errBody = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
-                return;
-              }
-              if (msgEl) msgEl.textContent = 'Mode saved.';
-              await loadGlobalAdminView();
-            } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
-            }
-          });
-        }
-
-        const adminWebSearchSave = document.getElementById('admin-web-search-save');
-        if (adminWebSearchSave) {
-          adminWebSearchSave.addEventListener('click', async () => {
-            const sel = document.getElementById('admin-anthropic-household-select');
-            const hid = sel && sel.value ? Number(sel.value) : NaN;
-            const msgEl = document.getElementById('admin-web-search-msg');
-            const cb = document.getElementById('admin-web-search-enabled');
-            if (!Number.isFinite(hid)) {
-              if (msgEl) msgEl.textContent = 'Select a household.';
-              return;
-            }
-            try {
-              const r = await fetch('/settings/anthropic/web-search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ householdId: hid, webSearchEnabled: !!(cb && cb.checked) }),
-              });
-              const errBody = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
-                return;
-              }
-              if (msgEl) msgEl.textContent = 'Saved.';
-              await loadGlobalAdminView();
-            } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
-            }
-          });
-        }
-
-        const settingsAnthropicOwnerKeySave = document.getElementById('settings-anthropic-owner-key-save');
-        if (settingsAnthropicOwnerKeySave) {
-          settingsAnthropicOwnerKeySave.addEventListener('click', async () => {
-            clearEntityMemoryUiMessage();
-            const keyInput = document.getElementById('settings-anthropic-owner-key');
-            const msgEl = document.getElementById('settings-anthropic-owner-key-msg');
-            const key = keyInput && keyInput.value.trim();
-            if (!key) {
-              if (msgEl) msgEl.textContent = 'Enter an API key.';
-              return;
-            }
-            try {
-              const r = await fetch('/settings/anthropic/key', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ anthropicApiKey: key }),
-              });
-              const errBody = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                setSettingsUiMessage(msgEl, mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed');
-                return;
-              }
-              setSettingsUiMessage(msgEl, 'Key saved.', { sticky: true });
-              if (keyInput) keyInput.value = '';
-              await loadMyHouseholdView();
-              await loadAnthropicSection();
-            } catch (e) {
-              setSettingsUiMessage(msgEl, 'Request failed.');
-            }
-          });
-        }
-
-        const adminNewHhSubmit = document.getElementById('admin-new-hh-submit');
-        if (adminNewHhSubmit) {
-          adminNewHhSubmit.addEventListener('click', async () => {
-            const householdName = document.getElementById('admin-new-hh-name').value.trim();
-            const householdKey = document.getElementById('admin-new-hh-key').value.trim();
-            const ownerDisplayName = document.getElementById('admin-new-owner-name').value.trim();
-            const ownerPin = document.getElementById('admin-new-owner-pin').value;
-            const msgEl = document.getElementById('admin-new-hh-msg');
-            if (!householdName || !householdKey || !ownerDisplayName || !ownerPin) {
-              if (msgEl) msgEl.textContent = 'All fields are required.';
-              return;
-            }
-            if (msgEl) msgEl.textContent = 'Creating…';
-            try {
-              const r = await fetch('/admin/households', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ householdName, householdKey, ownerDisplayName, ownerPin }),
-              });
-              const data = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(data.error) || 'Failed';
-                return;
-              }
-              if (msgEl) {
-                msgEl.textContent =
-                  'Created household #' + data.household.id + ' — owner user id ' + data.owner.id + '.';
-              }
-              document.getElementById('admin-new-hh-name').value = '';
-              document.getElementById('admin-new-hh-key').value = '';
-              document.getElementById('admin-new-owner-name').value = '';
-              document.getElementById('admin-new-owner-pin').value = '';
-              await loadGlobalAdminView();
-            } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
-            }
-          });
-        }
-
-        const settingsSubtabMyBtn = document.getElementById('settings-subtab-my-btn');
-        const settingsSubtabAdminBtn = document.getElementById('settings-subtab-admin-btn');
-        if (settingsSubtabMyBtn) {
-          settingsSubtabMyBtn.addEventListener('click', () => {
-            showSettingsSubView('my');
-          });
-        }
-        if (settingsSubtabAdminBtn) {
-          settingsSubtabAdminBtn.addEventListener('click', async () => {
-            await loadGlobalAdminView();
-            showSettingsSubView('admin');
-          });
-        }
-
-        if (settingsAddSubmit) {
-          settingsAddSubmit.addEventListener('click', async () => {
-            clearEntityMemoryUiMessage();
-            const displayName = document.getElementById('settings-new-display').value.trim();
-            const role = document.getElementById('settings-new-role').value;
-            const pin = document.getElementById('settings-new-pin').value.trim();
-            const msgEl = document.getElementById('my-settings-msg');
-            if (!displayName || !pin) {
-              setSettingsUiMessage(msgEl, 'Display name and PIN required.');
-              return;
-            }
-            try {
-              const r = await fetch('/settings/household/users', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ displayName, role, pin }),
-              });
-              const data = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                setSettingsUiMessage(msgEl, mapServerReadOnlyErrorMessage(data.error) || 'Failed');
-                return;
-              }
-              document.getElementById('settings-new-display').value = '';
-              document.getElementById('settings-new-pin').value = '';
-              setSettingsUiMessage(msgEl, 'User added.', { sticky: true });
-              displayNameToColor[normalizeDisplayNameKey(displayName)] = data.chatColor || 'blue';
-              await loadMyHouseholdView();
-              await loadAnthropicSection();
-              const subBtn = document.getElementById('settings-subtab-admin-btn');
-              if (subBtn && subBtn.style.display !== 'none') {
-                await loadGlobalAdminView();
-              }
-            } catch (e) {
-              setSettingsUiMessage(msgEl, 'Request failed.');
-            }
-          });
-        }
-
-        const settingsDemoViewBtn = document.getElementById('settings-demo-view-btn');
-        if (settingsDemoViewBtn) {
-          settingsDemoViewBtn.addEventListener('click', async () => {
-            const msgEl = document.getElementById('settings-demo-view-msg');
-            if (msgEl) msgEl.textContent = '';
-            try {
-              const r = await fetch('/demo/view', { method: 'POST' });
-              const errBody = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Could not open demo view.';
-                return;
-              }
-              const meR = await fetch('/me');
-              if (!meR.ok) {
-                showLogin();
-                return;
-              }
-              const meData = await meR.json();
-              await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
-            } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
-            }
-          });
-        }
-
-        const memorySaveButton = document.getElementById('my-settings-memory-save');
-        const memoryCancelButton = document.getElementById('my-settings-memory-cancel-edit');
-        if (memorySaveButton) {
-          memorySaveButton.addEventListener('click', async () => {
-            clearEntityMemoryUiMessage();
-            const typeIn = document.getElementById('my-settings-memory-type');
-            const labelIn = document.getElementById('my-settings-memory-label');
-            const summaryIn = document.getElementById('my-settings-memory-summary');
-            const memMsg = document.getElementById('my-settings-entity-memories-msg');
-            const memoryType = typeIn && String(typeIn.value).trim();
-            const label = labelIn && String(labelIn.value).trim();
-            const summary = summaryIn && String(summaryIn.value).trim();
-            if (!memoryType || !label || !summary) {
-              if (memMsg) memMsg.textContent = 'Type, label, and summary are required.';
-              return;
-            }
-            try {
-              const r = await fetch('/settings/household/memory-notes', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  id: editingSmartMemoryId,
-                  memoryType,
-                  label,
-                  summary,
-                  noteIndex: editingSmartMemoryNoteIndex,
-                }),
-              });
-              const errBody = await r.json().catch(() => ({}));
-              if (memMsg) {
-                setSettingsUiMessage(
-                  memMsg,
-                  r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed',
-                  { sticky: r.ok }
-                );
-              }
-              if (r.ok) {
-                resetSmartMemoryEditForm();
-                await loadMemoryNotesEditor();
-              }
-            } catch (e) {
-              setSettingsUiMessage(memMsg, 'Request failed.');
-            }
-          });
-        }
-        if (memoryCancelButton) {
-          memoryCancelButton.addEventListener('click', () => {
-            clearEntityMemoryUiMessage();
-            resetSmartMemoryEditForm();
-          });
-        }
-        const defaultsSaveButton = document.getElementById('my-settings-defaults-save');
-        if (defaultsSaveButton) {
-          defaultsSaveButton.addEventListener('click', async () => {
-            clearHouseholdDefaultsUiMessage();
-            const portionsEl = document.getElementById('my-settings-defaults-portions');
-            const styleEl = document.getElementById('my-settings-defaults-style');
-            const assistantNameEl = document.getElementById('my-settings-defaults-assistant-name');
-            const assistantToneEl = document.getElementById('my-settings-defaults-assistant-tone');
-            const msgEl = document.getElementById('my-settings-defaults-msg');
-            const defaultDinnerPortions = portionsEl && String(portionsEl.value).trim() ? Number(portionsEl.value) : null;
-            const weeknightCookingStyle = styleEl && String(styleEl.value).trim() ? String(styleEl.value).trim() : null;
-            const assistantName =
-              assistantNameEl && String(assistantNameEl.value).trim()
-                ? String(assistantNameEl.value).trim()
-                : 'KitchenBot';
-            const assistantTone =
-              assistantToneEl && String(assistantToneEl.value).trim()
-                ? normalizeToneValue(assistantToneEl.value)
-                : 'helpful';
-            try {
-              const r = await fetch('/settings/household/defaults', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  defaultDinnerPortions,
-                  weeknightCookingStyle,
-                  assistantName,
-                  assistantTone,
-                }),
-              });
-              const errBody = await r.json().catch(() => ({}));
-              if (msgEl) {
-                setSettingsUiMessage(
-                  msgEl,
-                  r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed',
-                  { sticky: r.ok }
-                );
-              }
-              if (r.ok) {
-                currentAssistantName = assistantName;
-                await loadHouseholdDefaultsEditor();
-              }
-            } catch (e) {
-              setSettingsUiMessage(msgEl, 'Request failed.');
-            }
-          });
-        }
-
-        menuButton.addEventListener('click', async () => {
-          try {
-            const resp = await fetch('/chats');
-            if (resp.ok) {
-              const data = await resp.json();
-              chatsCache = data.chats || [];
-              renderChats();
-            }
-          } catch (e) {}
-          sidebar.classList.add('open');
-          sidebarBackdrop.classList.add('open');
-        });
-
-        sidebarBackdrop.addEventListener('click', () => {
-          sidebar.classList.remove('open');
-          sidebarBackdrop.classList.remove('open');
-        });
-
-        newChatButton.addEventListener('click', async () => {
-          try {
-            const resp = await fetch('/chats', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title: 'New chat' }),
-            });
-            if (!resp.ok) return;
-            const created = await resp.json();
-            currentChatId = created.id;
-            sendTypingViewing();
-            chatsCache.unshift({
-              id: created.id,
-              owner: created.owner,
-              title: created.title,
-              created_at: new Date().toISOString(),
-            });
-            renderChats();
-            chat.innerHTML = '';
-            closeSidebarAndGoToChatTab();
-          } catch (e) {
-            // ignore
-          }
-        });
-
-        let lastResolvedKey = null;
-        let blurFindTimeout = null;
-
-        function clearHouseholdLookup() {
-          lastResolvedKey = null;
-          const resolvedEl = document.getElementById('login-household-resolved');
-          if (resolvedEl) resolvedEl.style.display = 'none';
-          loginNameSelect.innerHTML = '';
-          const ph = document.createElement('option');
-          ph.value = '';
-          ph.textContent = '— Select user —';
-          ph.disabled = true;
-          ph.selected = true;
-          loginNameSelect.appendChild(ph);
-          loginNameSelect.disabled = true;
-          loginPasswordInput.value = '';
-          loginButton.disabled = true;
-          loginStatus.textContent = '';
-        }
-
-        function updateLoginEnabled() {
-          const canTry =
-            lastResolvedKey != null &&
-            loginNameSelect.value &&
-            loginPasswordInput.value.trim().length > 0;
-          loginButton.disabled = !canTry;
-        }
-
-        function buildClientTimeContext() {
-          const now = new Date();
-          const offsetMinutes = -now.getTimezoneOffset();
-          const sign = offsetMinutes >= 0 ? '+' : '-';
-          const absMinutes = Math.abs(offsetMinutes);
-          const offsetHours = String(Math.floor(absMinutes / 60)).padStart(2, '0');
-          const offsetRemainder = String(absMinutes % 60).padStart(2, '0');
-          const isoLocal =
-            now.getFullYear() +
-            '-' +
-            String(now.getMonth() + 1).padStart(2, '0') +
-            '-' +
-            String(now.getDate()).padStart(2, '0') +
-            'T' +
-            String(now.getHours()).padStart(2, '0') +
-            ':' +
-            String(now.getMinutes()).padStart(2, '0') +
-            ':' +
-            String(now.getSeconds()).padStart(2, '0') +
-            sign +
-            offsetHours +
-            ':' +
-            offsetRemainder;
-          return {
-            localDateTime: isoLocal,
-            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
-            localDayName: now.toLocaleDateString(undefined, { weekday: 'long' }),
-            localHour: now.getHours(),
-          };
-        }
-
-        async function findHousehold() {
-          const key = loginHouseholdKeyInput.value.trim();
-          if (!key) {
-            loginStatus.textContent = 'Enter a household key.';
-            clearHouseholdLookup();
-            return;
-          }
-          loginStatus.textContent = 'Looking up…';
-          try {
-            const r = await fetch('/login/household?' + new URLSearchParams({ key }));
-            if (r.status === 404) {
-              clearHouseholdLookup();
-              loginStatus.textContent = 'No household found for that key.';
-              return;
-            }
-            if (!r.ok) {
-              clearHouseholdLookup();
-              loginStatus.textContent = 'Could not look up household.';
-              return;
-            }
-            const data = await r.json();
-            lastResolvedKey = data.household.key;
-            const nameEl = document.getElementById('login-household-name');
-            if (nameEl) nameEl.textContent = data.household.name;
-            const resolvedEl = document.getElementById('login-household-resolved');
-            if (resolvedEl) resolvedEl.style.display = 'block';
-            loginNameSelect.innerHTML = '';
-            const placeholder = document.createElement('option');
-            placeholder.value = '';
-            placeholder.textContent = '— Select user —';
-            placeholder.disabled = true;
-            placeholder.selected = true;
-            loginNameSelect.appendChild(placeholder);
-            for (const u of data.users) {
-              const opt = document.createElement('option');
-              opt.value = u.displayName;
-              opt.textContent = u.role ? (u.displayName + ' (' + u.role + ')') : u.displayName;
-              loginNameSelect.appendChild(opt);
-            }
-            loginNameSelect.disabled = false;
-            loginStatus.textContent = '';
-            updateLoginEnabled();
-          } catch (e) {
-            clearHouseholdLookup();
-            loginStatus.textContent = 'Lookup failed.';
-          }
-        }
-
-        loginHouseholdKeyInput.addEventListener('input', () => {
-          const v = loginHouseholdKeyInput.value.trim().toLowerCase();
-          if (lastResolvedKey != null && v !== lastResolvedKey) {
-            clearHouseholdLookup();
-          }
-        });
-
-        loginHouseholdKeyInput.addEventListener('blur', () => {
-          blurFindTimeout = setTimeout(() => {
-            blurFindTimeout = null;
-            if (loginHouseholdKeyInput.value.trim()) {
-              findHousehold();
-            }
-          }, 250);
-        });
-
-        loginFindHouseholdButton.addEventListener('mousedown', (e) => {
-          if (blurFindTimeout) {
-            clearTimeout(blurFindTimeout);
-            blurFindTimeout = null;
-          }
-        });
-
-        loginFindHouseholdButton.addEventListener('click', () => {
-          findHousehold();
-        });
-
-        loginNameSelect.addEventListener('change', updateLoginEnabled);
-        loginPasswordInput.addEventListener('input', updateLoginEnabled);
-
-        async function performLogin() {
-          const householdKey = lastResolvedKey;
-          const displayName = loginNameSelect.value;
-          const pin = loginPasswordInput.value;
-
-          if (!householdKey) {
-            loginStatus.textContent = 'Find your household first.';
-            return;
-          }
-          if (!displayName) {
-            loginStatus.textContent = 'Select a user.';
-            return;
-          }
-          if (!pin) {
-            loginStatus.textContent = 'PIN is required.';
-            return;
-          }
-
-          loginStatus.textContent = 'Logging in...';
-
-          try {
-            const response = await fetch('/login', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ householdKey, displayName, pin })
-            });
-
-            if (!response.ok) {
-              loginStatus.textContent = 'Invalid user or PIN.';
-              return;
-            }
-
-            let data = {};
-            try {
-              data = await response.json();
-            } catch (e) {}
-
-            loginPasswordInput.value = '';
-            loginStatus.textContent = '';
-            try {
-              const meR = await fetch('/me');
-              if (meR.ok) {
-                const meData = await meR.json();
-                await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
-                return;
-              }
-            } catch (e) {}
-            const resolvedName = data.displayName ?? data.name ?? displayName;
-            await rehydrateAuthenticatedApp(
-              {
-                name: resolvedName,
-                householdId: data.householdId,
-                userId: data.userId,
-                isOwner: data.isOwner,
-                chatColors: {},
-                isImpersonating: false,
-                impersonationReadOnly: false,
-              },
-              { forceChatTab: true, resetSessionView: true }
-            );
-          } catch (error) {
-            loginStatus.textContent = 'Login failed.';
-          }
-        }
-
-        if (loginAuthForm) {
-          loginAuthForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            if (loginButton.disabled) return;
-            void performLogin();
-          });
-        }
-
-        document.getElementById('bootstrap-submit').addEventListener('click', async () => {
-          const householdName = document.getElementById('bootstrap-household-name').value.trim();
-          const householdKey = document.getElementById('bootstrap-household-key').value.trim();
-          const ownerDisplayName = document.getElementById('bootstrap-owner-display-name').value.trim();
-          const pin = document.getElementById('bootstrap-pin').value;
-          const bootstrapStatusEl = document.getElementById('bootstrap-status');
-          if (!householdName || !householdKey || !ownerDisplayName || !pin) {
-            bootstrapStatusEl.textContent = 'All fields are required.';
-            return;
-          }
-          bootstrapStatusEl.textContent = 'Creating…';
-          try {
-            const r = await fetch('/bootstrap', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ householdName, householdKey, ownerDisplayName, pin }),
-            });
-            const data = await r.json().catch(() => ({}));
-            if (!r.ok) {
-              bootstrapStatusEl.textContent = data.error || 'Bootstrap failed.';
-              return;
-            }
-            document.getElementById('bootstrap-pin').value = '';
-            bootstrapStatusEl.textContent = '';
-            showLoginFormOnly();
-            loginHouseholdKeyInput.value = data.householdKey || householdKey;
-            await findHousehold();
-          } catch (e) {
-            bootstrapStatusEl.textContent = 'Something went wrong.';
-          }
-        });
-
-        checkAuth();
-
-        const godModeExitBtn = document.getElementById('god-mode-exit-btn');
-        if (godModeExitBtn) {
-          godModeExitBtn.addEventListener('click', async () => {
-            try {
-              const r = await fetch('/admin/impersonate/exit', { method: 'POST' });
-              if (!r.ok) return;
-              const meR = await fetch('/me');
-              if (!meR.ok) {
-                showLogin();
-                return;
-              }
-              const meData = await meR.json();
-              await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
-            } catch (e) {}
-          });
-        }
-
-        sendButton.addEventListener('click', async () => {
-          if (godModeReadOnly) return;
-          const prompt = promptInput.value.trim();
-
-          if (!prompt) return;
-
-          sendTyping(false);
-          if (typingStopTimeout) {
-            clearTimeout(typingStopTimeout);
-            typingStopTimeout = null;
-          }
-
-          const speaker = speakerName.textContent || 'Rob';
-          addMessage('user', speaker, prompt);
-          promptInput.value = '';
-          resizePromptInput();
-          weAreStreamingThisChat = true;
-
-          const thinkingDiv = document.createElement('div');
-          thinkingDiv.className = 'message assistant';
-          const thinkingAuthor = document.createElement('span');
-          thinkingAuthor.className = 'message-author';
-          thinkingAuthor.textContent = currentAssistantName || 'KitchenBot';
-          thinkingDiv.appendChild(thinkingAuthor);
-          const thinkingBody = document.createElement('div');
-          thinkingBody.className = 'message-body kb-thinking kb-thinking-anim';
-          thinkingBody.textContent = 'Thinking…';
-          thinkingDiv.appendChild(thinkingBody);
-          chat.appendChild(thinkingDiv);
-          chat.scrollTop = chat.scrollHeight;
-          remoteStreamBodyEl = thinkingBody;
-
-          const ephemeralAnchorPersistedCount =
-            lastPersistedMessageCountByChatId.get(Number(currentChatId)) ?? 0;
-
-          try {
-            const response = await fetch('/chat', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                prompt,
-                name: speaker,
-                chatId: currentChatId,
-                timeContext: buildClientTimeContext(),
-              })
-            });
-
-            if (!response.ok) {
-              remoteStreamBodyEl = null;
-              weAreStreamingThisChat = false;
-              thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
-              if (response.status === 401) {
-                thinkingBody.textContent = 'Please log in.';
-                showLogin();
-                return;
-              }
-              if (response.status === 429) {
-                const data = await response.json().catch(() => ({}));
-                thinkingBody.textContent = data.reply || 'Too many requests. Please slow down.';
-                return;
-              }
-              const errData = await response.json().catch(() => ({}));
-              let replyText =
-                errData.reply ||
-                errData.error ||
-                (response.status === 503 ? 'Service unavailable.' : 'Something went wrong.');
-              if (
-                typeof replyText === 'string' &&
-                /^\s*\{/.test(replyText.trim()) &&
-                replyText.includes('"type"')
-              ) {
-                replyText = 'Invalid or missing Anthropic key.';
-              }
-              thinkingBody.textContent = replyText;
-              return;
-            }
-
-            const serverActionManaged = response.headers.get('X-KitchenBot-Server-Action-Managed') === '1';
-
-            const chatResponseEphemeral = response.headers.get('X-KitchenBot-Ephemeral') === '1';
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-
-            let fullReply = '';
-            let firstStreamChunk = true;
-
-            while (true) {
-              const { value, done } = await reader.read();
-              if (done) break;
-
-              const chunk = decoder.decode(value, { stream: true });
-              if (!chunk) continue;
-              fullReply += chunk;
-              if (firstStreamChunk) {
-                thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
-                thinkingBody.textContent = '';
-                firstStreamChunk = false;
-              }
-              thinkingBody.appendChild(document.createTextNode(chunk));
-              chat.scrollTop = chat.scrollHeight;
-            }
-
-            thinkingBody.classList.remove('kb-thinking', 'kb-thinking-anim');
-            thinkingBody.textContent = '';
-            thinkingBody.appendChild(renderMarkdown(fullReply));
-            chat.scrollTop = chat.scrollHeight;
-            remoteStreamBodyEl = null;
-            weAreStreamingThisChat = false;
-
-            if (chatResponseEphemeral && currentChatId != null) {
-              const cid = Number(currentChatId);
-              const seq = (nextEphemeralSeqByChatId.get(cid) || 0) + 1;
-              nextEphemeralSeqByChatId.set(cid, seq);
-              const list = ephemeralExchangesByChatId.get(cid) || [];
-              list.push({
-                anchor: ephemeralAnchorPersistedCount,
-                seq,
-                userName: speaker,
-                user: prompt,
-                assistant: fullReply,
-              });
-              ephemeralExchangesByChatId.set(cid, list);
-            }
-
-            try {
-              await loadHistory();
-            } catch (e) {}
-            try {
-              const r = await fetch('/chats');
-              if (r.ok) {
-                const data = await r.json();
-                chatsCache = data.chats || [];
-                renderChats();
-              }
-            } catch (e) {}
-          }
-          
-          catch (error) {
-            thinkingBody.textContent = 'Something went wrong.';
-            remoteStreamBodyEl = null;
-            weAreStreamingThisChat = false;
-          }
-        });
-
-        logoutButton.addEventListener('click', async () => {
-          try {
-            await fetch('/logout', { method: 'POST' });
-          } catch (e) {
-            // ignore errors, just force login state
-          }
-          sidebar.classList.remove('open');
-          sidebarBackdrop.classList.remove('open');
-          teardownRealtimeUi();
-          speakerName.textContent = '';
-          currentUserName = null;
-          currentHouseholdId = null;
-          currentUserId = null;
-          isCurrentUserOwner = false;
-          lastMePayload = null;
-          applyGodModeFromMe({ isImpersonating: false, impersonationReadOnly: false });
-          syncMemoriesWrapVisibility();
-          displayNameToColor = {};
-          showLogin();
-          chat.innerHTML = '';
-          lastPersistedMessageCountByChatId.clear();
-          ephemeralExchangesByChatId.clear();
-          nextEphemeralSeqByChatId.clear();
-        });
-
-        groceryRefreshButton.addEventListener('click', async () => {
-          await Promise.all([loadGroceries(), loadPantry()]);
-        });
-
-        if (groceryAddSubmit) {
-          groceryAddSubmit.addEventListener('click', async () => {
-            const name = groceryAddName && groceryAddName.value.trim();
-            if (!name) return;
-            const amount = groceryAddAmount && groceryAddAmount.value.trim();
-            const section =
-              groceryAddSection ? groceryAddSection.value : '';
-            try {
-              const r = await fetch('/groceries', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  items: [{ name, section, amount: amount || '' }],
-                }),
-              });
-              if (!r.ok) return;
-              if (groceryAddAmount) groceryAddAmount.value = '';
-              if (groceryAddName) groceryAddName.value = '';
-              if (groceryAddSection) groceryAddSection.value = '';
-              await loadGroceries();
-              if (groceryAddName) groceryAddName.focus();
-            } catch (e) {}
-          });
-        }
-
-        if (pantryAddSubmit) {
-          pantryAddSubmit.addEventListener('click', async () => {
-            const name = pantryAddName && pantryAddName.value.trim();
-            if (!name) return;
-            const amount = pantryAddAmount && pantryAddAmount.value.trim();
-            const section =
-              pantryAddSection && pantryAddSection.value ? pantryAddSection.value : 'other';
-            try {
-              const r = await fetch('/pantry', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  items: [{ name, section, amount: amount || '' }],
-                }),
-              });
-              if (!r.ok) return;
-              if (pantryAddAmount) pantryAddAmount.value = '';
-              if (pantryAddName) pantryAddName.value = '';
-              if (pantryAddSection) pantryAddSection.value = '';
-              await loadPantry();
-              if (pantryAddName) pantryAddName.focus();
-            } catch (e) {}
-          });
-        }
-
-        groceryClearButton.addEventListener('click', async () => {
-          if (!confirm('Clear entire grocery list?')) return;
-          try {
-            await fetch('/groceries/clear', { method: 'POST' });
-            Object.values(groceryLists).forEach(list => {
-              list.innerHTML = '';
-            });
-          } catch (e) {}
-        });
-      </script>
+      ${renderClientBootTags({ cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS })}
     </body>
   </html>
 `);
@@ -6275,7 +3629,7 @@ app.post('/login', async (req, res) => {
   }
 });
 
-app.get('/me', requireHousehold, requireAuth, async (req, res) => {
+export async function handleGetMe(req, res) {
   try {
     const users = await listHouseholdUsers(req.householdId);
     const chatColors = {};
@@ -6295,6 +3649,7 @@ app.get('/me', requireHousehold, requireAuth, async (req, res) => {
       userId: req.userId,
       isOwner: !!(me && me.role === 'owner'),
       householdName,
+      householdKey: h ? h.household_key : '',
       isGlobalAdmin,
       isImpersonating: !!req.isImpersonating,
       impersonationReadOnly: !!req.impersonationReadOnly,
@@ -6313,7 +3668,9 @@ app.get('/me', requireHousehold, requireAuth, async (req, res) => {
     console.error(e);
     return res.status(500).json({ error: 'Server error' });
   }
-});
+}
+
+app.get('/me', requireHousehold, requireAuth, handleGetMe);
 
 const SETTINGS_ROLES = new Set(['owner', 'member']);
 
@@ -6413,6 +3770,126 @@ app.get('/settings/household/memory-notes', requireHousehold, requireAuth, requi
     res.status(500).json({ error: 'Failed to load saved memories' });
   }
 });
+
+function normalizeCookbookEditorTextList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean);
+  }
+  return String(value ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+export async function handleGetCookbook(req, res) {
+  try {
+    const items = (await listCookbookEntries(req.householdId)).filter((entry) => !isFailedCookbookPlaceholder(entry));
+    return res.json({ items });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Failed to load cookbook' });
+  }
+}
+
+app.get('/cookbook', requireHousehold, requireAuth, handleGetCookbook);
+
+app.get('/cookbook/:id', requireHousehold, requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ error: 'Invalid cookbook id' });
+    }
+    const item = await getCookbookEntryById(req.householdId, id);
+    if (!item || isFailedCookbookPlaceholder(item)) {
+      return res.status(404).json({ error: 'Cookbook entry not found' });
+    }
+    return res.json({ item });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Failed to load cookbook entry' });
+  }
+});
+
+app.patch(
+  '/cookbook/:id',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ error: 'Invalid cookbook id' });
+      }
+      const existing = await getCookbookEntryById(req.householdId, id);
+      if (!existing || isFailedCookbookPlaceholder(existing)) {
+        return res.status(404).json({ error: 'Cookbook entry not found' });
+      }
+      const record = buildCookbookRecordForStorage({
+        title: req.body.title,
+        summary: req.body.summary,
+        category: req.body.category,
+        recipeType: existing.recipeType,
+        ingredients: normalizeCookbookEditorTextList(req.body.ingredients),
+        instructions: normalizeCookbookEditorTextList(req.body.instructions),
+        notes: normalizeCookbookEditorTextList(req.body.notes),
+        tags: Array.isArray(req.body.tags)
+          ? req.body.tags
+          : String(req.body.tags ?? '')
+              .split(',')
+              .map((tag) => tag.trim())
+              .filter(Boolean),
+        sourceTitle: existing.sourceTitle,
+        sourceUrl: existing.sourceUrl,
+        sourceKind: existing.sourceKind,
+        sourceChatId: existing.sourceChatId,
+        lastUsedAt: existing.lastUsedAt,
+      });
+      if (!record) {
+        return res.status(400).json({ error: 'Title, summary, ingredients, and instructions are required.' });
+      }
+      await saveCookbookEntry(req.householdId, record, {
+        id,
+        sourceKind: existing.sourceKind,
+        sourceChatId: existing.sourceChatId,
+        lastUsedAt: existing.lastUsedAt,
+      });
+      const item = await getCookbookEntryById(req.householdId, id);
+      return res.json({ ok: true, item });
+    } catch (e) {
+      if (e && e.code === 'SQLITE_CONSTRAINT') {
+        return res.status(409).json({ error: 'A cookbook recipe with that title already exists.' });
+      }
+      console.error(e);
+      return res.status(500).json({ error: 'Failed to update cookbook entry' });
+    }
+  }
+);
+
+app.delete(
+  '/cookbook/:id',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ error: 'Invalid cookbook id' });
+      }
+      const changes = await deleteCookbookEntry(req.householdId, id);
+      if (!changes) {
+        return res.status(404).json({ error: 'Cookbook entry not found' });
+      }
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: 'Failed to delete cookbook entry' });
+    }
+  }
+);
 
 app.post(
   '/settings/household/memory-notes',
@@ -6877,7 +4354,7 @@ app.get('/usage', requireHousehold, requireAuth, async (req, res) => {
   }
 });
 
-app.get('/chats', requireHousehold, requireAuth, async (req, res) => {
+export async function handleGetChats(req, res) {
   try {
     const chats = await listAllChats(req.householdId);
     res.json({ chats });
@@ -6885,7 +4362,9 @@ app.get('/chats', requireHousehold, requireAuth, async (req, res) => {
     console.error(error);
     res.status(500).json({ chats: [] });
   }
-});
+}
+
+app.get('/chats', requireHousehold, requireAuth, handleGetChats);
 
 app.post('/chats', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
   try {
@@ -6992,6 +4471,7 @@ app.post(
         ANTHROPIC_KEY_USER_MESSAGE,
         addMessage,
         broadcastToChat,
+        emitKbProgress,
         clearChatRuntimeState,
         getAnthropicClient,
         buildKbContextPacket,
@@ -7000,7 +4480,6 @@ app.post(
         mergeGroceryItemsFromAi: inventoryServices.mergeGroceryItemsFromAi,
         normalizeGroceryItemsForPost: inventoryServices.normalizeGroceryItemsForPost,
         normalizeInventoryNameKey: inventoryServices.normalizeInventoryNameKey,
-        pruneStaleGroceryItemsForChat,
         stripStoredMessageContentForDisplay,
         clearGroceryItems,
       });
@@ -7063,6 +4542,37 @@ function broadcastToChat(chatId, payload, excludeWs = null, excludeUser = null, 
     return;
   }
   doLocalBroadcast(chatId, payload, { excludeWs, excludeUser, excludeUserId });
+}
+
+function writeSenderChatStreamEvent(res, event) {
+  if (!res || typeof res.write !== 'function') return;
+  if (!res.headersSent) {
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-KitchenBot-Stream-Format', 'ndjson');
+  }
+  res.write(`${JSON.stringify(event)}\n`);
+}
+
+async function emitKbProgress({ chatId, householdId, turnId = null, text = '', phase = '', senderRes = null }) {
+  const progressText = String(text ?? '').trim();
+  if (!Number.isFinite(Number(chatId)) || !Number.isFinite(Number(householdId)) || !progressText) return;
+  writeSenderChatStreamEvent(senderRes, {
+    type: 'progress',
+    householdId: Number(householdId),
+    chatId: Number(chatId),
+    turnId: turnId ? String(turnId) : null,
+    phase: String(phase ?? '').trim() || null,
+    text: progressText,
+  });
+  broadcastToChat(Number(chatId), {
+    type: 'kb_progress',
+    householdId: Number(householdId),
+    chatId: Number(chatId),
+    turnId: turnId ? String(turnId) : null,
+    phase: String(phase ?? '').trim() || null,
+    text: progressText,
+  });
 }
 
 wss.on('connection', (ws) => {
@@ -7162,26 +4672,39 @@ async function connectRedis() {
   }
 }
 
-(async () => {
+export async function startKitchenbotServer() {
   await runMigrations();
   await connectRedis();
   await seedInitialHouseholdFromEnvIfNeeded();
-  server.listen(port, '0.0.0.0', () => {
-  const nets = os.networkInterfaces();
-  let lanIp = '';
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal) {
-        lanIp = net.address;
-        break;
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '0.0.0.0', () => {
+      server.removeListener('error', reject);
+      const nets = os.networkInterfaces();
+      let lanIp = '';
+      for (const name of Object.keys(nets)) {
+        for (const net of nets[name]) {
+          if (net.family === 'IPv4' && !net.internal) {
+            lanIp = net.address;
+            break;
+          }
+        }
+        if (lanIp) break;
       }
-    }
-    if (lanIp) break;
-  }
-  console.log(`Server running at http://localhost:${port}`);
-  if (lanIp) console.log(`Local network:  http://${lanIp}:${port}`);
+      console.log(`Server running at http://localhost:${port}`);
+      if (lanIp) console.log(`Local network:  http://${lanIp}:${port}`);
+      resolve();
+    });
   });
-})().catch((error) => {
-  console.error('KitchenBot startup failed:', error?.message || error);
-  process.exit(1);
-});
+  return server;
+}
+
+const isMainModule =
+  process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+
+if (isMainModule) {
+  startKitchenbotServer().catch((error) => {
+    console.error('KitchenBot startup failed:', error?.message || error);
+    process.exit(1);
+  });
+}

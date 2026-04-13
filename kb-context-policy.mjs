@@ -8,6 +8,18 @@ function safeTrim(text) {
   return String(text ?? '').trim();
 }
 
+export function promptNeedsCookbookContext(prompt = '') {
+  const text = safeTrim(prompt).toLowerCase();
+  if (!text) return false;
+  const talksAboutCookbook =
+    /\b(cookbook|saved recipes?|saved meals?|favorites?|favourites?)\b/.test(text) ||
+    (/\b(recipe|recipes)\b/.test(text) && /\b(save|saved|remember|bookmark|favorite|favourite|again|reuse|our)\b/.test(text));
+  const asksAboutLinkedRecipeProvenance =
+    /\b(url|link|linked recipe|linked page|website|web page)\b/.test(text) &&
+    /\b(read|fetch|fetched|pulled|look(?:ed)?\s*(?:it)?\s*up|actually)\b/.test(text);
+  return talksAboutCookbook || asksAboutLinkedRecipeProvenance;
+}
+
 export function normalizeClientTimeContext(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const localDateTime = safeTrim(raw.localDateTime).slice(0, 80);
@@ -39,9 +51,10 @@ export function formatAppMapContext() {
   return [
     'Current app structure:',
     '- Top-level areas: Chat, Kitchen, Settings',
-    '- Kitchen contains: Grocery List, Pantry',
+    '- Kitchen contains: Grocery List, Pantry, Cookbook',
     '- Grocery List is where buy-now items live',
     '- Pantry is where on-hand pantry staples live',
+    '- Cookbook is where reusable saved household recipes and meal ideas live',
   ].join('\n');
 }
 
@@ -49,6 +62,16 @@ function promptLooksReferential(prompt) {
   const text = safeTrim(prompt).toLowerCase();
   if (!text) return false;
   return /\b(this|that|those|these|it|them)\b/.test(text) || /\bone of those\b/.test(text);
+}
+
+function promptLooksLikeRecipeBuild(prompt) {
+  const text = safeTrim(prompt).toLowerCase();
+  if (!text) return false;
+  return (
+    /\b(recipe|ingredients|instructions|directions)\b/.test(text) ||
+    /\bhow (?:do i|to) make\b/.test(text) ||
+    /\bshow me\b/.test(text)
+  );
 }
 
 function formatPendingActionContext(pendingAction) {
@@ -89,11 +112,22 @@ function formatCapabilitiesContext(capabilities) {
 
 export function buildPromptContextProfile({ prompt = '', runtimeProposedNextAction = null, workingContext = null } = {}) {
   const text = safeTrim(prompt).toLowerCase();
-  const hasWorkingContext = !!normalizeWorkingContext(workingContext);
+  const normalizedWorkingContext = normalizeWorkingContext(workingContext);
+  const hasWorkingContext = !!normalizedWorkingContext;
+  const hasMealContinuity =
+    hasWorkingContext &&
+    (
+      (Array.isArray(normalizedWorkingContext.mealIdeas) && normalizedWorkingContext.mealIdeas.length > 0) ||
+      (Array.isArray(normalizedWorkingContext.subjectItems) && normalizedWorkingContext.subjectItems.length > 0)
+    );
   const includeWorkingContext =
     !!runtimeProposedNextAction ||
     (hasWorkingContext &&
-      (promptLooksReferential(text) || /\b(for this|for that|swap|replace|change|revise|redo|make one|show me|add it)\b/.test(text)));
+      (
+        promptLooksReferential(text) ||
+        /\b(for this|for that|swap|replace|change|revise|redo|make one|show me|add it)\b/.test(text) ||
+        (hasMealContinuity && promptLooksLikeRecipeBuild(text))
+      ));
 
   const talksAboutGrocery = /\b(grocery|groceries|shopping|shopping list|grocery list|buy|need to buy)\b/.test(text);
   const asksAboutGroceryState =
@@ -111,6 +145,7 @@ export function buildPromptContextProfile({ prompt = '', runtimeProposedNextActi
   const asksAboutDefaults =
     /\b(default dinner portions?|default portions?|portions?|servings?|cooking style|weeknight|household defaults?|default settings|easy meals?|ambitious|normal meals?)\b/.test(text) ||
     /\bhow many people (do we|are we going to)? cook(?:ing)? for\b/.test(text);
+  const talksAboutCookbook = promptNeedsCookbookContext(text);
 
   const includeGrocery = talksAboutGrocery;
   const includePantry =
@@ -118,11 +153,16 @@ export function buildPromptContextProfile({ prompt = '', runtimeProposedNextActi
     (!asksAboutGroceryState && (talksAboutPantry || requestsGroceryGeneration)) ||
     (talksAboutGrocery && /\b(pantry|on hand|already have|staple|staples)\b/.test(text));
   const includeDefaults = requestsGroceryGeneration || requestsMealPlanning || asksAboutDefaults;
+  const includeCookbook =
+    talksAboutCookbook ||
+    (requestsMealPlanning && /\b(cookbook|saved|favorite|favourite|recipe|recipes)\b/.test(text)) ||
+    (requestsGroceryGeneration && /\b(cookbook|saved|favorite|favourite|recipe|recipes)\b/.test(text));
 
   return {
     includeDefaults,
     includePantry,
     includeGrocery,
+    includeCookbook,
     includeWorkingContext,
   };
 }
@@ -148,6 +188,7 @@ export function profileNeedsRefresh(currentProfile = {}, requiredProfile = {}) {
     (!!requiredProfile.includeDefaults && !currentProfile.includeDefaults) ||
     (!!requiredProfile.includePantry && !currentProfile.includePantry) ||
     (!!requiredProfile.includeGrocery && !currentProfile.includeGrocery) ||
+    (!!requiredProfile.includeCookbook && !currentProfile.includeCookbook) ||
     (!!requiredProfile.includeWorkingContext && !currentProfile.includeWorkingContext)
   );
 }

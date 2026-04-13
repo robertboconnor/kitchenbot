@@ -53,7 +53,7 @@ test('inventory routes normalize manual grocery adds through the shared inventor
     inventory: {
       normalizeGroceryItemsForPost: async (items, opts) => {
         calls.push({ kind: 'normalizeGrocery', items, opts });
-        return [{ name: 'spinach', section: 'produce', amount: '1 bag' }];
+        return [{ name: 'spinach', section: 'produce', amount: '1 bag', probablyPantryItem: false }];
       },
       normalizePantryItemsForPost: async () => [],
     },
@@ -73,8 +73,64 @@ test('inventory routes normalize manual grocery adds through the shared inventor
   assert.deepEqual(calls[1], {
     kind: 'addGroceryItems',
     householdId: 9,
-    items: [{ name: 'spinach', section: 'produce', amount: '1 bag' }],
+    items: [{ name: 'spinach', section: 'produce', amount: '1 bag', probablyPantryItem: false }],
   });
+});
+
+test('pantry-to-grocery move preserves probably pantry item status', async () => {
+  const app = makeFakeApp();
+  const calls = [];
+  registerKitchenInventoryRoutes(app, {
+    middleware: {
+      requireHousehold() {},
+      requireAuth() {},
+      requireNotImpersonatingReadOnly() {},
+      requireOwner() {},
+    },
+    db: {
+      getGroceryItems: async () => [],
+      getPantryItems: async () => [],
+      addGroceryItems: async (householdId, items) => calls.push({ kind: 'addGroceryItems', householdId, items }),
+      addPantryItems: async () => {},
+      updateGroceryItem: async () => {},
+      deleteGroceryItem: async () => {},
+      deletePantryItem: async (householdId, id) => calls.push({ kind: 'deletePantryItem', householdId, id }),
+      clearGroceryItems: async () => {},
+      findPantryItemById: async () => ({ id: 8, name: 'Rotini', amount: '1 box', section: 'pasta_grains_dry_goods' }),
+    },
+    inventory: {
+      normalizeGroceryItemsForPost: async (items, opts) => {
+        calls.push({ kind: 'normalizeGrocery', items, opts });
+        return [{ name: 'Rotini', section: 'dry', amount: '1 box', probablyPantryItem: true }];
+      },
+      normalizePantryItemsForPost: async () => [],
+    },
+  });
+
+  const req = { householdId: 9, body: {}, params: { id: '8' } };
+  const res = makeRes();
+  const handler = app.routes.post.get('/pantry/:id/move-to-groceries').at(-1);
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(calls[0], {
+    kind: 'normalizeGrocery',
+    items: [{
+      name: 'Rotini',
+      section: '',
+      amount: '1 box',
+      sourceSection: 'pasta_grains_dry_goods',
+      sourceListType: 'pantry',
+      probablyPantryItem: true,
+    }],
+    opts: { householdId: 9, callSurface: 'chat' },
+  });
+  assert.deepEqual(calls[1], {
+    kind: 'addGroceryItems',
+    householdId: 9,
+    items: [{ name: 'Rotini', section: 'dry', amount: '1 box', probablyPantryItem: true }],
+  });
+  assert.deepEqual(calls[2], { kind: 'deletePantryItem', householdId: 9, id: 8 });
 });
 
 test('grocery-to-pantry move reclassifies for the pantry target before insert', async () => {

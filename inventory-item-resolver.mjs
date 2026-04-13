@@ -25,6 +25,20 @@ const MATCH_STOP_WORDS = new Set([
   'of',
 ]);
 
+const FOOD_FORM_TOKENS = new Set([
+  'cheese',
+  'fresh',
+  'dried',
+  'ground',
+  'shredded',
+  'grated',
+  'chopped',
+]);
+
+const EXACT_NAME_ALIASES = new Map([
+  ['parmesan cheese', 'parmesan'],
+]);
+
 function singularizeToken(token) {
   const text = safeTrim(token).toLowerCase();
   if (!text) return '';
@@ -35,11 +49,19 @@ function singularizeToken(token) {
   return text;
 }
 
+function normalizeMatchSourceText(text) {
+  const normalized = normalizeInventoryNameKey(text);
+  return EXACT_NAME_ALIASES.get(normalized) || normalized;
+}
+
 function toMatchTokens(text) {
-  return normalizeInventoryNameKey(text)
+  const tokens = normalizeMatchSourceText(text)
     .split(/[^a-z0-9]+/i)
     .map((token) => singularizeToken(token))
     .filter((token) => token && !MATCH_STOP_WORDS.has(token));
+  if (tokens.length <= 1) return tokens;
+  const stripped = tokens.filter((token) => !FOOD_FORM_TOKENS.has(token));
+  return stripped.length > 0 ? stripped : tokens;
 }
 
 function uniqueList(values) {
@@ -47,7 +69,7 @@ function uniqueList(values) {
 }
 
 function buildItemMatchMeta(item) {
-  const normalizedName = normalizeInventoryNameKey(item?.name);
+  const normalizedName = normalizeMatchSourceText(item?.name);
   const tokens = uniqueList(toMatchTokens(item?.name));
   return {
     item,
@@ -73,7 +95,7 @@ export function resolveInventoryItemMatch(items, rawName) {
   }
 
   const metas = (Array.isArray(items) ? items : []).map(buildItemMatchMeta);
-  const requestKey = normalizeInventoryNameKey(requestedName);
+  const requestKey = normalizeMatchSourceText(requestedName);
   const requestTokens = uniqueList(toMatchTokens(requestedName));
   const requestSingularKey = requestTokens.join(' ');
 

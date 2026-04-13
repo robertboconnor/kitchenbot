@@ -28,3 +28,29 @@ test('inventory item resolver returns ambiguous instead of guessing', () => {
     [1, 2]
   );
 });
+
+test('inventory item resolver matches parmesan to parmesan cheese safely', () => {
+  const result = resolveInventoryItemMatch(
+    [{ id: 1, name: 'Parmesan cheese', amount: '1 wedge', section: 'dairy' }],
+    'parmesan'
+  );
+
+  assert.equal(result.status, 'found');
+  assert.equal(result.item.id, 1);
+});
+
+test('inventory item resolver keeps parmesan variants ambiguous instead of guessing', () => {
+  const result = resolveInventoryItemMatch(
+    [
+      { id: 1, name: 'Parmesan cheese', amount: '1 wedge', section: 'dairy' },
+      { id: 2, name: 'Grated parmesan cheese', amount: '1 tub', section: 'dairy' },
+    ],
+    'parmesan'
+  );
+
+  assert.equal(result.status, 'ambiguous');
+  assert.deepEqual(
+    result.matches.map((item) => item.id),
+    [1, 2]
+  );
+});

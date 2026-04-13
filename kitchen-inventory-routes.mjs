@@ -117,6 +117,7 @@ export function registerKitchenInventoryRoutes(app, deps) {
         amount: pantryItem.amount,
         sourceSection: pantryItem.section,
         sourceListType: 'pantry',
+        probablyPantryItem: true,
       }], {
         householdId: req.householdId,
         callSurface: 'chat',

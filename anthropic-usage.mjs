@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { insertAnthropicUsageLedgerRow } from './db.mjs';
 
 const MODEL_PRICING_USD_PER_MILLION = {
@@ -27,6 +28,27 @@ function asNumberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function safeTrim(text) {
+  return String(text ?? '').trim();
+}
+
+function normalizePromptExcerpt(rawPrompt) {
+  const text = safeTrim(rawPrompt).replace(/\s+/g, ' ');
+  if (!text) return '';
+  return text.slice(0, 180);
+}
+
+function hashPrompt(rawPrompt) {
+  const text = safeTrim(rawPrompt);
+  if (!text) return '';
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+function normalizeActionQuery(rawQuery) {
+  const text = safeTrim(rawQuery).replace(/\s+/g, ' ');
+  return text ? text.slice(0, 240) : '';
+}
+
 export function classifyAnthropicUsageFunction(callPurpose) {
   const purpose = String(callPurpose ?? '').trim();
   if (!purpose) return 'Other';
@@ -39,13 +61,14 @@ export function classifyAnthropicUsageFunction(callPurpose) {
   if (purpose.startsWith('grocery_draft_generation')) return 'Grocery drafting';
   if (purpose === 'inventory_section_classification') return 'Inventory classification';
   if (purpose === 'web_search') return 'Web search';
+  if (purpose === 'web_fetch') return 'Web fetch';
   if (purpose === 'chat_title') return 'Chat titles';
   return 'Other';
 }
 
 function compareUsageGroups(a, b) {
-  const aCost = a.estimatedCostAvailable === false ? -1 : Number(a.estimatedCostUsd ?? 0);
-  const bCost = b.estimatedCostAvailable === false ? -1 : Number(b.estimatedCostUsd ?? 0);
+  const aCost = a.estimatedCostKnownCallCount > 0 ? Number(a.estimatedCostUsd ?? 0) : -1;
+  const bCost = b.estimatedCostKnownCallCount > 0 ? Number(b.estimatedCostUsd ?? 0) : -1;
   if (bCost !== aCost) return bCost - aCost;
   if (b.inputTokens !== a.inputTokens) return b.inputTokens - a.inputTokens;
   return b.callCount - a.callCount;
@@ -60,6 +83,9 @@ export function buildAnthropicUsageReport(rows) {
     cacheReadInputTokens: 0,
     estimatedCostUsd: 0,
     estimatedCostAvailable: true,
+    estimatedCostPartial: false,
+    estimatedCostKnownCallCount: 0,
+    estimatedCostUnknownCallCount: 0,
   };
 
   const byHousehold = new Map();
@@ -80,6 +106,9 @@ export function buildAnthropicUsageReport(rows) {
         cacheReadInputTokens: 0,
         estimatedCostUsd: 0,
         estimatedCostAvailable: true,
+        estimatedCostPartial: false,
+        estimatedCostKnownCallCount: 0,
+        estimatedCostUnknownCallCount: 0,
       });
     }
     const entry = map.get(k);
@@ -89,10 +118,13 @@ export function buildAnthropicUsageReport(rows) {
     entry.cacheCreationInputTokens += Number(row.cache_creation_input_tokens ?? 0) || 0;
     entry.cacheReadInputTokens += Number(row.cache_read_input_tokens ?? 0) || 0;
     if (costUsd == null) {
-      entry.estimatedCostAvailable = false;
-    } else if (entry.estimatedCostAvailable) {
+      entry.estimatedCostUnknownCallCount += 1;
+    } else {
+      entry.estimatedCostKnownCallCount += 1;
       entry.estimatedCostUsd += costUsd;
     }
+    entry.estimatedCostAvailable = entry.estimatedCostKnownCallCount > 0;
+    entry.estimatedCostPartial = entry.estimatedCostUnknownCallCount > 0;
   }
 
   for (const row of rows) {
@@ -103,10 +135,13 @@ export function buildAnthropicUsageReport(rows) {
     totals.cacheReadInputTokens += Number(row.cache_read_input_tokens ?? 0) || 0;
     const costUsd = estimateAnthropicLedgerCostUsd(row);
     if (costUsd == null) {
-      totals.estimatedCostAvailable = false;
-    } else if (totals.estimatedCostAvailable) {
+      totals.estimatedCostUnknownCallCount += 1;
+    } else {
+      totals.estimatedCostKnownCallCount += 1;
       totals.estimatedCostUsd += costUsd;
     }
+    totals.estimatedCostAvailable = totals.estimatedCostKnownCallCount > 0;
+    totals.estimatedCostPartial = totals.estimatedCostUnknownCallCount > 0;
     bump(byHousehold, row.household_id, row, costUsd);
     bump(byPurpose, row.call_purpose, row, costUsd);
     bump(byFunction, classifyAnthropicUsageFunction(row.call_purpose), row, costUsd);
@@ -145,6 +180,15 @@ export function detectAnthropicWebSearchUsage(response) {
     const type = String(block?.type ?? '').trim();
     if (type === 'web_search_tool_result') return true;
     if (type === 'server_tool_use' && String(block?.name ?? '').trim() === 'web_search') return true;
+    return false;
+  });
+}
+
+export function detectAnthropicWebFetchUsage(response) {
+  return (Array.isArray(response?.content) ? response.content : []).some((block) => {
+    const type = String(block?.type ?? '').trim();
+    if (type === 'web_fetch_tool_result') return true;
+    if (type === 'server_tool_use' && String(block?.name ?? '').trim() === 'web_fetch') return true;
     return false;
   });
 }
@@ -206,6 +250,11 @@ export async function recordAnthropicUsageFromResponse(response, context = {}) {
       householdId,
       chatId: context.chatId != null ? Number(context.chatId) : null,
       runtimeEnabled: context.runtimeEnabled !== false,
+      turnId: safeTrim(context.turnId) || null,
+      actionCapability: safeTrim(context.actionCapability) || null,
+      actionQuery: normalizeActionQuery(context.actionQuery) || null,
+      promptHash: hashPrompt(context.prompt) || null,
+      promptExcerpt: normalizePromptExcerpt(context.prompt) || null,
       callSurface: String(context.callSurface ?? 'background'),
       callPurpose: String(context.callPurpose ?? 'unknown'),
       model: String(response?.model ?? context.model ?? 'unknown'),

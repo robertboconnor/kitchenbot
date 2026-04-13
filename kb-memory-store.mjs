@@ -4,9 +4,15 @@ import {
   getGroceryItems,
   getHouseholdDefaults,
   getPantryItems,
+  listCookbookEntries,
   listHouseholdUsers,
   listKbMemories,
 } from './db.mjs';
+import {
+  buildAppliedCookbookText,
+  formatCookbookEntriesText,
+  selectRelevantCookbookEntries,
+} from './cookbook-store.mjs';
 import { normalizePantrySection } from './inventory-classification.mjs';
 import { normalizeMemoryKey, normalizeMemoryValue } from './kb-memory-policy.mjs';
 import { getAssistantPersonaSettings } from './kb-persona.mjs';
@@ -299,6 +305,72 @@ export function mergeMemoryRecord(existingItem, incomingItem) {
       ...normalizeAttributes(incoming.attributes),
     },
   };
+}
+
+export async function reconcilePersonMemoryRecord({
+  anthropic,
+  householdId,
+  chatId,
+  existingItem,
+  incomingItem,
+}) {
+  const existing = existingItem && typeof existingItem === 'object' ? existingItem : null;
+  const incoming = incomingItem && typeof incomingItem === 'object' ? incomingItem : null;
+  if (!existing || !incoming) return mergeMemoryRecord(existingItem, incomingItem);
+  if (normalizeMemoryType(existing.memoryType || incoming.memoryType) !== 'person') {
+    return mergeMemoryRecord(existingItem, incomingItem);
+  }
+  if (!anthropic) return mergeMemoryRecord(existingItem, incomingItem);
+
+  try {
+    const callPurpose = 'kb_memory_shape';
+    const response = await createLoggedAnthropicMessage(
+      anthropic,
+      {
+        model: resolveAnthropicModelForCallPurpose(callPurpose),
+        max_tokens: 220,
+        system: `You reconcile KitchenBot person memory updates into one coherent current record.
+
+Output ONLY one JSON object:
+{"label":"...","notes":[{"text":"..."}]}
+
+Rules:
+- Preserve independent still-true preferences from existing notes.
+- If the incoming note refines, narrows, or replaces an older note on the same topic, keep only the refined current truth.
+- Do not keep contradictory old and new notes together.
+- Keep notes short, durable, and non-overlapping.
+- Do not invent facts beyond the supplied notes.`,
+        messages: [{
+          role: 'user',
+          content: JSON.stringify({
+            label: normalizeLabel(incoming.label || existing.label),
+            existingNotes: normalizePersonNotes(existing?.attributes?.notes || []),
+            incomingNotes: normalizePersonNotes(incoming?.attributes?.notes || []),
+          }),
+        }],
+      },
+      {
+        householdId,
+        chatId,
+        runtimeEnabled: true,
+        callSurface: 'background',
+        callPurpose,
+        webSearchEnabledAtCall: false,
+        usedWebSearchTool: false,
+      }
+    );
+    const raw = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+    const parsed = parseJsonObject(raw);
+    const merged = buildMemoryRecordForStorage({
+      memoryType: 'person',
+      label: parsed?.label || incoming.label || existing.label,
+      attributes: { notes: parsed?.notes },
+    });
+    return merged || mergeMemoryRecord(existingItem, incomingItem);
+  } catch (error) {
+    console.error('KitchenBot person-memory reconciliation failed:', error?.message || error);
+    return mergeMemoryRecord(existingItem, incomingItem);
+  }
 }
 
 function buildSearchHaystack(item) {
@@ -701,6 +773,7 @@ export async function buildKbContextPacket(householdId, prompt = '', opts = {}) 
   const includeDefaults = opts.includeDefaults !== false;
   const includePantry = opts.includePantry !== false;
   const includeGrocery = opts.includeGrocery !== false;
+  const includeCookbook = opts.includeCookbook === true;
   const capabilities =
     opts.capabilities && typeof opts.capabilities === 'object' && !Array.isArray(opts.capabilities)
       ? {
@@ -709,8 +782,19 @@ export async function buildKbContextPacket(householdId, prompt = '', opts = {}) 
       : {
           webSearchEnabled: false,
         };
-  const pantryItems = includePantry ? await getPantryItems(householdId).catch(() => []) : [];
+  let pantryItems = [];
+  let pantryContextStatus = includePantry ? 'unavailable' : 'not_requested';
+  if (includePantry) {
+    try {
+      pantryItems = await getPantryItems(householdId);
+      pantryContextStatus = pantryItems.length > 0 ? 'available' : 'empty';
+    } catch {
+      pantryItems = [];
+      pantryContextStatus = 'unavailable';
+    }
+  }
   const groceryItems = includeGrocery ? await getGroceryItems(householdId).catch(() => []) : [];
+  const cookbookEntries = includeCookbook ? await listCookbookEntries(householdId).catch(() => []) : [];
   const fullHouseholdDefaults = await getHouseholdDefaults(householdId).catch(() => ({
     defaultDinnerPortions: null,
     weeknightCookingStyle: null,
@@ -734,11 +818,19 @@ export async function buildKbContextPacket(householdId, prompt = '', opts = {}) 
     entityContext,
     Number.isFinite(opts.limit) ? Number(opts.limit) : 6
   );
+  const selectedCookbookEntries = includeCookbook
+    ? selectRelevantCookbookEntries(cookbookEntries, prompt, Number.isFinite(opts.cookbookLimit) ? Number(opts.cookbookLimit) : 8)
+    : [];
   return {
     allItems,
     householdUsers,
     pantryItems,
+    pantryContextStatus,
+    pantryContextAvailable: pantryContextStatus === 'available' || pantryContextStatus === 'empty',
+    pantryItemCount: pantryItems.length,
     groceryItems,
+    cookbookEntries,
+    selectedCookbookEntries,
     capabilities,
     householdDefaults,
     assistantPersona,
@@ -752,6 +844,8 @@ export async function buildKbContextPacket(householdId, prompt = '', opts = {}) 
     appliedPantryText: buildAppliedPantryText(pantryItems),
     groceryText: formatGroceryItemsText(groceryItems),
     appliedGroceryText: buildAppliedGroceryText(groceryItems),
+    cookbookText: formatCookbookEntriesText(selectedCookbookEntries),
+    appliedCookbookText: buildAppliedCookbookText(selectedCookbookEntries),
     groceryPantryOverlapText:
       includeGrocery && includePantry ? buildGroceryPantryOverlapText(groceryItems, pantryItems) : '(none)',
     entityContext,

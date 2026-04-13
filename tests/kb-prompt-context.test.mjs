@@ -13,6 +13,8 @@ test('shared prompt context text includes the major context sections once', () =
     appliedPantryText: 'applied pantry',
     groceryText: 'grocery',
     appliedGroceryText: 'applied grocery',
+    cookbookText: 'cookbook entries',
+    appliedCookbookText: 'applied cookbook',
     groceryPantryOverlapText: 'overlap',
     appMapText: 'app map',
     timeContextText: 'time',
@@ -25,6 +27,8 @@ test('shared prompt context text includes the major context sections once', () =
   assert.match(text, /Relevant saved memory for this turn:/);
   assert.match(text, /Pantry items currently on hand:/);
   assert.match(text, /Current Grocery List tab:/);
+  assert.match(text, /Relevant cookbook entries:/);
+  assert.match(text, /Applied cookbook context:/);
   assert.match(text, /Pending action context for this turn:/);
   assert.match(text, /pending clarify action/);
   assert.match(text, /Resolved entities for this turn:/);

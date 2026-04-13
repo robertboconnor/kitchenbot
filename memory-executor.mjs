@@ -8,6 +8,7 @@ import {
   buildMemoryRecordForStorage,
   inferMemoryRecord,
   mergeMemoryRecord,
+  reconcilePersonMemoryRecord,
 } from './kb-memory-store.mjs';
 
 function buildMemoryOutcomeReply(outcome) {
@@ -106,7 +107,16 @@ export async function executeMemorySave(runtimeAction, context) {
           label: record.label,
         };
       } else {
-        const mergedStructured = mergeMemoryRecord(priorStructured, record);
+        const mergedStructured =
+          record.memoryType === 'person'
+            ? await reconcilePersonMemoryRecord({
+                anthropic,
+                householdId: req.householdId,
+                chatId,
+                existingItem: priorStructured,
+                incomingItem: record,
+              })
+            : mergeMemoryRecord(priorStructured, record);
         if ((mergedStructured.summary || '').trim() === String(priorStructured.summary ?? '').trim()) {
           outcome = {
             capability: 'memory.save',
