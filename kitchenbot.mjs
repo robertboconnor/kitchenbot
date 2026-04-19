@@ -49,6 +49,7 @@ import {
   listKbMemories,
   saveKbMemory,
   listCookbookEntries,
+  listCookbookSourceBookTitles,
   getCookbookEntryById,
   saveCookbookEntry,
   deleteCookbookEntry,
@@ -96,11 +97,20 @@ import {
   normalizeAdminUsers,
 } from './admin-households.mjs';
 import { DEFAULT_ASSISTANT_NAME } from './kb-persona.mjs';
+import {
+  getRecipeImportDraft,
+  importRecipeFromImages,
+  importRecipeFromUrl,
+  createManualRecipeImportDraft,
+  saveRecipeImportDraftToCookbook,
+  updateRecipeImportDraft,
+} from './recipe-importer-service.mjs';
 import 'dotenv/config';
 import os from 'os';
 import http from 'http';
 import { pathToFileURL } from 'url';
 import express from 'express';
+import multer from 'multer';
 import { createClient } from 'redis';
 import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
@@ -111,9 +121,587 @@ async function incrementUserMessageCountForSender(req) {
   void req;
 }
 
+function safeTrim(text) {
+  return String(text ?? '').trim();
+}
+
 const app = express();
 const port = process.env.PORT || 3000;
 const server = http.createServer(app);
+const recipeImporterUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: 8,
+    fileSize: 10 * 1024 * 1024,
+  },
+});
+
+function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
+  return `
+  <!doctype html>
+  <html>
+    <head>
+      <title>KitchenBot Recipe Importer</title>
+      <link rel="icon" href="/logo.png" type="image/png" />
+      <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+      <style>
+        :root {
+          --bg-gradient: radial-gradient(circle at top left, #ffe6f2, #e3f2ff 40%, #ffffff 80%);
+          --card-bg: rgba(255, 255, 255, 0.92);
+          --accent: #ff7aa2;
+          --accent-soft: #ffe0ec;
+          --accent-strong: #ff4f87;
+          --border-subtle: #e3e6ee;
+          --text-main: #1f2430;
+          --text-soft: #6b7280;
+          --shadow-soft: 0 18px 40px rgba(15, 23, 42, 0.12);
+          --radius-lg: 18px;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+          margin: 0;
+          min-height: 100vh;
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+          background: var(--bg-gradient);
+          color: var(--text-main);
+          padding: 20px 14px 28px;
+        }
+
+        .importer-shell {
+          max-width: 1120px;
+          margin: 0 auto;
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+        }
+
+        .importer-topbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+
+        .importer-topbar a {
+          color: var(--accent-strong);
+          text-decoration: none;
+          font-weight: 700;
+        }
+
+        .importer-title {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .importer-title h1 {
+          margin: 0;
+          font-size: clamp(28px, 4vw, 40px);
+        }
+
+        .importer-title p {
+          margin: 0;
+          color: var(--text-soft);
+          line-height: 1.5;
+        }
+
+        .importer-grid {
+          display: grid;
+          grid-template-columns: minmax(280px, 340px) minmax(360px, 1fr);
+          gap: 14px;
+        }
+
+        .importer-card {
+          background: var(--card-bg);
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-lg);
+          box-shadow: var(--shadow-soft);
+          padding: 18px;
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+          min-width: 0;
+        }
+
+        .importer-card h2 {
+          margin: 0;
+          font-size: 20px;
+        }
+
+        .importer-card p {
+          margin: 0;
+          color: var(--text-soft);
+          line-height: 1.5;
+        }
+
+        .importer-field {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .importer-field span {
+          font-size: 13px;
+          font-weight: 700;
+          color: var(--text-soft);
+        }
+
+        input, textarea, select, button {
+          font: inherit;
+        }
+
+        input[type="text"], input[type="url"], textarea, select {
+          width: 100%;
+          border: 1px solid var(--border-subtle);
+          border-radius: 12px;
+          padding: 11px 12px;
+          background: #fff;
+          color: var(--text-main);
+        }
+
+        textarea {
+          min-height: 140px;
+          resize: vertical;
+        }
+
+        button {
+          border: 0;
+          border-radius: 999px;
+          padding: 11px 16px;
+          background: var(--accent-strong);
+          color: #fff;
+          font-weight: 700;
+          cursor: pointer;
+        }
+
+        button:disabled {
+          cursor: not-allowed;
+          opacity: 0.55;
+        }
+
+        .button-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .button-secondary {
+          background: #fff;
+          color: var(--text-main);
+          border: 1px solid var(--border-subtle);
+        }
+
+        #importer-status {
+          min-height: 74px;
+          display: none;
+          align-items: center;
+          gap: 14px;
+          padding: 14px 16px;
+          border-radius: 18px;
+          border: 1px solid rgba(255, 122, 162, 0.22);
+          background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(255,240,246,0.96));
+          color: var(--text-main);
+          box-shadow: var(--shadow-soft);
+        }
+
+        #importer-status[data-tone="default"],
+        #importer-status[data-tone="loading"] {
+          display: flex;
+        }
+
+        #importer-status[data-tone="error"] {
+          display: flex;
+          border-color: rgba(180, 35, 24, 0.22);
+          background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(255,241,240,0.96));
+          color: #8a1c1c;
+        }
+
+        .importer-status-spinner {
+          display: none;
+          width: 18px;
+          height: 18px;
+          border-radius: 999px;
+          border: 3px solid rgba(255, 79, 135, 0.18);
+          border-top-color: var(--accent-strong);
+          flex: 0 0 auto;
+        }
+
+        #importer-status[data-tone="loading"] .importer-status-spinner {
+          display: block;
+        }
+
+        #importer-status[data-tone="loading"] .importer-status-spinner {
+          animation: importer-spin 0.9s linear infinite;
+        }
+
+        .importer-status-copy {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          min-width: 0;
+        }
+
+        .importer-status-title {
+          font-size: 15px;
+          font-weight: 700;
+        }
+
+        .importer-status-detail {
+          font-size: 13px;
+          color: var(--text-soft);
+          line-height: 1.4;
+        }
+
+        #importer-status[data-tone="error"] .importer-status-detail {
+          color: inherit;
+          opacity: 0.9;
+        }
+
+        .importer-inline-note {
+          margin: 0;
+          font-size: 13px;
+          color: var(--text-soft);
+          line-height: 1.45;
+        }
+
+        .importer-inline-row {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          align-items: center;
+        }
+
+        #importer-source-book-custom[hidden] {
+          display: none !important;
+        }
+
+        .importer-preview-card {
+          gap: 10px;
+        }
+
+        .importer-preview-card summary {
+          cursor: pointer;
+          list-style: none;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          font-weight: 700;
+        }
+
+        .importer-preview-card summary::-webkit-details-marker {
+          display: none;
+        }
+
+        .importer-preview-card summary::after {
+          content: 'Show';
+          font-size: 12px;
+          font-weight: 700;
+          color: var(--accent-strong);
+        }
+
+        .importer-preview-card[open] summary::after {
+          content: 'Hide';
+        }
+
+        .importer-preview-copy {
+          margin: 8px 0 0;
+          color: var(--text-soft);
+          line-height: 1.5;
+        }
+
+        #importer-source-preview {
+          white-space: pre-wrap;
+          overflow: auto;
+          max-height: 320px;
+          padding: 14px;
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.75);
+          border: 1px solid var(--border-subtle);
+          line-height: 1.45;
+          font-size: 14px;
+        }
+
+        #importer-source-meta {
+          font-size: 13px;
+          color: var(--text-soft);
+        }
+
+        #importer-warnings {
+          margin: 0;
+          padding-left: 20px;
+          color: #8a2d00;
+          display: none;
+        }
+
+        .importer-action-bar {
+          position: sticky;
+          top: 12px;
+          z-index: 2;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          margin: -2px 0 2px;
+          padding: 12px;
+          border-radius: 16px;
+          border: 1px solid rgba(255, 122, 162, 0.16);
+          background: linear-gradient(135deg, rgba(255,255,255,0.97), rgba(255,244,248,0.97));
+          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+          backdrop-filter: blur(8px);
+        }
+
+        .importer-action-state {
+          display: none;
+        }
+
+        .importer-action-state[data-state-visible="true"] {
+          display: flex !important;
+        }
+
+        .importer-action-state--saved,
+        .importer-action-state--saving {
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .importer-saved-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          font-weight: 700;
+          color: var(--text-main);
+        }
+
+        .importer-saved-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 24px;
+          height: 24px;
+          border-radius: 999px;
+          background: rgba(14, 159, 110, 0.14);
+          color: #087443;
+          font-size: 14px;
+          font-weight: 800;
+          flex: 0 0 auto;
+        }
+
+        .importer-conflict-icon {
+          background: rgba(217, 119, 6, 0.14);
+          color: #9a5b00;
+        }
+
+        .importer-action-copy {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          min-width: 0;
+        }
+
+        .importer-action-title {
+          font-size: 15px;
+          font-weight: 700;
+        }
+
+        .importer-action-detail {
+          font-size: 13px;
+          color: var(--text-soft);
+          line-height: 1.4;
+        }
+
+        .importer-saving-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          font-weight: 700;
+        }
+
+        .importer-saving-chip .importer-status-spinner {
+          display: block;
+          animation: importer-spin 0.9s linear infinite;
+        }
+
+        #importer-open-cookbook {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          padding: 11px 16px;
+          background: #fff;
+          border: 1px solid var(--border-subtle);
+          color: var(--text-main);
+          font-weight: 700;
+          text-decoration: none;
+        }
+
+        @media (max-width: 960px) {
+          .importer-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .importer-action-bar {
+            top: 8px;
+          }
+        }
+
+        @keyframes importer-spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="importer-shell">
+        <div class="importer-topbar">
+          <div class="importer-title">
+            <h1>Recipe Importer</h1>
+            <p>Bring in a recipe from a URL or photos, repair the draft, and save it into your Cookbook.</p>
+          </div>
+          <a href="/#cookbook">Back to KitchenBot</a>
+        </div>
+
+        <div id="importer-status" aria-live="polite" data-tone="default">
+          <div class="importer-status-spinner" aria-hidden="true"></div>
+          <div class="importer-status-copy">
+            <div class="importer-status-title">Ready for a recipe</div>
+            <div class="importer-status-detail">Paste a URL or add photos and I’ll turn it into an editable recipe draft, or add one manually.</div>
+          </div>
+        </div>
+
+        <div class="importer-grid">
+          <section class="importer-card">
+            <div>
+              <h2>Import Source</h2>
+              <p>URL imports use Riveter. Image imports use OCR and then build an editable recipe draft. You can also type one in by hand.</p>
+            </div>
+            <label class="importer-field">
+              <span>Recipe URL</span>
+              <input id="importer-url-input" type="url" placeholder="https://example.com/recipe" inputmode="url" />
+            </label>
+            <div class="button-row">
+              <button id="importer-url-submit" type="button">Import from URL</button>
+            </div>
+
+            <div style="height:1px;background:var(--border-subtle);"></div>
+
+            <div>
+              <h2 style="font-size:18px;">Images</h2>
+              <p>Choose whether to take a photo or upload existing images first.</p>
+            </div>
+            <div class="button-row">
+              <button id="importer-camera-btn" type="button">Take photo</button>
+              <button id="importer-upload-btn" type="button" class="button-secondary">Upload images</button>
+            </div>
+            <input id="importer-camera-input" type="file" accept="image/*" capture="environment" multiple hidden />
+            <input id="importer-upload-input" type="file" accept="image/*" multiple hidden />
+          </section>
+
+          <section class="importer-card">
+            <div>
+              <h2>Recipe Draft</h2>
+              <p>Review and repair the recipe here. Nothing is saved to Cookbook until you hit save.</p>
+            </div>
+            <div class="importer-action-bar">
+              <div id="importer-primary-actions" class="button-row importer-action-state" data-state-visible="true">
+                <button id="importer-save" type="button" disabled>Save to Cookbook</button>
+                <button id="importer-reset" type="button" class="button-secondary">Reset</button>
+              </div>
+              <div id="importer-saving-state" class="importer-action-state importer-action-state--saving" data-state-visible="false">
+                <div class="importer-saving-chip">
+                  <div class="importer-status-spinner" aria-hidden="true"></div>
+                  <span>Saving to Cookbook…</span>
+                </div>
+                <div class="importer-action-detail">Committing the edited draft into your saved recipes.</div>
+              </div>
+              <div id="importer-conflict-state" class="importer-action-state importer-action-state--saved" data-state-visible="false">
+                <div class="importer-saved-badge">
+                  <span class="importer-saved-icon importer-conflict-icon" aria-hidden="true">!</span>
+                  <span class="importer-action-copy">
+                    <span class="importer-action-title">That recipe already exists</span>
+                    <span id="importer-conflict-detail" class="importer-action-detail">You can overwrite the existing cookbook entry or keep editing this draft.</span>
+                  </span>
+                </div>
+                <div class="button-row">
+                  <button id="importer-overwrite" type="button">Overwrite existing recipe</button>
+                  <button id="importer-keep-editing" type="button" class="button-secondary">Keep editing draft</button>
+                </div>
+              </div>
+              <div id="importer-save-actions" class="importer-action-state importer-action-state--saved" data-state-visible="false">
+                <div class="importer-saved-badge">
+                  <span class="importer-saved-icon" aria-hidden="true">✓</span>
+                  <span class="importer-action-copy">
+                    <span class="importer-action-title">Saved to Cookbook</span>
+                    <span class="importer-action-detail">This recipe is safely in your cookbook now.</span>
+                  </span>
+                </div>
+                <div class="button-row">
+                  <a id="importer-open-cookbook" href="/">Open in Cookbook</a>
+                  <button id="importer-import-another" type="button" class="button-secondary">Import another</button>
+                </div>
+              </div>
+            </div>
+            <ul id="importer-warnings"></ul>
+            <label class="importer-field">
+              <span>Title</span>
+              <input id="importer-title" type="text" placeholder="Recipe title" />
+            </label>
+            <label id="importer-source-book-field" class="importer-field" style="display:none;">
+              <span>Cookbook Source</span>
+              <div class="importer-inline-row">
+                <select id="importer-source-book-select">
+                  <option value="">No cookbook source</option>
+                  ${Array.from(new Set((Array.isArray(knownCookbookSources) ? knownCookbookSources : []).map((value) => safeTrim(value)).filter(Boolean))).sort((a, b) => a.localeCompare(b)).map((title) => `<option value="${title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}">${title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')}</option>`).join('')}
+                  <option value="__add_new__">Add new…</option>
+                </select>
+                <input id="importer-source-book-custom" type="text" placeholder="Cookbook title" hidden />
+              </div>
+              <p class="importer-inline-note">Optional. Useful for cookbook-page imports so you can remember where this recipe came from.</p>
+            </label>
+            <label class="importer-field">
+              <span>Summary</span>
+              <textarea id="importer-summary" placeholder="Short description or context"></textarea>
+            </label>
+            <label class="importer-field">
+              <span>Category</span>
+              <select id="importer-category">
+                <option value="">Uncategorized</option>
+              </select>
+            </label>
+            <label class="importer-field">
+              <span>Tags</span>
+              <input id="importer-tags" type="text" placeholder="comma, separated, tags" />
+            </label>
+            <label class="importer-field">
+              <span>Ingredients</span>
+              <textarea id="importer-ingredients" placeholder="One ingredient per line"></textarea>
+            </label>
+            <label class="importer-field">
+              <span>Instructions</span>
+              <textarea id="importer-instructions" placeholder="One step per line"></textarea>
+            </label>
+            <label class="importer-field">
+              <span>Notes</span>
+              <textarea id="importer-notes" placeholder="Optional notes, tips, or source cleanup"></textarea>
+            </label>
+          </section>
+        </div>
+
+        <details id="importer-preview-shell" class="importer-card importer-preview-card">
+          <summary>
+            <span>Extraction Preview</span>
+          </summary>
+          <p class="importer-preview-copy">Useful when you want to inspect the raw extraction, but most of the time you should be able to work straight from the draft.</p>
+          <div id="importer-source-meta">No draft yet.</div>
+          <div id="importer-source-preview">Paste a URL or import images to create a recipe draft.</div>
+        </details>
+      </div>
+      ${renderClientBootTags({ cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS, knownCookbookSources }, { scriptSrc: '/recipe-importer.js' })}
+    </body>
+  </html>`;
+}
 
 async function resolveDefaultHouseholdId() {
   const envId = process.env.HOUSEHOLD_ID;
@@ -1178,6 +1766,9 @@ app.get('/', (req, res) => {
           gap: 10px;
           margin-bottom: 8px;
           flex-shrink: 0;
+          position: sticky;
+          top: 0;
+          z-index: 12;
         }
 
         #header .tab-bar {
@@ -1313,9 +1904,7 @@ app.get('/', (req, res) => {
           margin-top: 8px;
           padding-top: 8px;
           border-top: 1px solid var(--sidebar-border);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
+          display: grid;
           gap: 8px;
           font-size: 12px;
           color: var(--sidebar-text-soft);
@@ -1326,6 +1915,14 @@ app.get('/', (req, res) => {
           font-weight: 600;
         }
 
+        #sidebar-footer-actions {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+
+        #sidebar-household,
         #logout {
           padding: 6px 12px;
           font-size: 12px;
@@ -1335,6 +1932,7 @@ app.get('/', (req, res) => {
           color: var(--text-main);
         }
 
+        #sidebar-household:hover,
         #logout:hover {
           background: var(--accent-blue-soft);
           border-color: var(--accent-blue);
@@ -1720,6 +2318,553 @@ app.get('/', (req, res) => {
           font-weight: 600;
           box-shadow: 0 8px 18px rgba(255, 122, 162, 0.18);
           background: rgba(255, 245, 248, 0.95);
+        }
+
+        .kitchen-shell {
+          display: grid;
+          gap: 18px;
+          min-width: 0;
+        }
+
+        .kitchen-workspace-header {
+          display: grid;
+          gap: 14px;
+          padding: 18px 20px;
+          border-radius: 22px;
+          border: 1px solid rgba(255, 206, 219, 0.9);
+          background: linear-gradient(140deg, rgba(255, 248, 250, 0.98), rgba(243, 248, 255, 0.95));
+          box-shadow: 0 18px 44px rgba(140, 163, 191, 0.12);
+        }
+
+        .kitchen-workspace-copy {
+          display: grid;
+          gap: 6px;
+          min-width: 0;
+        }
+
+        .kitchen-workspace-copy--mobile,
+        .kitchen-workspace-mobile-about {
+          display: none;
+        }
+
+        .kitchen-workspace-kicker {
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--accent-strong);
+        }
+
+        .kitchen-workspace-title {
+          margin: 0;
+          font-size: clamp(28px, 3vw, 36px);
+          line-height: 1.05;
+          letter-spacing: -0.04em;
+        }
+
+        .kitchen-workspace-note {
+          margin: 0;
+          max-width: 720px;
+          color: var(--text-soft);
+          font-size: 15px;
+          line-height: 1.55;
+        }
+
+        .kitchen-section-switcher {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          align-items: center;
+        }
+
+        .kitchen-section-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          padding: 10px 16px;
+          border-radius: 999px;
+          border: 1px solid rgba(148, 163, 184, 0.42);
+          background: rgba(255, 255, 255, 0.92);
+          color: var(--text-main);
+          font-size: 14px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+        }
+
+        .kitchen-section-btn:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 10px 24px rgba(148, 163, 184, 0.14);
+        }
+
+        .kitchen-section-btn.settings-subtab-active {
+          border-color: var(--accent-strong);
+          background: linear-gradient(135deg, rgba(255, 244, 248, 0.98), rgba(255, 255, 255, 0.98));
+          box-shadow: 0 12px 28px rgba(255, 122, 162, 0.16);
+        }
+
+        .kitchen-section-btn--secondary {
+          opacity: 0.82;
+          background: rgba(250, 252, 255, 0.88);
+        }
+
+        .kitchen-section-panel {
+          display: grid;
+          gap: 16px;
+          min-width: 0;
+          padding: 20px;
+          border-radius: 24px;
+          border: 1px solid rgba(226, 232, 240, 0.95);
+          background: rgba(255, 255, 255, 0.86);
+          box-shadow: 0 18px 42px rgba(148, 163, 184, 0.1);
+        }
+
+        .kitchen-section-panel--pantry {
+          background: rgba(248, 250, 252, 0.9);
+          border-color: rgba(226, 232, 240, 0.9);
+          box-shadow: 0 12px 28px rgba(148, 163, 184, 0.08);
+        }
+
+        .kitchen-section-header {
+          display: grid;
+          gap: 8px;
+          min-width: 0;
+        }
+
+        .kitchen-section-kicker {
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--text-soft);
+        }
+
+        .kitchen-section-title-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          align-items: center;
+          justify-content: space-between;
+        }
+
+        .kitchen-section-title {
+          margin: 0;
+          font-size: clamp(24px, 2vw, 30px);
+          line-height: 1.08;
+          letter-spacing: -0.03em;
+        }
+
+        .kitchen-section-copy {
+          margin: 0;
+          max-width: 720px;
+          color: var(--text-soft);
+          font-size: 14px;
+          line-height: 1.55;
+        }
+
+        .cookbook-hero-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          align-items: center;
+        }
+
+        .cookbook-hero-link {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          padding: 11px 16px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 122, 162, 0.24);
+          background: linear-gradient(135deg, rgba(255, 104, 153, 0.96), rgba(255, 133, 180, 0.96));
+          color: #fff;
+          font-weight: 700;
+          text-decoration: none;
+          box-shadow: 0 14px 28px rgba(255, 122, 162, 0.22);
+        }
+
+        .cookbook-hero-hint {
+          font-size: 13px;
+          color: var(--text-soft);
+        }
+
+        .kitchen-mobile-inline-copy {
+          margin: 0;
+          color: var(--text-soft);
+          font-size: 13px;
+          line-height: 1.45;
+        }
+
+        .kitchen-mobile-about-summary {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          cursor: pointer;
+          color: var(--accent-strong);
+          font-size: 13px;
+          font-weight: 600;
+          list-style: none;
+        }
+
+        .kitchen-mobile-about-summary::-webkit-details-marker {
+          display: none;
+        }
+
+        .cookbook-results-area {
+          display: grid;
+          gap: 14px;
+          min-width: 0;
+        }
+
+        .cookbook-empty-state {
+          display: none;
+          padding: 18px;
+          border: 1px dashed var(--border-subtle);
+          border-radius: 18px;
+          background: rgba(255,255,255,0.7);
+          color: var(--text-soft);
+        }
+
+        .cookbook-layout-split .cookbook-results-area {
+          grid-template-columns: minmax(0, 0.92fr) minmax(320px, 1.08fr);
+          align-items: start;
+        }
+
+        .cookbook-layout-split #cookbook-toolbar {
+          grid-column: 1 / -1;
+        }
+
+        .cookbook-layout-split #cookbook-empty {
+          grid-column: 1 / -1;
+        }
+
+        .cookbook-layout-split #cookbook-detail-view {
+          position: sticky;
+          top: 18px;
+          align-self: start;
+          max-height: calc(100vh - 118px);
+          overflow-y: auto;
+          overscroll-behavior: contain;
+        }
+
+        .cookbook-card {
+          background: rgba(255,255,255,0.82);
+          border: 1px solid var(--border-subtle);
+          border-radius: 16px;
+          padding: 14px 16px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+        }
+
+        .cookbook-card:hover {
+          border-color: rgba(255, 122, 162, 0.28);
+          box-shadow: 0 16px 34px rgba(148, 163, 184, 0.12);
+          transform: translateY(-1px);
+        }
+
+        .cookbook-card--active {
+          border-color: rgba(255, 122, 162, 0.55);
+          box-shadow: 0 20px 34px rgba(255, 122, 162, 0.14);
+          background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,245,248,0.92));
+        }
+
+        .cookbook-card-header {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          align-items: flex-start;
+          flex-wrap: wrap;
+        }
+
+        .cookbook-card-heading {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          min-width: 0;
+          flex: 1;
+        }
+
+        .cookbook-card-title {
+          font-size: 18px;
+          font-weight: 700;
+          line-height: 1.14;
+          letter-spacing: -0.02em;
+        }
+
+        .cookbook-card-meta {
+          font-size: 13px;
+          color: var(--text-soft);
+          line-height: 1.4;
+        }
+
+        .cookbook-card-source {
+          font-size: 13px;
+          color: var(--text-soft);
+          line-height: 1.35;
+        }
+
+        .cookbook-card-source a {
+          color: var(--accent-strong);
+        }
+
+        .cookbook-card-tags {
+          display: flex;
+          flex-wrap: nowrap;
+          gap: 6px;
+          align-items: center;
+          justify-content: flex-start;
+          min-width: 0;
+          overflow: hidden;
+        }
+
+        .cookbook-tag-chip {
+          padding: 4px 8px;
+          border-radius: 999px;
+          background: var(--accent-soft);
+          color: var(--accent-strong);
+          font-size: 12px;
+          font-weight: 600;
+          line-height: 1.2;
+        }
+
+        .cookbook-tag-chip--overflow {
+          background: rgba(241, 245, 249, 0.95);
+          color: var(--text-soft);
+        }
+
+        .cookbook-card-summary {
+          font-size: 14px;
+          line-height: 1.55;
+          color: var(--text-main);
+          display: -webkit-box;
+          -webkit-box-orient: vertical;
+          -webkit-line-clamp: 3;
+          overflow: hidden;
+        }
+
+        .cookbook-card-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          align-items: center;
+        }
+
+        .cookbook-card-action-primary {
+          font-weight: 700;
+        }
+
+        .cookbook-card-action-secondary {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .cookbook-card-more {
+          position: relative;
+        }
+
+        .cookbook-card-more-toggle {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 9px 14px;
+          border-radius: var(--radius-pill);
+          border: 1px solid rgba(148, 163, 184, 0.7);
+          background: #ffffff;
+          font-size: 14px;
+          font-weight: 500;
+          color: var(--text-main);
+          cursor: pointer;
+          line-height: 1.1;
+        }
+
+        .cookbook-card-more summary {
+          list-style: none;
+        }
+
+        .cookbook-card-more summary::-webkit-details-marker {
+          display: none;
+        }
+
+        .cookbook-card-more-menu {
+          position: absolute;
+          right: 0;
+          top: calc(100% + 8px);
+          min-width: 220px;
+          padding: 8px;
+          border-radius: 16px;
+          border: 1px solid rgba(226, 232, 240, 0.95);
+          background: rgba(255, 255, 255, 0.98);
+          box-shadow: 0 18px 38px rgba(148, 163, 184, 0.2);
+          display: grid;
+          gap: 6px;
+          z-index: 5;
+        }
+
+        .cookbook-card-menu-btn {
+          width: 100%;
+          justify-content: flex-start;
+          text-align: left;
+          padding: 9px 12px;
+          border-radius: 12px;
+          box-shadow: none;
+        }
+
+        .cookbook-card-menu-btn--danger {
+          color: #b42318;
+          border-color: rgba(220, 38, 38, 0.18);
+          background: rgba(254, 242, 242, 0.92);
+        }
+
+        .cookbook-card--mobile {
+          gap: 0;
+          padding: 0;
+          overflow: hidden;
+          background: transparent;
+          border: 0;
+          border-bottom: 1px solid var(--border-subtle);
+          border-radius: 0;
+          box-shadow: none;
+        }
+
+        .cookbook-card--mobile:hover {
+          border-color: var(--border-subtle);
+          box-shadow: none;
+          transform: none;
+        }
+
+        .cookbook-card--mobile.cookbook-card--active {
+          background: rgba(255, 245, 248, 0.58);
+          border-color: var(--border-subtle);
+          box-shadow: none;
+        }
+
+        .cookbook-card-mobile-row {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 11px 2px 11px 0;
+          border: 0;
+          background: transparent;
+          color: inherit;
+          text-align: left;
+          cursor: pointer;
+        }
+
+        .cookbook-card-mobile-row:hover {
+          background: rgba(255, 248, 251, 0.7);
+        }
+
+        .cookbook-card-mobile-row:focus-visible {
+          outline: 2px solid rgba(255, 122, 162, 0.42);
+          outline-offset: -2px;
+        }
+
+        .cookbook-card-mobile-chevron {
+          flex: none;
+          color: var(--text-soft);
+          font-size: 22px;
+          line-height: 1;
+        }
+
+        .cookbook-detail-header {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          align-items: flex-start;
+          flex-wrap: wrap;
+        }
+
+        .cookbook-detail-meta-block {
+          display: grid;
+          gap: 6px;
+          min-width: 0;
+        }
+
+        .cookbook-detail-header-actions {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 8px;
+        }
+
+        .cookbook-detail-primary-actions,
+        .cookbook-detail-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          justify-content: flex-end;
+        }
+
+        .cookbook-detail-button {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 42px;
+          padding: 10px 16px;
+          border-radius: var(--radius-pill);
+          border: 1px solid rgba(148, 163, 184, 0.7);
+          background: #ffffff;
+          color: var(--text-main);
+          font-size: 14px;
+          font-weight: 600;
+          box-shadow: none;
+          line-height: 1.15;
+        }
+
+        .cookbook-detail-button:hover {
+          box-shadow: 0 6px 14px rgba(148, 163, 184, 0.2);
+        }
+
+        .cookbook-detail-button--primary {
+          background: var(--accent-strong);
+          border-color: rgba(255, 79, 135, 0.9);
+          color: #ffffff;
+        }
+
+        .cookbook-detail-button--primary:hover {
+          background: #ff5d91;
+        }
+
+        .cookbook-detail-button--danger {
+          color: #b42318;
+          border-color: rgba(220, 38, 38, 0.18);
+          background: rgba(254, 242, 242, 0.92);
+        }
+
+        .cookbook-detail-source {
+          font-size: 13px;
+          color: var(--text-soft);
+          line-height: 1.4;
+        }
+
+        .cookbook-detail-source-row {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: baseline;
+          gap: 6px;
+        }
+
+        .cookbook-detail-source-label {
+          font-weight: 700;
+        }
+
+        .cookbook-detail-source-link {
+          color: var(--accent-strong);
+          text-decoration: underline;
+        }
+
+        .cookbook-detail-actions .cookbook-card-action-secondary,
+        .cookbook-detail-actions .cookbook-card-menu-btn,
+        .cookbook-detail-primary-actions .cookbook-detail-button {
+          display: inline-flex;
+          width: auto;
         }
 
         .settings-page-intro {
@@ -2743,6 +3888,33 @@ app.get('/', (req, res) => {
             padding: 8px 6px 6px;
           }
 
+          #header {
+            gap: 6px;
+            margin-bottom: 6px;
+            padding: 2px 0 8px;
+            background: linear-gradient(180deg, rgba(249, 250, 255, 0.98), rgba(249, 250, 255, 0.82) 70%, rgba(249, 250, 255, 0));
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+          }
+
+          #menu-button {
+            width: 42px;
+            height: 42px;
+            min-width: 42px;
+            min-height: 42px;
+            padding: 0;
+          }
+
+          #header .tab-bar {
+            gap: 6px;
+          }
+
+          #header .tab-bar .tab-button {
+            padding-block: 6px;
+            padding-inline: 10px;
+            font-size: 12px;
+          }
+
           #sidebar {
             width: 88%;
             max-width: 88%;
@@ -2917,6 +4089,215 @@ app.get('/', (req, res) => {
             flex: 1 1 100%;
           }
 
+          .kitchen-workspace-header,
+          .kitchen-section-panel {
+            padding: 14px;
+            border-radius: 18px;
+          }
+
+          .kitchen-workspace-copy--desktop {
+            display: none;
+          }
+
+          .kitchen-workspace-copy--mobile,
+          .kitchen-workspace-mobile-about {
+            display: grid;
+          }
+
+          .kitchen-workspace-header {
+            gap: 10px;
+          }
+
+          .kitchen-workspace-copy--mobile {
+            gap: 4px;
+          }
+
+          .kitchen-workspace-kicker {
+            font-size: 10px;
+          }
+
+          .kitchen-workspace-title {
+            font-size: 22px;
+            line-height: 1.08;
+          }
+
+          .kitchen-workspace-note {
+            font-size: 14px;
+          }
+
+          .kitchen-section-switcher {
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding-bottom: 2px;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+          }
+
+          .kitchen-section-switcher::-webkit-scrollbar {
+            display: none;
+          }
+
+          .kitchen-section-btn {
+            flex: 0 0 auto;
+            min-width: fit-content;
+            padding: 8px 14px;
+            font-size: 13px;
+          }
+
+          .kitchen-section-title-row {
+            gap: 8px;
+            align-items: stretch;
+          }
+
+          .cookbook-hero-actions {
+            flex-direction: column;
+            align-items: stretch;
+          }
+
+          .kitchen-section-kicker {
+            font-size: 10px;
+          }
+
+          .kitchen-section-title {
+            font-size: 20px;
+          }
+
+          .kitchen-section-copy {
+            font-size: 13px;
+            line-height: 1.45;
+          }
+
+          #grocery-subview-cookbook .kitchen-section-copy {
+            max-width: none;
+          }
+
+          .cookbook-hero-link {
+            width: 100%;
+            justify-content: center;
+            padding: 12px 16px;
+          }
+
+          .cookbook-hero-hint {
+            font-size: 12px;
+            line-height: 1.35;
+          }
+
+          .cookbook-card {
+            padding: 10px 12px;
+            gap: 6px;
+          }
+
+          .cookbook-card--mobile {
+            margin: 0;
+          }
+
+          .cookbook-layout-split #cookbook-detail-view {
+            max-height: none;
+            overflow-y: visible;
+          }
+
+          .cookbook-card-header {
+            gap: 6px;
+          }
+
+          .cookbook-card-title {
+            font-size: 15px;
+            line-height: 1.12;
+          }
+
+          .cookbook-card--mobile .cookbook-card-title {
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow: hidden;
+          }
+
+          .cookbook-card-meta,
+          .cookbook-card-source {
+            font-size: 11px;
+            line-height: 1.3;
+          }
+
+          .cookbook-card--mobile .cookbook-card-meta {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+
+          .cookbook-card-tags {
+            justify-content: flex-start;
+          }
+
+          .cookbook-card-summary {
+            font-size: 12px;
+            line-height: 1.42;
+            -webkit-line-clamp: 3;
+          }
+
+          .cookbook-card-actions {
+            gap: 5px;
+          }
+
+          .cookbook-card-action-secondary {
+            display: none;
+          }
+
+          .cookbook-card-more,
+          .cookbook-card-more-toggle {
+            margin-left: 0;
+          }
+
+          .cookbook-card-mobile-row {
+            gap: 10px;
+            padding: 9px 0;
+          }
+
+          .cookbook-card-mobile-chevron {
+            font-size: 19px;
+          }
+
+          .cookbook-detail-header {
+            flex-direction: column;
+            align-items: stretch;
+          }
+
+          .cookbook-detail-meta-block {
+            gap: 5px;
+          }
+
+          .cookbook-detail-header-actions {
+            width: 100%;
+            align-items: stretch;
+          }
+
+          .cookbook-detail-primary-actions,
+          .cookbook-detail-actions {
+            justify-content: flex-start;
+            width: 100%;
+          }
+
+          .cookbook-detail-primary-actions .cookbook-detail-button,
+          .cookbook-detail-actions .cookbook-card-menu-btn,
+          .cookbook-detail-actions .cookbook-card-action-secondary {
+            display: inline-flex;
+            width: 100%;
+          }
+
+          .cookbook-card-more-menu {
+            right: auto;
+            left: 0;
+            min-width: min(240px, calc(100vw - 64px));
+          }
+
+          .cookbook-layout-split .cookbook-results-area {
+            grid-template-columns: 1fr;
+          }
+
+          .cookbook-layout-split #cookbook-detail-view {
+            position: static;
+          }
+
           .settings-actions-row button,
           .settings-admin-selectors button {
             width: 100%;
@@ -2958,7 +4339,6 @@ app.get('/', (req, res) => {
         <div id="tab-bar" class="tab-bar">
           <button id="tab-chat" class="tab-button tab-active">Chat</button>
           <button id="tab-groceries" class="tab-button">Kitchen</button>
-          <button id="tab-settings" type="button" class="tab-button" style="display: none;">Settings</button>
         </div>
       </div>
 
@@ -2973,8 +4353,11 @@ app.get('/', (req, res) => {
         </div>
         <ul id="chat-list"></ul>
         <div id="sidebar-footer">
-          <span>Logged in as: <strong id="speaker-name"></strong></span>
-          <button id="logout">Logout</button>
+          <div>Logged in as: <strong id="speaker-name"></strong></div>
+          <div id="sidebar-footer-actions">
+            <button id="sidebar-household" type="button" style="display: none;">Household</button>
+            <button id="logout">Logout</button>
+          </div>
         </div>
       </aside>
 
@@ -3045,12 +4428,125 @@ app.get('/', (req, res) => {
         <button id="chat-new-message" type="button">New message</button>
 
         <div id="grocery-panel" class="panel" style="display:none;">
-          <div id="grocery-subtabs" style="display:flex;gap:8px;margin-bottom:14px;">
-            <button id="grocery-subtab-list" type="button" class="settings-subtab-btn settings-subtab-active">Grocery List</button>
-            <button id="grocery-subtab-pantry" type="button" class="settings-subtab-btn">Pantry</button>
-            <button id="grocery-subtab-cookbook" type="button" class="settings-subtab-btn">Cookbook</button>
+          <div class="kitchen-shell">
+            <div class="kitchen-workspace-header">
+              <div class="kitchen-workspace-copy kitchen-workspace-copy--desktop">
+                <div class="kitchen-workspace-kicker">Kitchen workspace</div>
+                <h2 class="kitchen-workspace-title">Your recipes first, with groceries and pantry close by.</h2>
+                <p class="kitchen-workspace-note">Start in Cookbook to browse, edit, and import recipes. Jump over to Groceries when you’re shopping, and use Pantry as the lighter utility for what you already have on hand.</p>
+              </div>
+              <div class="kitchen-workspace-copy kitchen-workspace-copy--mobile">
+                <div class="kitchen-workspace-kicker">Kitchen</div>
+              </div>
+              <div id="grocery-subtabs" class="kitchen-section-switcher">
+                <button id="grocery-subtab-cookbook" type="button" class="settings-subtab-btn kitchen-section-btn settings-subtab-active">Cookbook</button>
+                <button id="grocery-subtab-list" type="button" class="settings-subtab-btn kitchen-section-btn">Groceries</button>
+                <button id="grocery-subtab-pantry" type="button" class="settings-subtab-btn kitchen-section-btn kitchen-section-btn--secondary">Pantry</button>
+              </div>
+              <details class="kitchen-workspace-mobile-about">
+                <summary class="kitchen-mobile-about-summary">About Kitchen</summary>
+                <p class="kitchen-mobile-inline-copy">Start in Cookbook to browse, edit, and import recipes. Jump over to Groceries when you’re shopping, and use Pantry as the lighter utility for what you already have on hand.</p>
+              </details>
+            </div>
+          <div id="grocery-subview-cookbook" class="grocery-subview kitchen-section-panel">
+            <div class="kitchen-section-header">
+              <div class="kitchen-section-kicker">Cookbook</div>
+              <div class="kitchen-section-title-row">
+                <h3 class="kitchen-section-title">Recipe library</h3>
+                <div class="cookbook-hero-actions">
+                  <a href="/recipe-importer" class="cookbook-hero-link">
+                    Import Recipe
+                  </a>
+                  <span class="cookbook-hero-hint">Bring in a URL, cookbook photo, or hand-enter a recipe.</span>
+                </div>
+              </div>
+            </div>
+            <div id="cookbook-workspace" style="display:flex;flex-direction:column;gap:14px;">
+              <div id="cookbook-toolbar" class="cookbook-toolbar">
+                <label for="cookbook-category-filter" class="cookbook-filter-field">
+                  <span>Category</span>
+                  <select id="cookbook-category-filter">
+                    <option value="">All categories</option>
+                    <option value="uncategorized">Uncategorized</option>
+                  </select>
+                </label>
+                <label for="cookbook-tag-filter" class="cookbook-filter-field">
+                  <span>Tag</span>
+                  <select id="cookbook-tag-filter">
+                    <option value="">All tags</option>
+                  </select>
+                </label>
+                <label for="cookbook-search-filter" class="cookbook-filter-field cookbook-filter-field--search">
+                  <span>Search</span>
+                  <input id="cookbook-search-filter" type="search" placeholder="Search titles, tags, ingredients, notes…" />
+                </label>
+              </div>
+              <div id="cookbook-results-area" class="cookbook-results-area">
+                <div id="cookbook-empty" class="cookbook-empty-state">
+                  Your cookbook is empty right now. Try asking KitchenBot to “save that recipe” or “add this meal idea to our cookbook.”
+                </div>
+                <div id="cookbook-list" style="display:grid;gap:12px;"></div>
+                <div id="cookbook-detail-view" style="display:none;background:rgba(255,255,255,0.9);border:1px solid var(--border-subtle);border-radius:18px;padding:18px;gap:14px;flex-direction:column;">
+                  <div class="cookbook-detail-header">
+                    <div class="cookbook-detail-meta-block">
+                      <button id="cookbook-detail-back" class="cookbook-detail-button" type="button" style="align-self:flex-start;">Back to cookbook</button>
+                      <div id="cookbook-detail-meta" style="font-size:13px;color:var(--text-soft);"></div>
+                      <div id="cookbook-detail-source" class="cookbook-detail-source"></div>
+                    </div>
+                    <div class="cookbook-detail-header-actions">
+                      <div class="cookbook-detail-primary-actions">
+                        <button id="cookbook-detail-edit" class="cookbook-detail-button" type="button">Edit recipe</button>
+                        <button id="cookbook-detail-cancel" class="cookbook-detail-button" type="button" style="display:none;">Cancel</button>
+                        <button id="cookbook-detail-save" class="cookbook-detail-button cookbook-detail-button--primary" type="button" style="display:none;">Save changes</button>
+                      </div>
+                      <div id="cookbook-detail-actions" class="cookbook-detail-actions"></div>
+                    </div>
+                  </div>
+                  <div style="display:grid;gap:14px;">
+                    <label style="display:grid;gap:6px;">
+                      <span style="font-weight:700;">Title</span>
+                      <input id="cookbook-detail-title" type="text" />
+                    </label>
+                    <label style="display:grid;gap:6px;">
+                      <span style="font-weight:700;">Category</span>
+                      <select id="cookbook-detail-category">
+                        <option value="">Uncategorized</option>
+                      </select>
+                    </label>
+                    <label style="display:grid;gap:6px;">
+                      <span style="font-weight:700;">Summary</span>
+                      <textarea id="cookbook-detail-summary" rows="6" style="min-height:140px;resize:vertical;"></textarea>
+                    </label>
+                    <label style="display:grid;gap:6px;">
+                      <span style="font-weight:700;">Ingredients</span>
+                      <textarea id="cookbook-detail-ingredients" rows="18" style="min-height:360px;resize:vertical;"></textarea>
+                    </label>
+                    <label style="display:grid;gap:6px;">
+                      <span style="font-weight:700;">Instructions</span>
+                      <textarea id="cookbook-detail-instructions" rows="18" style="min-height:360px;resize:vertical;"></textarea>
+                    </label>
+                    <label style="display:grid;gap:6px;">
+                      <span style="font-weight:700;">Notes</span>
+                      <textarea id="cookbook-detail-notes" rows="7" style="min-height:170px;resize:vertical;"></textarea>
+                    </label>
+                    <label style="display:grid;gap:6px;">
+                      <span style="font-weight:700;">Tags</span>
+                      <input id="cookbook-detail-tags" type="text" placeholder="comma-separated tags" />
+                    </label>
+                    <div id="cookbook-detail-message" style="font-size:13px;color:var(--text-soft);"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-          <div id="grocery-subview-list" class="grocery-subview">
+          <div id="grocery-subview-list" class="grocery-subview kitchen-section-panel" style="display:none;">
+            <div class="kitchen-section-header">
+              <div class="kitchen-section-kicker">Groceries</div>
+              <div class="kitchen-section-title-row">
+                <h3 class="kitchen-section-title">Shopping list</h3>
+              </div>
+              <p class="kitchen-section-copy">Use this for the active shopping run. Keep the current list tight, move pantry-worthy items out when they belong there, and treat this as the operational side of Kitchen.</p>
+            </div>
             <div id="grocery-manual-add">
               <label for="grocery-add-name" style="font-size:13px;color:var(--text-soft);">Add item</label>
               <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;">
@@ -3100,7 +4596,14 @@ app.get('/', (req, res) => {
               <button id="grocery-clear">Clear list</button>
             </div>
           </div>
-          <div id="grocery-subview-pantry" class="grocery-subview" style="display:none;">
+          <div id="grocery-subview-pantry" class="grocery-subview kitchen-section-panel kitchen-section-panel--pantry" style="display:none;">
+            <div class="kitchen-section-header">
+              <div class="kitchen-section-kicker">Pantry</div>
+              <div class="kitchen-section-title-row">
+                <h3 class="kitchen-section-title">Inventory utility</h3>
+              </div>
+              <p class="kitchen-section-copy">Track what you already have and move stable staples out of Groceries once they’re home. Pantry stays intentionally lighter than Cookbook and Groceries.</p>
+            </div>
             <div id="pantry-manual-add">
               <label for="pantry-add-name" style="font-size:13px;color:var(--text-soft);">Add pantry item</label>
               <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;">
@@ -3151,82 +4654,6 @@ app.get('/', (req, res) => {
               </div>
             </div>
           </div>
-          <div id="grocery-subview-cookbook" class="grocery-subview" style="display:none;">
-            <div style="display:flex;flex-direction:column;gap:12px;">
-              <div style="font-size:14px;color:var(--text-soft);">
-                Save recipes and meal ideas from chat, then reuse them for planning and grocery lists.
-              </div>
-              <div id="cookbook-toolbar" class="cookbook-toolbar">
-                <label for="cookbook-category-filter" class="cookbook-filter-field">
-                  <span>Category</span>
-                  <select id="cookbook-category-filter">
-                    <option value="">All categories</option>
-                    <option value="uncategorized">Uncategorized</option>
-                  </select>
-                </label>
-                <label for="cookbook-tag-filter" class="cookbook-filter-field">
-                  <span>Tag</span>
-                  <select id="cookbook-tag-filter">
-                    <option value="">All tags</option>
-                  </select>
-                </label>
-                <label for="cookbook-search-filter" class="cookbook-filter-field cookbook-filter-field--search">
-                  <span>Search</span>
-                  <input id="cookbook-search-filter" type="search" placeholder="Search titles, tags, ingredients, notes…" />
-                </label>
-              </div>
-              <div id="cookbook-empty" style="display:none;padding:16px;border:1px dashed var(--border-subtle);border-radius:14px;background:rgba(255,255,255,0.7);color:var(--text-soft);">
-                Your cookbook is empty right now. Try asking KitchenBot to “save that recipe” or “add this meal idea to our cookbook.”
-              </div>
-              <div id="cookbook-list" style="display:grid;gap:12px;"></div>
-              <div id="cookbook-detail-view" style="display:none;background:rgba(255,255,255,0.9);border:1px solid var(--border-subtle);border-radius:18px;padding:18px;gap:14px;flex-direction:column;">
-                <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
-                  <div style="display:flex;flex-direction:column;gap:4px;">
-                    <button id="cookbook-detail-back" type="button" style="align-self:flex-start;">Back to cookbook</button>
-                    <div id="cookbook-detail-meta" style="font-size:13px;color:var(--text-soft);"></div>
-                  </div>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                    <button id="cookbook-detail-edit" type="button">Edit recipe</button>
-                    <button id="cookbook-detail-cancel" type="button" style="display:none;">Cancel</button>
-                    <button id="cookbook-detail-save" type="button" style="display:none;">Save changes</button>
-                  </div>
-                </div>
-                <div style="display:grid;gap:14px;">
-                  <label style="display:grid;gap:6px;">
-                    <span style="font-weight:700;">Title</span>
-                    <input id="cookbook-detail-title" type="text" />
-                  </label>
-                  <label style="display:grid;gap:6px;">
-                    <span style="font-weight:700;">Category</span>
-                    <select id="cookbook-detail-category">
-                      <option value="">Uncategorized</option>
-                    </select>
-                  </label>
-                  <label style="display:grid;gap:6px;">
-                    <span style="font-weight:700;">Summary</span>
-                    <textarea id="cookbook-detail-summary" rows="6" style="min-height:140px;resize:vertical;"></textarea>
-                  </label>
-                  <label style="display:grid;gap:6px;">
-                    <span style="font-weight:700;">Ingredients</span>
-                    <textarea id="cookbook-detail-ingredients" rows="18" style="min-height:360px;resize:vertical;"></textarea>
-                  </label>
-                  <label style="display:grid;gap:6px;">
-                    <span style="font-weight:700;">Instructions</span>
-                    <textarea id="cookbook-detail-instructions" rows="18" style="min-height:360px;resize:vertical;"></textarea>
-                  </label>
-                  <label style="display:grid;gap:6px;">
-                    <span style="font-weight:700;">Notes</span>
-                    <textarea id="cookbook-detail-notes" rows="7" style="min-height:170px;resize:vertical;"></textarea>
-                  </label>
-                  <label style="display:grid;gap:6px;">
-                    <span style="font-weight:700;">Tags</span>
-                    <input id="cookbook-detail-tags" type="text" placeholder="comma-separated tags" />
-                  </label>
-                  <div id="cookbook-detail-source" style="font-size:13px;color:var(--text-soft);"></div>
-                  <div id="cookbook-detail-message" style="font-size:13px;color:var(--text-soft);"></div>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -3861,6 +5288,7 @@ app.patch(
               .split(',')
               .map((tag) => tag.trim())
               .filter(Boolean),
+        sourceBookTitle: existing.sourceBookTitle,
         sourceTitle: existing.sourceTitle,
         sourceUrl: existing.sourceUrl,
         sourceKind: existing.sourceKind,
@@ -3907,6 +5335,181 @@ app.delete(
     } catch (e) {
       console.error(e);
       return res.status(500).json({ error: 'Failed to delete cookbook entry' });
+    }
+  }
+);
+
+app.get('/recipe-importer', requireHousehold, requireAuth, async (req, res) => {
+  try {
+    const knownCookbookSources = await listCookbookSourceBookTitles(req.householdId);
+    res.send(renderRecipeImporterPage({ knownCookbookSources }));
+  } catch (error) {
+    console.error(error);
+    res.send(renderRecipeImporterPage({ knownCookbookSources: [] }));
+  }
+});
+
+app.post(
+  '/recipe-importer/drafts',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  async (req, res) => {
+    try {
+      const draft = await createManualRecipeImportDraft({
+        householdId: req.householdId,
+        userId: req.userId,
+        recipe: req.body?.recipe || {},
+        provenance: req.body?.provenance || {},
+      });
+      return res.json({ ok: true, draft });
+    } catch (error) {
+      return res.status(500).json({ error: safeTrim(error?.message) || 'Could not create a new recipe draft right now.' });
+    }
+  }
+);
+
+app.post(
+  '/recipe-importer/import-url',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  async (req, res) => {
+    try {
+      const url = safeTrim(req.body?.url);
+      if (!url) return res.status(400).json({ error: 'Paste a recipe URL first.' });
+      let anthropic = null;
+      try {
+        anthropic = (await getAnthropicClient(req.householdId)).client;
+      } catch {
+        anthropic = null;
+      }
+      const draft = await importRecipeFromUrl({
+        url,
+        householdId: req.householdId,
+        userId: req.userId,
+        anthropic,
+      });
+      return res.json({ ok: true, draft });
+    } catch (error) {
+      const message = safeTrim(error?.message);
+      if (message === 'invalid_url') return res.status(400).json({ error: 'That does not look like a valid URL.' });
+      if (message === 'riveter_unconfigured') {
+        return res.status(503).json({ error: 'Recipe URL import is not configured yet. Add RIVETER_API_KEY to .env first.' });
+      }
+      return res.status(500).json({ error: message || 'Could not import that URL right now.' });
+    }
+  }
+);
+
+app.post(
+  '/recipe-importer/import-images',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  recipeImporterUpload.array('images', 8),
+  async (req, res) => {
+    try {
+      const files = Array.isArray(req.files) ? req.files : [];
+      if (files.length === 0) return res.status(400).json({ error: 'Upload at least one image first.' });
+      let anthropic = null;
+      try {
+        anthropic = (await getAnthropicClient(req.householdId)).client;
+      } catch {
+        anthropic = null;
+      }
+      const draft = await importRecipeFromImages({
+        files,
+        householdId: req.householdId,
+        userId: req.userId,
+        anthropic,
+      });
+      return res.json({ ok: true, draft });
+    } catch (error) {
+      const message = safeTrim(error?.message);
+      if (message === 'no_images') return res.status(400).json({ error: 'Upload at least one image first.' });
+      if (message === 'google_document_ai_unconfigured') {
+        return res.status(503).json({
+          error:
+            'Image import is not configured yet. Add GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_DOCUMENT_AI_PROJECT_ID, and GOOGLE_DOCUMENT_AI_PROCESSOR_ID to .env first.',
+        });
+      }
+      if (message === 'google_document_ai_auth_failed') {
+        return res.status(503).json({
+          error:
+            'Google Document AI could not authenticate. Double-check GOOGLE_APPLICATION_CREDENTIALS and make sure the JSON key file still exists.',
+        });
+      }
+      return res.status(500).json({ error: message || 'Could not import those images right now.' });
+    }
+  }
+);
+
+app.get('/recipe-importer/drafts/:id', requireHousehold, requireAuth, async (req, res) => {
+  try {
+    const draft = await getRecipeImportDraft({
+      draftId: req.params.id,
+      householdId: req.householdId,
+      userId: req.userId,
+    });
+    if (!draft) return res.status(404).json({ error: 'Import draft not found.' });
+    return res.json({ ok: true, draft });
+  } catch (error) {
+    return res.status(500).json({ error: safeTrim(error?.message) || 'Could not load that draft right now.' });
+  }
+});
+
+app.put(
+  '/recipe-importer/drafts/:id',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  async (req, res) => {
+    try {
+      const draft = await updateRecipeImportDraft({
+        draftId: req.params.id,
+        householdId: req.householdId,
+        userId: req.userId,
+        patch: req.body || {},
+      });
+      if (!draft) return res.status(404).json({ error: 'Import draft not found.' });
+      return res.json({ ok: true, draft });
+    } catch (error) {
+      return res.status(500).json({ error: safeTrim(error?.message) || 'Could not update that draft right now.' });
+    }
+  }
+);
+
+app.post(
+  '/recipe-importer/drafts/:id/save',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  async (req, res) => {
+    try {
+      const item = await saveRecipeImportDraftToCookbook({
+        draftId: req.params.id,
+        householdId: req.householdId,
+        userId: req.userId,
+        overwriteExisting: !!req.body?.overwriteExisting,
+      });
+      return res.json({ ok: true, item });
+    } catch (error) {
+      const message = safeTrim(error?.message);
+      if (error?.code === 'duplicate_recipe_title') {
+        return res.status(409).json({
+          error: message || 'That recipe already exists in your Cookbook.',
+          code: 'duplicate_recipe_title',
+          conflict: error.conflict || null,
+        });
+      }
+      if (message === 'draft_not_found') return res.status(404).json({ error: 'Import draft not found.' });
+      if (/before saving/i.test(message) || message === 'invalid_recipe_record') {
+        return res.status(400).json({
+          error: message === 'invalid_recipe_record' ? 'The draft still needs a little repair before saving.' : message,
+        });
+      }
+      return res.status(500).json({ error: message || 'Could not save that recipe right now.' });
     }
   }
 );

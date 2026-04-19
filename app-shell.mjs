@@ -7,9 +7,9 @@ function safeJsonForHtml(value) {
     .replace(/\u2029/g, '\\u2029');
 }
 
-export function renderClientBootTags(bootData = {}) {
+export function renderClientBootTags(bootData = {}, { scriptSrc = '/app.js' } = {}) {
   return [
     `<script id="kb-boot-data" type="application/json">${safeJsonForHtml(bootData)}</script>`,
-    '<script src="/app.js"></script>',
+    `<script src="${String(scriptSrc || '/app.js')}"></script>`,
   ].join('\n      ');
 }

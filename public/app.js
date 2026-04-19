@@ -36,7 +36,6 @@
         const settingsPanel = document.getElementById('settings-panel');
         const tabChat = document.getElementById('tab-chat');
         const tabGroceries = document.getElementById('tab-groceries');
-        const tabSettings = document.getElementById('tab-settings');
         const inputArea = document.getElementById('input-area');
         const groceryRefreshButton = document.getElementById('grocery-refresh');
         const groceryClearButton = document.getElementById('grocery-clear');
@@ -46,6 +45,8 @@
         const grocerySubviewList = document.getElementById('grocery-subview-list');
         const grocerySubviewPantry = document.getElementById('grocery-subview-pantry');
         const grocerySubviewCookbook = document.getElementById('grocery-subview-cookbook');
+        const cookbookWorkspace = document.getElementById('cookbook-workspace');
+        const cookbookResultsArea = document.getElementById('cookbook-results-area');
         const cookbookList = document.getElementById('cookbook-list');
         const cookbookEmpty = document.getElementById('cookbook-empty');
         const cookbookToolbar = document.getElementById('cookbook-toolbar');
@@ -67,6 +68,7 @@
         const cookbookDetailTags = document.getElementById('cookbook-detail-tags');
         const cookbookDetailSource = document.getElementById('cookbook-detail-source');
         const cookbookDetailMessage = document.getElementById('cookbook-detail-message');
+        const cookbookDetailActions = document.getElementById('cookbook-detail-actions');
         const groceryAddName = document.getElementById('grocery-add-name');
         const groceryAddAmount = document.getElementById('grocery-add-amount');
         const groceryAddSection = document.getElementById('grocery-add-section');
@@ -78,6 +80,7 @@
         const promptInput = document.getElementById('prompt');
         const sendButton = document.getElementById('send');
         const logoutButton = document.getElementById('logout');
+        const sidebarHouseholdButton = document.getElementById('sidebar-household');
         const typingIndicator = document.getElementById('typing-indicator');
         const chatNewMessageButton = document.getElementById('chat-new-message');
         let cachedAdminHouseholds = null;
@@ -107,7 +110,8 @@
         let currentUserId = null;
         let currentAssistantName = 'KitchenBot';
         let isCurrentUserOwner = false;
-        let currentGroceriesSubview = 'list';
+        const KITCHEN_SECTION_STORAGE_KEY = 'kb_kitchen_active_section';
+        let currentGroceriesSubview = readKitchenSectionPreference();
         let cookbookCache = [];
         let currentCookbookCategoryFilter = '';
         let currentCookbookTagFilter = '';
@@ -148,6 +152,22 @@
         function normalizeCookbookDisplayUrl(value) {
           const text = safeCookbookTrim(value).slice(0, 1000);
           return /^https?:\/\//i.test(text) ? text : '';
+        }
+
+        function readKitchenSectionPreference() {
+          try {
+            const saved = sessionStorage.getItem(KITCHEN_SECTION_STORAGE_KEY);
+            return saved === 'list' || saved === 'pantry' || saved === 'cookbook' ? saved : 'cookbook';
+          } catch (error) {
+            return 'cookbook';
+          }
+        }
+
+        function persistKitchenSectionPreference(value) {
+          const normalized = value === 'list' || value === 'pantry' || value === 'cookbook' ? value : 'cookbook';
+          try {
+            sessionStorage.setItem(KITCHEN_SECTION_STORAGE_KEY, normalized);
+          } catch (error) {}
         }
         function stripCookbookDisplayMarkdown(value) {
           return safeCookbookTrim(value)
@@ -195,11 +215,12 @@
         function getCookbookDisplaySource(entry) {
           const record = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {};
           const title = getCookbookDisplayTitle(record);
+          const sourceBookTitle = sanitizeCookbookDisplaySourceTitle(record.sourceBookTitle, { title });
           const sourceUrl = normalizeCookbookDisplayUrl(record.sourceUrl);
           const sourceTitle = sanitizeCookbookDisplaySourceTitle(record.sourceTitle, { title });
-          if (!sourceTitle && !sourceUrl) return null;
+          if (!sourceBookTitle && !sourceTitle && !sourceUrl) return null;
           return {
-            label: sourceTitle || sourceUrl,
+            label: sourceUrl ? (sourceTitle || sourceUrl) : (sourceBookTitle || sourceTitle || sourceUrl),
             url: sourceUrl || '',
           };
         }
@@ -210,11 +231,12 @@
           const structuredRecipe = ingredients.length >= 3 && instructions.length >= 2;
           if (!structuredRecipe) return 'Meal idea';
           const hasExternalSource =
+            !!safeCookbookTrim(record.sourceBookTitle) ||
             !!normalizeCookbookDisplayUrl(record.sourceUrl) ||
             record.sourceKind === 'web_fetch' ||
             record.sourceKind === 'server_fetch' ||
             (!!safeCookbookTrim(record.sourceTitle) && record.recipeType === 'web_recipe');
-          if (hasExternalSource) return 'Source recipe';
+          if (hasExternalSource) return 'Sourced recipe';
           if (safeCookbookTrim(record.sourceKind).toLowerCase() === 'kb_action') return 'KitchenBot generated';
           return 'Saved recipe';
         }
@@ -733,7 +755,7 @@
           appArea.style.display = 'none';
           headerEl.classList.add('hide-tabs');
           showLoginFormOnly();
-          if (tabSettings) tabSettings.style.display = 'none';
+          if (sidebarHouseholdButton) sidebarHouseholdButton.style.display = 'none';
           setActiveTab('chat');
         }
 
@@ -741,7 +763,6 @@
           clearEntityMemoryUiMessage();
           tabChat.classList.toggle('tab-active', tab === 'chat');
           tabGroceries.classList.toggle('tab-active', tab === 'groceries');
-          if (tabSettings) tabSettings.classList.toggle('tab-active', tab === 'settings');
           chat.style.display = tab === 'chat' ? 'flex' : 'none';
           groceryPanel.style.display = tab === 'groceries' ? 'flex' : 'none';
           if (settingsPanel) settingsPanel.style.display = tab === 'settings' ? 'flex' : 'none';
@@ -750,10 +771,19 @@
           if (tab === 'settings') loadSettingsPanel();
         }
 
-        function closeSidebarAndGoToChatTab() {
-          setActiveTab('chat');
+        function closeSidebar() {
           sidebar.classList.remove('open');
           sidebarBackdrop.classList.remove('open');
+        }
+
+        function closeSidebarAndGoToChatTab() {
+          setActiveTab('chat');
+          closeSidebar();
+        }
+
+        function closeSidebarAndGoToSettingsTab() {
+          setActiveTab('settings');
+          closeSidebar();
         }
 
         function syncEntityMemoriesWrapVisibility(runtimeEnabled) {
@@ -1997,12 +2027,12 @@
         }
 
         async function refreshOwnerSettingsTab() {
-          if (!tabSettings) return;
+          if (!sidebarHouseholdButton) return;
           try {
             const r = await fetch('/settings/household');
-            tabSettings.style.display = r.ok ? '' : 'none';
+            sidebarHouseholdButton.style.display = r.ok ? '' : 'none';
           } catch (e) {
-            tabSettings.style.display = 'none';
+            sidebarHouseholdButton.style.display = 'none';
           }
         }
 
@@ -2609,15 +2639,10 @@
           const source = getCookbookSourceDisplay(entry);
           if (!source) return;
           const row = document.createElement('div');
-          row.style.display = 'flex';
-          row.style.flexWrap = 'wrap';
-          row.style.alignItems = 'baseline';
-          row.style.gap = '6px';
-          row.style.fontSize = '13px';
-          row.style.color = 'var(--text-soft)';
+          row.className = 'cookbook-detail-source-row';
 
           const label = document.createElement('span');
-          label.style.fontWeight = '600';
+          label.className = 'cookbook-detail-source-label';
           label.textContent = 'Source:';
           row.appendChild(label);
 
@@ -2626,8 +2651,7 @@
             link.href = source.url;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
-            link.style.color = 'var(--accent-strong)';
-            link.style.textDecoration = 'underline';
+            link.className = 'cookbook-detail-source-link';
             link.textContent = source.label;
             row.appendChild(link);
           } else {
@@ -2639,8 +2663,280 @@
           container.appendChild(row);
         }
 
+        function shouldShowCookbookSourceInCard(entry) {
+          const source = getCookbookSourceDisplay(entry);
+          if (!source || !source.label) return false;
+          if (source.url) return true;
+          const normalizedLabel = normalizeCookbookDisplayTitleKey(source.label);
+          if (!normalizedLabel || normalizedLabel === 'kitchenbot original') return false;
+          return normalizedLabel !== normalizeCookbookDisplayTitleKey(getCookbookDisplayTitle(entry));
+        }
+
+        function buildCookbookCardSource(entry) {
+          const source = getCookbookSourceDisplay(entry);
+          if (!source || !shouldShowCookbookSourceInCard(entry)) return null;
+          const row = document.createElement('div');
+          row.className = 'cookbook-card-source';
+          if (source.url) {
+            const link = document.createElement('a');
+            link.href = source.url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = source.label;
+            row.appendChild(link);
+          } else {
+            row.textContent = source.label;
+          }
+          return row;
+        }
+
+        let cookbookTagMeasureEl = null;
+
+        function ensureCookbookTagMeasureEl() {
+          if (cookbookTagMeasureEl) return cookbookTagMeasureEl;
+          const el = document.createElement('span');
+          el.style.position = 'absolute';
+          el.style.visibility = 'hidden';
+          el.style.pointerEvents = 'none';
+          el.style.whiteSpace = 'nowrap';
+          el.style.left = '-9999px';
+          el.style.top = '-9999px';
+          document.body.appendChild(el);
+          cookbookTagMeasureEl = el;
+          return el;
+        }
+
+        function measureCookbookTagChipWidth(text, { overflow = false } = {}) {
+          const el = ensureCookbookTagMeasureEl();
+          el.className = overflow ? 'cookbook-tag-chip cookbook-tag-chip--overflow' : 'cookbook-tag-chip';
+          el.textContent = text;
+          return Math.ceil(el.getBoundingClientRect().width);
+        }
+
+        function fitCookbookCardTags(tags, maxWidth) {
+          const cleaned = Array.isArray(tags) ? tags.filter(Boolean) : [];
+          if (!cleaned.length) return { visibleTags: [], overflowCount: 0 };
+          const gap = 6;
+          const available = Math.max(120, Math.floor(Number(maxWidth) || 0));
+          let used = 0;
+          const visibleTags = [];
+
+          for (let index = 0; index < cleaned.length; index += 1) {
+            const tag = cleaned[index];
+            const chipWidth = measureCookbookTagChipWidth(tag);
+            const nextUsed = used + (visibleTags.length ? gap : 0) + chipWidth;
+            const remainingAfter = cleaned.length - (index + 1);
+            if (remainingAfter > 0) {
+              const overflowWidth = measureCookbookTagChipWidth('+' + String(remainingAfter), { overflow: true });
+              if (nextUsed + gap + overflowWidth <= available) {
+                visibleTags.push(tag);
+                used = nextUsed;
+                continue;
+              }
+              break;
+            }
+            if (nextUsed <= available || visibleTags.length === 0) {
+              visibleTags.push(tag);
+            }
+            break;
+          }
+
+          return {
+            visibleTags,
+            overflowCount: Math.max(0, cleaned.length - visibleTags.length),
+          };
+        }
+
+        function buildCookbookCardTags(entry, { maxWidth = 240 } = {}) {
+          const tags = Array.isArray(entry.tags) ? entry.tags.filter(Boolean) : [];
+          if (!tags.length) return null;
+          const { visibleTags, overflowCount } = fitCookbookCardTags(tags, maxWidth);
+          const wrap = document.createElement('div');
+          wrap.className = 'cookbook-card-tags';
+          for (const tag of visibleTags) {
+            const chip = document.createElement('span');
+            chip.className = 'cookbook-tag-chip';
+            chip.textContent = tag;
+            wrap.appendChild(chip);
+          }
+          if (overflowCount > 0) {
+            const overflow = document.createElement('span');
+            overflow.className = 'cookbook-tag-chip cookbook-tag-chip--overflow';
+            overflow.textContent = '+' + String(overflowCount);
+            wrap.appendChild(overflow);
+          }
+          return wrap;
+        }
+
+        function getCookbookCardSummary(entry) {
+          return safeCookbookTrim(entry.summary || '');
+        }
+
+        function getCookbookCardMetaText(entry) {
+          const meta = [];
+          meta.push(formatCookbookCategoryLabel(entry.category));
+          meta.push(getCookbookProvenanceLabel(entry));
+          if (entry.updatedAt) meta.push('updated ' + new Date(entry.updatedAt).toLocaleDateString());
+          return meta.join(' • ');
+        }
+
+        async function deleteCookbookEntry(entry, { closeDetailOnSuccess = false } = {}) {
+          if (!entry || !Number.isFinite(Number(entry.id))) return false;
+          if (!confirm('Delete "' + entry.title + '" from the cookbook?')) return false;
+          try {
+            const response = await fetch('/cookbook/' + encodeURIComponent(entry.id), {
+              method: 'DELETE',
+            });
+            if (!response.ok) return false;
+            if (closeDetailOnSuccess && Number(currentCookbookEntryId) === Number(entry.id)) {
+              closeCookbookDetail({ pushHash: true, force: true });
+            }
+            await loadCookbook();
+            return true;
+          } catch (e) {
+            return false;
+          }
+        }
+
+        function buildCookbookOverflowMenu(entry, { includeEditInline = false } = {}) {
+          const moreWrap = document.createElement('details');
+          moreWrap.className = 'cookbook-card-more';
+
+          const summary = document.createElement('summary');
+          summary.textContent = 'More';
+          summary.className = 'cookbook-card-more-toggle';
+          moreWrap.appendChild(summary);
+
+          const menu = document.createElement('div');
+          menu.className = 'cookbook-card-more-menu';
+
+          if (!includeEditInline) {
+            const editBtn = document.createElement('button');
+            editBtn.type = 'button';
+            editBtn.className = 'cookbook-card-menu-btn';
+            editBtn.textContent = 'Edit';
+            editBtn.disabled = godModeReadOnly;
+            editBtn.addEventListener('click', () => {
+              moreWrap.open = false;
+              openCookbookDetail(entry.id, { edit: true, pushHash: true });
+            });
+            menu.appendChild(editBtn);
+          }
+
+          const planBtn = document.createElement('button');
+          planBtn.type = 'button';
+          planBtn.className = 'cookbook-card-menu-btn';
+          planBtn.textContent = 'Use for planning';
+          planBtn.addEventListener('click', () => {
+            moreWrap.open = false;
+            seedCookbookPrompt('Plan dinners from our cookbook, and make sure to include "' + entry.title + '".');
+          });
+          menu.appendChild(planBtn);
+
+          const groceryBtn = document.createElement('button');
+          groceryBtn.type = 'button';
+          groceryBtn.className = 'cookbook-card-menu-btn';
+          groceryBtn.textContent = 'Generate grocery list';
+          groceryBtn.addEventListener('click', () => {
+            moreWrap.open = false;
+            seedCookbookPrompt('Make me a grocery list from our cookbook recipe "' + entry.title + '".');
+          });
+          menu.appendChild(groceryBtn);
+
+          const deleteBtn = document.createElement('button');
+          deleteBtn.type = 'button';
+          deleteBtn.className = 'cookbook-card-menu-btn cookbook-card-menu-btn--danger';
+          deleteBtn.textContent = 'Delete';
+          deleteBtn.disabled = godModeReadOnly;
+          deleteBtn.addEventListener('click', async () => {
+            moreWrap.open = false;
+            await deleteCookbookEntry(entry);
+          });
+          menu.appendChild(deleteBtn);
+
+          moreWrap.appendChild(menu);
+          return moreWrap;
+        }
+
+        function buildCookbookCardHeading(entry, { compact = false } = {}) {
+          const headingWrap = document.createElement('div');
+          headingWrap.className = 'cookbook-card-heading';
+
+          const title = document.createElement('div');
+          title.className = 'cookbook-card-title';
+          title.textContent = getCookbookDisplayTitle(entry) || 'Untitled recipe';
+          headingWrap.appendChild(title);
+
+          const metaText = getCookbookCardMetaText(entry);
+          if (metaText) {
+            const metaEl = document.createElement('div');
+            metaEl.className = 'cookbook-card-meta';
+            metaEl.textContent = metaText;
+            headingWrap.appendChild(metaEl);
+          }
+
+          const sourceRow = compact ? null : buildCookbookCardSource(entry);
+          if (sourceRow) headingWrap.appendChild(sourceRow);
+          return headingWrap;
+        }
+
+        function renderCookbookDetailActions(entry) {
+          if (!cookbookDetailActions) return;
+          cookbookDetailActions.innerHTML = '';
+          if (!entry) return;
+
+          const disablePromptActions = cookbookDetailEditing;
+
+          const planBtn = document.createElement('button');
+          planBtn.type = 'button';
+          planBtn.className = 'cookbook-detail-button cookbook-card-action-secondary';
+          planBtn.textContent = 'Use for planning';
+          planBtn.disabled = disablePromptActions;
+          planBtn.addEventListener('click', () => {
+            seedCookbookPrompt('Plan dinners from our cookbook, and make sure to include "' + entry.title + '".');
+          });
+          cookbookDetailActions.appendChild(planBtn);
+
+          const groceryBtn = document.createElement('button');
+          groceryBtn.type = 'button';
+          groceryBtn.className = 'cookbook-detail-button cookbook-card-action-secondary';
+          groceryBtn.textContent = 'Generate grocery list';
+          groceryBtn.disabled = disablePromptActions;
+          groceryBtn.addEventListener('click', () => {
+            seedCookbookPrompt('Make me a grocery list from our cookbook recipe "' + entry.title + '".');
+          });
+          cookbookDetailActions.appendChild(groceryBtn);
+
+          const deleteBtn = document.createElement('button');
+          deleteBtn.type = 'button';
+          deleteBtn.className = 'cookbook-detail-button cookbook-card-menu-btn cookbook-card-menu-btn--danger cookbook-detail-button--danger';
+          deleteBtn.textContent = 'Delete';
+          deleteBtn.disabled = godModeReadOnly || cookbookDetailEditing;
+          deleteBtn.addEventListener('click', async () => {
+            await deleteCookbookEntry(entry, { closeDetailOnSuccess: true });
+          });
+          cookbookDetailActions.appendChild(deleteBtn);
+        }
+
         function cookbookDetailHash(id) {
           return id ? '#cookbook/' + encodeURIComponent(String(id)) : '';
+        }
+
+        function useCookbookSplitLayout() {
+          return !!window.matchMedia && window.matchMedia('(min-width: 980px)').matches;
+        }
+
+        function syncCookbookWorkspaceLayout() {
+          if (!cookbookWorkspace) return;
+          const showSplit = useCookbookSplitLayout() && !!currentCookbookEntryId && !!cookbookDetailView && cookbookDetailView.style.display !== 'none';
+          cookbookWorkspace.classList.toggle('cookbook-layout-split', showSplit);
+          if (cookbookResultsArea) {
+            cookbookResultsArea.classList.toggle('cookbook-results-area--detail-open', showSplit);
+          }
+        }
+
+        function isCookbookHash() {
+          return /^#cookbook(?:\/\d+)?$/i.test(String(window.location.hash || ''));
         }
 
         function parseCookbookDetailHash() {
@@ -2701,6 +2997,7 @@
           if (cookbookDetailEdit) cookbookDetailEdit.style.display = cookbookDetailEditing ? 'none' : '';
           if (cookbookDetailCancel) cookbookDetailCancel.style.display = cookbookDetailEditing ? '' : 'none';
           if (cookbookDetailSave) cookbookDetailSave.style.display = cookbookDetailEditing ? '' : 'none';
+          renderCookbookDetailActions(cookbookDetailEntry);
         }
 
         function renderCookbookDetail(entry, { edit = false } = {}) {
@@ -2714,12 +3011,7 @@
           if (cookbookDetailInstructions) cookbookDetailInstructions.value = formatCookbookBullets(entry.instructions).join('\n');
           if (cookbookDetailNotes) cookbookDetailNotes.value = formatCookbookBullets(Array.isArray(entry.notes) ? entry.notes : entry.notes ? [entry.notes] : []).join('\n');
           if (cookbookDetailTags) cookbookDetailTags.value = Array.isArray(entry.tags) ? entry.tags.join(', ') : '';
-          if (cookbookDetailMeta) {
-            const bits = [formatCookbookCategoryLabel(entry.category)];
-            bits.push(getCookbookProvenanceLabel(entry));
-            if (entry.updatedAt) bits.push('updated ' + new Date(entry.updatedAt).toLocaleDateString());
-            cookbookDetailMeta.textContent = bits.join(' • ');
-          }
+          if (cookbookDetailMeta) cookbookDetailMeta.textContent = getCookbookCardMetaText(entry);
           if (cookbookDetailSource) {
             cookbookDetailSource.innerHTML = '';
             appendCookbookSourceRow(cookbookDetailSource, entry);
@@ -2727,10 +3019,18 @@
           cookbookDetailDraft = buildCookbookDetailDraft();
           setCookbookDetailMessage('');
           setCookbookDetailEditing(edit && !godModeReadOnly);
+          renderCookbookDetailActions(entry);
           if (cookbookDetailView) cookbookDetailView.style.display = 'flex';
-          if (cookbookList) cookbookList.style.display = 'none';
-          if (cookbookEmpty) cookbookEmpty.style.display = 'none';
-          if (cookbookToolbar) cookbookToolbar.style.display = 'none';
+          if (useCookbookSplitLayout()) {
+            if (cookbookList) cookbookList.style.display = 'grid';
+            if (cookbookToolbar) cookbookToolbar.style.display = '';
+          } else {
+            if (cookbookList) cookbookList.style.display = 'none';
+            if (cookbookEmpty) cookbookEmpty.style.display = 'none';
+            if (cookbookToolbar) cookbookToolbar.style.display = 'none';
+          }
+          syncCookbookWorkspaceLayout();
+          renderCookbook();
         }
 
         async function openCookbookDetail(id, { edit = false, pushHash = true } = {}) {
@@ -2758,9 +3058,11 @@
           cookbookDetailEntry = null;
           cookbookDetailDraft = null;
           cookbookDetailEditing = false;
+          renderCookbookDetailActions(null);
           if (cookbookDetailView) cookbookDetailView.style.display = 'none';
           if (cookbookList) cookbookList.style.display = 'grid';
           if (cookbookToolbar) cookbookToolbar.style.display = '';
+          syncCookbookWorkspaceLayout();
           renderCookbook();
           if (pushHash && window.location.hash) {
             history.replaceState(null, '', window.location.pathname + window.location.search);
@@ -2798,6 +3100,9 @@
         function renderCookbook() {
           if (!cookbookList || !cookbookEmpty) return;
           cookbookList.innerHTML = '';
+          cookbookList.style.gap = isMobile ? '0' : '12px';
+          const detailOpen = !!cookbookDetailView && cookbookDetailView.style.display !== 'none';
+          const splitLayout = useCookbookSplitLayout();
           const hasSearchQuery = tokenizeCookbookSearch(currentCookbookSearchFilter).length > 0;
           const entries = (Array.isArray(cookbookCache) ? cookbookCache : [])
             .map((entry, index) => ({
@@ -2826,215 +3131,80 @@
               return a.index - b.index;
             })
             .map(({ entry }) => entry);
-          if (cookbookDetailView && cookbookDetailView.style.display !== 'none') return;
-          cookbookEmpty.style.display = entries.length === 0 ? '' : 'none';
-          cookbookList.style.display = 'grid';
-          if (cookbookToolbar) cookbookToolbar.style.display = '';
+          cookbookEmpty.style.display = !detailOpen || splitLayout ? (entries.length === 0 ? '' : 'none') : 'none';
+          cookbookList.style.display = detailOpen && !splitLayout ? 'none' : 'grid';
+          if (cookbookToolbar) cookbookToolbar.style.display = detailOpen && !splitLayout ? 'none' : '';
           for (const entry of entries) {
             const card = document.createElement('div');
-            card.style.background = 'rgba(255,255,255,0.82)';
-            card.style.border = '1px solid var(--border-subtle)';
-            card.style.borderRadius = '16px';
-            card.style.padding = '14px 16px';
-            card.style.display = 'flex';
-            card.style.flexDirection = 'column';
-            card.style.gap = '10px';
-
-            const topRow = document.createElement('div');
-            topRow.style.display = 'flex';
-            topRow.style.justifyContent = 'space-between';
-            topRow.style.gap = '12px';
-            topRow.style.alignItems = 'flex-start';
-            topRow.style.flexWrap = 'wrap';
-
-            const headingWrap = document.createElement('div');
-            headingWrap.style.display = 'flex';
-            headingWrap.style.flexDirection = 'column';
-            headingWrap.style.gap = '4px';
-            headingWrap.style.minWidth = '180px';
-            headingWrap.style.flex = '1';
-
-            const title = document.createElement('div');
-            title.style.fontSize = '18px';
-            title.style.fontWeight = '700';
-            title.textContent = getCookbookDisplayTitle(entry) || 'Untitled recipe';
-            headingWrap.appendChild(title);
-
-            const meta = [];
-            meta.push(formatCookbookCategoryLabel(entry.category));
-            meta.push(getCookbookProvenanceLabel(entry));
-            if (entry.updatedAt) meta.push('updated ' + new Date(entry.updatedAt).toLocaleDateString());
-            if (meta.length) {
-              const metaEl = document.createElement('div');
-              metaEl.style.fontSize = '13px';
-              metaEl.style.color = 'var(--text-soft)';
-              metaEl.textContent = meta.join(' • ');
-              headingWrap.appendChild(metaEl);
+            card.className = 'cookbook-card' + (isMobile ? ' cookbook-card--mobile' : '');
+            if (currentCookbookEntryId && Number(entry.id) === Number(currentCookbookEntryId)) {
+              card.classList.add('cookbook-card--active');
             }
-
-            appendCookbookSourceRow(headingWrap, entry);
-
-            topRow.appendChild(headingWrap);
-
-            if (Array.isArray(entry.tags) && entry.tags.length > 0) {
-              const tagsWrap = document.createElement('div');
-              tagsWrap.style.display = 'flex';
-              tagsWrap.style.flexWrap = 'wrap';
-              tagsWrap.style.gap = '6px';
-              for (const tag of entry.tags.slice(0, 6)) {
-                const chip = document.createElement('span');
-                chip.style.padding = '4px 8px';
-                chip.style.borderRadius = '999px';
-                chip.style.background = 'var(--accent-soft)';
-                chip.style.color = 'var(--accent-strong)';
-                chip.style.fontSize = '12px';
-                chip.style.fontWeight = '600';
-                chip.textContent = tag;
-                tagsWrap.appendChild(chip);
-              }
-              topRow.appendChild(tagsWrap);
-            }
-
-            card.appendChild(topRow);
-
-            if (entry.summary) {
-              const summary = document.createElement('div');
-              summary.style.fontSize = '14px';
-              summary.style.lineHeight = '1.5';
-              summary.textContent = entry.summary;
-              card.appendChild(summary);
-            }
-
+            const summaryText = getCookbookCardSummary(entry);
             const actions = document.createElement('div');
-            actions.style.display = 'flex';
-            actions.style.flexWrap = 'wrap';
-            actions.style.gap = '8px';
-
-            const detailWrap = document.createElement('div');
-            detailWrap.style.display = 'none';
-            detailWrap.style.borderTop = '1px solid var(--border-subtle)';
-            detailWrap.style.paddingTop = '10px';
-            detailWrap.style.fontSize = '14px';
-            detailWrap.style.lineHeight = '1.5';
+            actions.className = 'cookbook-card-actions';
 
             const openBtn = document.createElement('button');
             openBtn.type = 'button';
             openBtn.textContent = 'Open';
+            openBtn.className = 'cookbook-card-action-primary';
             openBtn.addEventListener('click', () => {
               openCookbookDetail(entry.id, { edit: false, pushHash: true });
             });
             actions.appendChild(openBtn);
 
-            const editBtn = document.createElement('button');
-            editBtn.type = 'button';
-            editBtn.textContent = 'Edit';
-            editBtn.disabled = godModeReadOnly;
-            editBtn.addEventListener('click', () => {
-              openCookbookDetail(entry.id, { edit: true, pushHash: true });
-            });
-            actions.appendChild(editBtn);
+            if (!isMobile) {
+              const editBtn = document.createElement('button');
+              editBtn.type = 'button';
+              editBtn.textContent = 'Edit';
+              editBtn.className = 'cookbook-card-action-secondary';
+              editBtn.disabled = godModeReadOnly;
+              editBtn.addEventListener('click', () => {
+                openCookbookDetail(entry.id, { edit: true, pushHash: true });
+              });
+              actions.appendChild(editBtn);
+            }
 
-            const planBtn = document.createElement('button');
-            planBtn.type = 'button';
-            planBtn.textContent = 'Use for planning';
-            planBtn.addEventListener('click', () => {
-              seedCookbookPrompt('Plan dinners from our cookbook, and make sure to include "' + entry.title + '".');
-            });
-            actions.appendChild(planBtn);
+            const overflow = buildCookbookOverflowMenu(entry, { includeEditInline: !isMobile });
+            actions.appendChild(overflow);
 
-            const groceryBtn = document.createElement('button');
-            groceryBtn.type = 'button';
-            groceryBtn.textContent = 'Generate grocery list';
-            groceryBtn.addEventListener('click', () => {
-              seedCookbookPrompt('Make me a grocery list from our cookbook recipe "' + entry.title + '".');
-            });
-            actions.appendChild(groceryBtn);
+            if (isMobile) {
+              const rowBtn = document.createElement('button');
+              rowBtn.type = 'button';
+              rowBtn.className = 'cookbook-card-mobile-row';
+              rowBtn.appendChild(buildCookbookCardHeading(entry, { compact: true }));
 
-            const deleteBtn = document.createElement('button');
-            deleteBtn.type = 'button';
-            deleteBtn.textContent = 'Delete';
-            deleteBtn.disabled = godModeReadOnly;
-            deleteBtn.addEventListener('click', async () => {
-              if (!confirm('Delete "' + entry.title + '" from the cookbook?')) return;
-              try {
-                const response = await fetch('/cookbook/' + encodeURIComponent(entry.id), {
-                  method: 'DELETE',
-                });
-                if (!response.ok) return;
-                await loadCookbook();
-              } catch (e) {}
-            });
-            actions.appendChild(deleteBtn);
+              const chevron = document.createElement('span');
+              chevron.className = 'cookbook-card-mobile-chevron';
+              chevron.setAttribute('aria-hidden', 'true');
+              chevron.textContent = '›';
+              rowBtn.appendChild(chevron);
 
-            card.appendChild(actions);
-
-            const ingredientLines = formatCookbookBullets(entry.ingredients);
-            const instructionLines = formatCookbookBullets(entry.instructions);
-            const noteLines = formatCookbookBullets(Array.isArray(entry.notes) ? entry.notes : entry.notes ? [entry.notes] : []);
-            const hasDetails =
-              ingredientLines.length > 0 ||
-              instructionLines.length > 0 ||
-              noteLines.length > 0 ||
-              !!entry.sourceUrl;
-
-            if (hasDetails) {
-              if (ingredientLines.length > 0) {
-                const ingredientsHeading = document.createElement('div');
-                ingredientsHeading.style.fontWeight = '700';
-                ingredientsHeading.style.marginBottom = '4px';
-                ingredientsHeading.textContent = 'Ingredients';
-                detailWrap.appendChild(ingredientsHeading);
-                const ingredientsList = document.createElement('ul');
-                ingredientsList.style.margin = '0 0 10px 18px';
-                for (const line of ingredientLines.slice(0, 18)) {
-                  const li = document.createElement('li');
-                  li.textContent = line;
-                  ingredientsList.appendChild(li);
-                }
-                detailWrap.appendChild(ingredientsList);
-              }
-              if (instructionLines.length > 0) {
-                const instructionsHeading = document.createElement('div');
-                instructionsHeading.style.fontWeight = '700';
-                instructionsHeading.style.marginBottom = '4px';
-                instructionsHeading.textContent = 'Instructions';
-                detailWrap.appendChild(instructionsHeading);
-                const instructionsList = document.createElement('ol');
-                instructionsList.style.margin = '0 0 10px 18px';
-                for (const line of instructionLines.slice(0, 12)) {
-                  const li = document.createElement('li');
-                  li.textContent = line;
-                  instructionsList.appendChild(li);
-                }
-                detailWrap.appendChild(instructionsList);
-              }
-              if (noteLines.length > 0) {
-                const notesHeading = document.createElement('div');
-                notesHeading.style.fontWeight = '700';
-                notesHeading.style.marginBottom = '4px';
-                notesHeading.textContent = 'Notes';
-                detailWrap.appendChild(notesHeading);
-                const notesList = document.createElement('ul');
-                notesList.style.margin = '0 0 10px 18px';
-                for (const line of noteLines.slice(0, 10)) {
-                  const li = document.createElement('li');
-                  li.textContent = line;
-                  notesList.appendChild(li);
-                }
-                detailWrap.appendChild(notesList);
-              }
-              if (entry.sourceUrl) {
-                const source = document.createElement('a');
-                source.href = entry.sourceUrl;
-                source.target = '_blank';
-                source.rel = 'noopener noreferrer';
-                source.style.color = 'var(--accent-strong)';
-                source.textContent = entry.sourceTitle || 'Open source';
-                detailWrap.appendChild(source);
-              }
-              card.appendChild(detailWrap);
+              rowBtn.addEventListener('click', () => {
+                openCookbookDetail(entry.id, { edit: false, pushHash: true });
+              });
+              card.appendChild(rowBtn);
             } else {
-              detailWrap.style.display = 'none';
+              const topRow = document.createElement('div');
+              topRow.className = 'cookbook-card-header';
+              topRow.appendChild(buildCookbookCardHeading(entry));
+              card.appendChild(topRow);
+
+              const tagsWrap = buildCookbookCardTags(entry, {
+                maxWidth: Math.max(180, Math.floor((cookbookList?.clientWidth || window.innerWidth) - 120)),
+              });
+              if (tagsWrap) {
+                card.appendChild(tagsWrap);
+              }
+
+              if (summaryText) {
+                const summary = document.createElement('div');
+                summary.className = 'cookbook-card-summary';
+                summary.textContent = summaryText;
+                card.appendChild(summary);
+              }
+
+              card.appendChild(actions);
             }
 
             cookbookList.appendChild(card);
@@ -3069,12 +3239,14 @@
 
         function setGroceriesSubview(view) {
           currentGroceriesSubview = view === 'pantry' || view === 'cookbook' ? view : 'list';
+          persistKitchenSectionPreference(currentGroceriesSubview);
           if (grocerySubtabList) grocerySubtabList.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'list');
           if (grocerySubtabPantry) grocerySubtabPantry.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'pantry');
           if (grocerySubtabCookbook) grocerySubtabCookbook.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'cookbook');
           if (grocerySubviewList) grocerySubviewList.style.display = currentGroceriesSubview === 'list' ? '' : 'none';
           if (grocerySubviewPantry) grocerySubviewPantry.style.display = currentGroceriesSubview === 'pantry' ? '' : 'none';
           if (grocerySubviewCookbook) grocerySubviewCookbook.style.display = currentGroceriesSubview === 'cookbook' ? '' : 'none';
+          syncCookbookWorkspaceLayout();
         }
 
         function renderChats() {
@@ -3227,11 +3399,16 @@
           syncMemoriesWrapVisibility();
           rebuildDisplayNameToColorFromMeChatColors(meData.chatColors);
           showApp(meData.name);
-          if (forceChatTab) setActiveTab('chat');
+          const shouldOpenCookbookFromHash = isCookbookHash();
+          if (shouldOpenCookbookFromHash) {
+            setActiveTab('groceries');
+            setGroceriesSubview('cookbook');
+          } else if (forceChatTab) {
+            setActiveTab('chat');
+          }
           await loadChatsAndEnsureOne();
           await loadHistory();
-          const hashCookbookId = parseCookbookDetailHash();
-          if (hashCookbookId) {
+          if (shouldOpenCookbookFromHash) {
             setActiveTab('groceries');
             setGroceriesSubview('cookbook');
             await loadCookbook();
@@ -3268,6 +3445,7 @@
         function initializeCookbookUi() {
           populateCookbookCategoryControls();
           populateCookbookTagFilter(cookbookCache);
+          syncCookbookWorkspaceLayout();
           if (cookbookSearchFilter) cookbookSearchFilter.value = currentCookbookSearchFilter;
           if (cookbookCategoryFilter) {
             cookbookCategoryFilter.addEventListener('change', () => {
@@ -3311,6 +3489,12 @@
             });
           }
           window.addEventListener('hashchange', async () => {
+            if (isCookbookHash()) {
+              setActiveTab('groceries');
+              setGroceriesSubview('cookbook');
+              await loadCookbook();
+              return;
+            }
             const hashId = parseCookbookDetailHash();
             if (!hashId) {
               const closed = closeCookbookDetail({ pushHash: false, force: false });
@@ -3334,11 +3518,16 @@
             event.preventDefault();
             event.returnValue = '';
           });
+          window.addEventListener('resize', () => {
+            syncCookbookWorkspaceLayout();
+            if (!cookbookList) return;
+            renderCookbook();
+          });
         }
 
-        if (tabSettings) {
-          tabSettings.addEventListener('click', () => {
-            setActiveTab('settings');
+        if (sidebarHouseholdButton) {
+          sidebarHouseholdButton.addEventListener('click', () => {
+            closeSidebarAndGoToSettingsTab();
           });
         }
 

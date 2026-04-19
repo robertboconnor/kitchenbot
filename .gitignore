@@ -5,3 +5,4 @@ kitchenbot.sqlite
 .DS_Store
 .cursor/
 AGENTS.md
+eng.traineddata

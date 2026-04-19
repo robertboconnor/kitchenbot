@@ -10,6 +10,8 @@ const LIGHTWEIGHT_CALL_PURPOSES = new Set([
   'kb_turn_grounding_final',
   'grocery_draft_generation_primary',
   'inventory_section_classification',
+  'recipe_import_image_structure',
+  'recipe_import_url_structure',
 ]);
 
 export function resolveAnthropicModelForCallPurpose(callPurpose) {

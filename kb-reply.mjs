@@ -103,6 +103,71 @@ function parseJsonObject(raw) {
   }
 }
 
+function extractAnthropicTextBlocks(response) {
+  return (Array.isArray(response?.content) ? response.content : [])
+    .filter((block) => block?.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
+    .trim();
+}
+
+async function requestChatReplyText({
+  anthropic,
+  req,
+  chatId,
+  turnId = null,
+  routePrompt,
+  system,
+  messages,
+  maxTokens = 800,
+  retryMaxTokens = 1400,
+  retryInstruction = '',
+} = {}) {
+  const context = {
+    householdId: req.householdId,
+    chatId,
+    turnId: turnId || null,
+    prompt: routePrompt,
+    runtimeEnabled: true,
+    callSurface: 'chat',
+    callPurpose: 'chat_reply',
+    webSearchEnabledAtCall: false,
+    usedWebSearchTool: false,
+  };
+
+  let response = await createLoggedAnthropicMessage(
+    anthropic,
+    {
+      model: resolveAnthropicModelForCallPurpose('chat_reply'),
+      max_tokens: maxTokens,
+      system,
+      messages,
+    },
+    context
+  );
+  let replyText = extractAnthropicTextBlocks(response);
+  if (safeTrim(response?.stop_reason) !== 'max_tokens') return replyText;
+
+  response = await createLoggedAnthropicMessage(
+    anthropic,
+    {
+      model: resolveAnthropicModelForCallPurpose('chat_reply'),
+      max_tokens: retryMaxTokens,
+      system: `${system}
+
+Retry rule:
+- Your previous answer was cut off before it finished.
+- Finish the reply completely this time.
+- Be concise enough to complete fully in one response.
+${retryInstruction ? `- ${retryInstruction}` : ''}`,
+      messages,
+    },
+    context
+  );
+  replyText = extractAnthropicTextBlocks(response);
+  return replyText;
+}
+
 function promptLooksLikeMealPlanningDraft(prompt = '') {
   const text = safeTrim(prompt).toLowerCase();
   if (!text) return false;
@@ -185,12 +250,7 @@ async function requestStructuredMealPlanDraft({
     mode === 'fresh_draft'
       ? '\n- Ignore the failed draft if needed and produce a clean first-pass meal plan directly from the user request.'
       : '';
-  const response = await createLoggedAnthropicMessage(
-    anthropic,
-    {
-      model: resolveAnthropicModelForCallPurpose('chat_reply'),
-      max_tokens: 500,
-      system: `${buildKbAssistantPersonaSystemText(resolvedMemoryContext)}
+  const system = `${buildKbAssistantPersonaSystemText(resolvedMemoryContext)}
 
 Choose one concrete first-pass meal plan from the draft.
 
@@ -204,27 +264,25 @@ Rules:
 - "intro" and "closing" are optional strings.
 - Each slot must have exactly one chosen dish.
 - "why" should be short and natural, not a whole recipe.
-- No markdown fences.`,
-      messages: [
-        {
-          role: 'user',
-          content: `Latest user prompt:\n${routePrompt}\n\nRecent conversation:\n${recentConversationText}\n\nDraft reply to rewrite:\n${draftText}${failureNote}`,
-        },
-      ],
-    },
+- No markdown fences.`;
+  const messages = [
     {
-      householdId: req.householdId,
-      chatId,
-      turnId: turnId || null,
-      prompt: routePrompt,
-      runtimeEnabled: true,
-      callSurface: 'chat',
-      callPurpose: 'chat_reply',
-      webSearchEnabledAtCall: false,
-      usedWebSearchTool: false,
-    }
-  );
-  const rewritten = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
+      role: 'user',
+      content: `Latest user prompt:\n${routePrompt}\n\nRecent conversation:\n${recentConversationText}\n\nDraft reply to rewrite:\n${draftText}${failureNote}`,
+    },
+  ];
+  const rewritten = await requestChatReplyText({
+    anthropic,
+    req,
+    chatId,
+    turnId,
+    routePrompt,
+    system,
+    messages,
+    maxTokens: 500,
+    retryMaxTokens: 900,
+    retryInstruction: 'Return ONLY the requested JSON object, fully completed.',
+  });
   const parsed = parseJsonObject(rewritten);
   const formatted = formatStructuredMealPlanRewrite(parsed);
   if (safeTrim(formatted)) return formatted;
@@ -1436,12 +1494,7 @@ async function generateKbReply({ anthropic, req, res, chatId, routePrompt, memor
     return directMealPlanningDraft;
   }
 
-  const response = await createLoggedAnthropicMessage(
-    anthropic,
-    {
-      model: resolveAnthropicModelForCallPurpose('chat_reply'),
-      max_tokens: 800,
-      system: `${buildKbAssistantPersonaSystemText(promptMemoryContext)}
+  const system = `${buildKbAssistantPersonaSystemText(promptMemoryContext)}
 
 Operating rules:
 - Reply naturally unless a real server action already happened.
@@ -1476,28 +1529,25 @@ Operating rules:
 - Never claim a chat was renamed unless a real chat.rename action already happened.
 - Do not mention internal tools, modes, or hidden workflows.
 
-${buildKbContextSystemText(promptMemoryContext)}`,
-      messages: [
-        {
-          role: 'user',
-          content: `Recent conversation:\n${recentConversationText}\n\nLatest user prompt:\n${routePrompt}\n\nFresh-turn rule:\nIf the latest prompt clearly starts a fresh cooking-help moment, a different night, or a different dish, trust that framing over older compressed continuity.\n\nPlanning contract:\nIf the latest prompt is asking KitchenBot to plan meals by slot, vibe, or course, draft one concrete dish per requested slot now unless the user explicitly asked for options.`,
-        },
-      ],
-    },
+${buildKbContextSystemText(promptMemoryContext)}`;
+  const messages = [
     {
-      householdId: req.householdId,
-      chatId,
-      turnId: req.kbTurnId || null,
-      prompt: routePrompt,
-      runtimeEnabled: true,
-      callSurface: 'chat',
-      callPurpose: 'chat_reply',
-      webSearchEnabledAtCall: false,
-      usedWebSearchTool: false,
-    }
-  );
-
-  const replyText = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
+      role: 'user',
+      content: `Recent conversation:\n${recentConversationText}\n\nLatest user prompt:\n${routePrompt}\n\nFresh-turn rule:\nIf the latest prompt clearly starts a fresh cooking-help moment, a different night, or a different dish, trust that framing over older compressed continuity.\n\nPlanning contract:\nIf the latest prompt is asking KitchenBot to plan meals by slot, vibe, or course, draft one concrete dish per requested slot now unless the user explicitly asked for options.`,
+    },
+  ];
+  const replyText = await requestChatReplyText({
+    anthropic,
+    req,
+    chatId,
+    turnId: req.kbTurnId || null,
+    routePrompt,
+    system,
+    messages,
+    maxTokens: 800,
+    retryMaxTokens: 1500,
+    retryInstruction: 'If you are giving a full recipe or long instructions, finish the recipe completely instead of cutting off mid-step.',
+  });
   return maybeRewriteMealPlanningDraft({
     anthropic,
     req,
@@ -1542,12 +1592,7 @@ async function generateSkillOutcomeReply({ anthropic, req, chatId, routePrompt, 
     }) || '(none)';
 
   try {
-    const response = await createLoggedAnthropicMessage(
-      anthropic,
-      {
-        model: resolveAnthropicModelForCallPurpose('chat_reply'),
-        max_tokens: 550,
-        system: `${buildKbAssistantPersonaSystemText(resolvedMemoryContext)}
+    const system = `${buildKbAssistantPersonaSystemText(resolvedMemoryContext)}
 
 You are narrating the real outcomes of one or more already-executed KitchenBot skills.
 
@@ -1576,28 +1621,25 @@ Rules:
 - If a meal.refine outcome is present with revised meals, treat that revised meal set as already chosen. Do not reopen optional planning questions or ask the user to reconfirm the meals unless the outcome explicitly says it still needs context.
 - Do not mention internal tools, modes, or hidden workflows.
 
-${buildKbContextSystemText(resolvedMemoryContext)}`,
-        messages: [
-          {
-            role: 'user',
-            content: `Recent conversation:\n${recentConversationText}\n\nUser request: ${routePrompt}\n\nStructured skill outcomes:\n${outcomeFacts}`,
-          },
-        ],
-      },
+${buildKbContextSystemText(resolvedMemoryContext)}`;
+    const messages = [
       {
-        householdId: req.householdId,
-        chatId,
-        turnId: req.kbTurnId || null,
-        prompt: routePrompt,
-        runtimeEnabled: true,
-        callSurface: 'chat',
-        callPurpose: 'chat_reply',
-        webSearchEnabledAtCall: false,
-        usedWebSearchTool: false,
-      }
-    );
-
-    const text = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
+        role: 'user',
+        content: `Recent conversation:\n${recentConversationText}\n\nUser request: ${routePrompt}\n\nStructured skill outcomes:\n${outcomeFacts}`,
+      },
+    ];
+    const text = await requestChatReplyText({
+      anthropic,
+      req,
+      chatId,
+      turnId: req.kbTurnId || null,
+      routePrompt,
+      system,
+      messages,
+      maxTokens: 550,
+      retryMaxTokens: 950,
+      retryInstruction: 'Finish the outcome narration cleanly instead of ending mid-sentence.',
+    });
     return text || fallbackSkillOutcomeReply(outcomes);
   } catch {
     return fallbackSkillOutcomeReply(outcomes);

@@ -60,6 +60,9 @@ export function classifyAnthropicUsageFunction(callPurpose) {
   }
   if (purpose.startsWith('grocery_draft_generation')) return 'Grocery drafting';
   if (purpose === 'inventory_section_classification') return 'Inventory classification';
+  if (purpose === 'recipe_import_image_structure' || purpose === 'recipe_import_url_structure') {
+    return 'Recipe importing';
+  }
   if (purpose === 'web_search') return 'Web search';
   if (purpose === 'web_fetch') return 'Web fetch';
   if (purpose === 'chat_title') return 'Chat titles';

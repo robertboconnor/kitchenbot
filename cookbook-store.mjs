@@ -206,11 +206,12 @@ export function getCookbookDisplayTitle(raw) {
 export function getCookbookDisplaySource(raw) {
   const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const title = getCookbookDisplayTitle(entry);
+  const sourceBookTitle = sanitizeCookbookSourceTitle(entry.sourceBookTitle, { title });
   const sourceUrl = normalizeCookbookUrl(entry.sourceUrl);
   const sourceTitle = sanitizeCookbookSourceTitle(entry.sourceTitle, { title });
-  if (!sourceTitle && !sourceUrl) return null;
+  if (!sourceBookTitle && !sourceTitle && !sourceUrl) return null;
   return {
-    label: sourceTitle || sourceUrl,
+    label: sourceUrl ? (sourceTitle || sourceUrl) : (sourceBookTitle || sourceTitle || sourceUrl),
     url: sourceUrl || '',
   };
 }
@@ -620,6 +621,7 @@ function isStructuredCookbookRecipe(record) {
 
 function hasCookbookExternalSource(record) {
   return (
+    !!record?.sourceBookTitle ||
     !!record?.sourceUrl ||
     record?.sourceKind === 'web_fetch' ||
     record?.sourceKind === 'server_fetch' ||
@@ -655,6 +657,7 @@ export function buildCookbookRecordForStorage(raw) {
     ingredients: normalizeStringList(raw.ingredients, 24, 180),
     instructions: normalizeStringList(raw.instructions, 16, 240),
     tags: normalizeStringList(raw.tags, 12, 60).map((tag) => tag.toLowerCase()),
+    sourceBookTitle: sanitizeCookbookSourceTitle(raw.sourceBookTitle, { title }).slice(0, 160),
     sourceTitle: sanitizeCookbookSourceTitle(raw.sourceTitle, { title }).slice(0, 160),
     sourceUrl: normalizeCookbookUrl(raw.sourceUrl),
     notes: normalizeNotesList(raw.notes, 20, 220),
@@ -1180,6 +1183,7 @@ export function mergeCookbookRecord(existingItem, incomingItem) {
     tags: incomingWins
       ? normalizeStringList(incoming.tags, 12, 60)
       : normalizeStringList([...(existing.tags || []), ...(incoming.tags || [])], 12, 60),
+    sourceBookTitle: incoming.sourceBookTitle || existing.sourceBookTitle || '',
     sourceTitle: incoming.sourceTitle || existing.sourceTitle || '',
     sourceUrl: incoming.sourceUrl || existing.sourceUrl || '',
     notes,

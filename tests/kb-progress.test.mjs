@@ -313,6 +313,99 @@ test('respondWithKbReply does not emit cookbook progress for generic meal planni
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
+test('respondWithKbReply retries truncated chat replies instead of streaming the cut-off text', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-progress-retry-truncated-reply-'));
+  const dbPath = path.join(tempDir, 'progress-retry-truncated-reply.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const { respondWithKbReply } = await import(new URL('./kb-reply.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Elle',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Elle', 'Truncated reply');
+    const writes = [];
+    const res = {
+      headers: {},
+      setHeader(name, value) { this.headers[name] = value; },
+      write(chunk) { writes.push(String(chunk)); },
+      end(chunk) { if (chunk) writes.push(String(chunk)); },
+    };
+    let callCount = 0;
+    const anthropic = {
+      messages: {
+        create: async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            return {
+              model: 'claude-sonnet-4-5',
+              stop_reason: 'max_tokens',
+              usage: { input_tokens: 40, output_tokens: 800 },
+              content: [{ type: 'text', text: '1. PREP GRAPEFRUIT FIRST\\n\\n**Wh' }],
+            };
+          }
+          return {
+            model: 'claude-sonnet-4-5',
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 45, output_tokens: 900 },
+            content: [{ type: 'text', text: '1. PREP GRAPEFRUIT FIRST\\n\\nWhisk the zest into the sugar.\\n\\n2. BAKE\\n\\nBake until done.' }],
+          };
+        },
+      },
+    };
+    await respondWithKbReply({
+      anthropic,
+      req: {
+        householdId: created.householdId,
+        user: 'Elle',
+        kbTurnId: 'turn-retry-truncated-reply',
+        kbCapabilities: {},
+      },
+      res,
+      name: 'Elle',
+      chatId,
+      routePrompt: 'please recombine this into one full-run recipe from start to finish',
+      replyText: '',
+      replyPlan: { kind: 'generate_reply' },
+      memoryContext: {
+        assistantPersona: { assistantName: 'KitchenBot', assistantTone: 'helpful' },
+      },
+      workingContext: null,
+      outcomes: [],
+      userMessageAlreadyPersisted: false,
+      proposedNextAction: null,
+      deps: {
+        incrementUserMessageCountForSender: async () => {},
+        buildKbContextPacket: async () => ({
+          assistantPersona: { assistantName: 'KitchenBot', assistantTone: 'helpful' },
+        }),
+        broadcastToChat: () => {},
+        emitKbProgress: async () => {},
+      },
+    });
+    const messages = await db.getMessages(chatId, created.householdId);
+    process.stdout.write(JSON.stringify({ writes, messages, callCount }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.callCount >= 2, true);
+  const assistantMessages = parsed.messages.filter((message) => message.role === 'assistant');
+  assert.equal(assistantMessages.length >= 1, true);
+  assert.match(assistantMessages.at(-1).content, /Whisk the zest into the sugar\./);
+  assert.doesNotMatch(assistantMessages.at(-1).content, /\*\*Wh$/);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
 test('respondWithKbErrorReply persists Anthropic-style failure text as a real assistant reply', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-anthropic-runtime-error-'));
   const dbPath = path.join(tempDir, 'anthropic-runtime-error.db');
