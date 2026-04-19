@@ -16,7 +16,11 @@ const execFileAsync = promisify(execFile);
 
 test('light cooking advice stays on minimal context', () => {
   const profile = buildPromptContextProfile({
-    prompt: 'what is the best oven setting for crispy chicken thighs?',
+    provisionalGrounding: {
+      surface: 'conversation',
+      intent: 'answer_question',
+      candidateObjectTypes: [],
+    },
     runtimeProposedNextAction: null,
     workingContext: null,
   });
@@ -31,7 +35,11 @@ test('light cooking advice stays on minimal context', () => {
 
 test('grocery generation pulls richer context families', () => {
   const profile = buildPromptContextProfile({
-    prompt: 'give me a grocery list for this meal plan',
+    provisionalGrounding: {
+      surface: 'grocery',
+      intent: 'add_grocery_items',
+      candidateObjectTypes: ['meal_plan_or_meal_set', 'offered_ingredients'],
+    },
     runtimeProposedNextAction: null,
     workingContext: { topicSummary: 'Dinner plan', mealIdeas: ['meatloaf'] },
   });
@@ -44,7 +52,11 @@ test('grocery generation pulls richer context families', () => {
 
 test('meal planning pulls household defaults even without grocery wording', () => {
   const profile = buildPromptContextProfile({
-    prompt: 'help me plan 3 dinners for this week',
+    provisionalGrounding: {
+      surface: 'meal_plan',
+      intent: 'revise_meal_plan',
+      candidateObjectTypes: ['meal_plan_or_meal_set'],
+    },
     runtimeProposedNextAction: null,
     workingContext: null,
   });
@@ -52,9 +64,28 @@ test('meal planning pulls household defaults even without grocery wording', () =
   assert.equal(profile.includeCookbook, false);
 });
 
+test('explicit saved-recipe meal planning still pulls cookbook context', () => {
+  const profile = buildPromptContextProfile({
+    provisionalGrounding: {
+      surface: 'meal_plan',
+      intent: 'create_meal_plan_from_saved_recipes',
+      candidateObjectTypes: ['meal_plan_or_meal_set'],
+    },
+    runtimeProposedNextAction: null,
+    workingContext: null,
+  });
+  assert.equal(profile.includeDefaults, true);
+  assert.equal(profile.includeCookbook, true);
+});
+
 test('asking about cooking style pulls household defaults', () => {
   const profile = buildPromptContextProfile({
-    prompt: 'what do you know about my cooking style?',
+    groundedTurn: {
+      turnMode: 'reply_only',
+      surface: 'conversation',
+      intent: 'answer_question',
+      rationale: 'defaults_question',
+    },
     runtimeProposedNextAction: null,
     workingContext: null,
   });
@@ -81,7 +112,11 @@ test('profileNeedsRefresh only escalates when new families are required', () => 
 
 test('direct cookbook prompts pull cookbook context without unrelated inventory', () => {
   const profile = buildPromptContextProfile({
-    prompt: 'what do we have saved in our cookbook?',
+    provisionalGrounding: {
+      surface: 'cookbook',
+      intent: 'list_saved_recipes',
+      candidateObjectTypes: ['cookbook_entry'],
+    },
     runtimeProposedNextAction: null,
     workingContext: null,
   });
@@ -92,7 +127,11 @@ test('direct cookbook prompts pull cookbook context without unrelated inventory'
 
 test('linked recipe provenance follow-ups pull cookbook context', () => {
   const profile = buildPromptContextProfile({
-    prompt: 'did you actually read the url?',
+    provisionalGrounding: {
+      surface: 'conversation',
+      intent: 'answer_question',
+      candidateObjectTypes: ['linked_recipe'],
+    },
     runtimeProposedNextAction: null,
     workingContext: null,
   });
@@ -101,9 +140,41 @@ test('linked recipe provenance follow-ups pull cookbook context', () => {
   assert.equal(profile.includeGrocery, false);
 });
 
+test('chat-only recipe revision does not pull cookbook context', () => {
+  const profile = buildPromptContextProfile({
+    provisionalGrounding: {
+      surface: 'conversation',
+      intent: 'revise_recipe',
+      candidateObjectTypes: ['chat_recipe'],
+    },
+    runtimeProposedNextAction: null,
+    workingContext: null,
+  });
+  assert.equal(profile.includeCookbook, false);
+});
+
+test('grocery turns do not inherit cookbook context just because a chat recipe is visible', () => {
+  const profile = buildPromptContextProfile({
+    groundedTurn: {
+      turnMode: 'execute_action',
+      surface: 'grocery',
+      intent: 'add_grocery_items',
+      activeObjects: [{ type: 'chat_recipe', label: 'Quick Cucumber Yogurt Salad' }],
+    },
+    runtimeProposedNextAction: null,
+    workingContext: null,
+  });
+  assert.equal(profile.includeCookbook, false);
+  assert.equal(profile.includeGrocery, true);
+});
+
 test('recipe follow-ups pull working context when a meal thread is already active', () => {
   const profile = buildPromptContextProfile({
-    prompt: 'give me the waffle iron recipe',
+    provisionalGrounding: {
+      surface: 'conversation',
+      intent: 'answer_question',
+      candidateObjectTypes: ['meal_plan_or_meal_set'],
+    },
     runtimeProposedNextAction: null,
     workingContext: {
       topicSummary: 'Three dinner ideas for the week',
@@ -126,9 +197,9 @@ test('meal/grocery relevance stays generic and uses existing thread continuity',
   assert.equal(relevant, true);
 });
 
-test('working context falls back to the actual recent meal thread when the background model drops it', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-working-context-fallback-'));
-  const dbPath = path.join(tempDir, 'kb-working-context-fallback.db');
+test('working context clears instead of reconstructing stale meal threads when the background model drops continuity', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-working-context-clear-'));
+  const dbPath = path.join(tempDir, 'kb-working-context-clear.db');
 
   const script = `
     const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
@@ -140,7 +211,7 @@ test('working context falls back to the actual recent meal thread when the backg
       ownerDisplayName: 'Rob',
       pin: '1234',
     });
-    const chatId = await db.createChat(created.householdId, 'Rob', 'Working context fallback');
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Working context clear');
     await db.addMessage(created.householdId, chatId, 'user', 'Rob', 'help me figure out three dinners this week: something smoky, something crispy in bread, and something cozy with noodles');
     await db.addMessage(
       created.householdId,
@@ -180,10 +251,7 @@ test('working context falls back to the actual recent meal thread when the backg
   });
 
   const workingContext = JSON.parse(stdout.trim());
-  assert.ok(workingContext);
-  assert.ok(Array.isArray(workingContext.mealIdeas));
-  assert.ok(workingContext.mealIdeas.some((item) => /crispy chicken sandwich/i.test(item)));
-  assert.ok(workingContext.mealIdeas.some((item) => /cheesy baked ziti/i.test(item)));
+  assert.equal(workingContext, null);
 
   await fs.rm(tempDir, { recursive: true, force: true });
 });

@@ -1,5 +1,6 @@
 import {
   deleteCookbookEntry,
+  getCookbookEntryById,
   getCookbookEntryByNormalizedTitle,
   getCookbookEntryBySourceUrl,
   listCookbookEntries,
@@ -20,10 +21,28 @@ import {
   parseCookbookRecipeText,
   shapeCookbookRecordForStorage,
 } from './cookbook-store.mjs';
+import {
+  buildExplicitCookbookReplacement,
+  reviseStructuredRecipe,
+} from './recipe-executor.mjs';
 import { extractRecipeFromPageContent, fetchRecipePage } from './recipe-url-ingestion.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
+}
+
+function extractExplicitCookbookUpdateName(request = '') {
+  const text = safeTrim(request);
+  if (!text) return '';
+  const patterns = [
+    /^(?:please\s+)?(?:update|replace|revise|edit)\s+(.+?)\s+(?:in|from)\s+(?:our|my|the)\s+cookbook\b/i,
+    /^(?:please\s+)?(?:update|replace|revise|edit)\s+(.+?)\s+recipe\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return safeTrim(match[1]).replace(/^["']|["']$/g, '');
+  }
+  return '';
 }
 
 function findLatestAssistantRecipeText(messages = []) {
@@ -65,6 +84,72 @@ function buildCookbookDeleteClarify(matches, requestedName) {
       visibleReplySummary: question,
     }),
   };
+}
+
+function buildCookbookUpdateClarify(matches, requestedName) {
+  const choices = (Array.isArray(matches) ? matches : []).slice(0, 6).map((entry, index) => ({
+    id: String(index + 1),
+    label: entry.title,
+  }));
+  const question =
+    requestedName && choices.length > 0
+      ? `I found more than one cookbook entry that could match ${requestedName}: ${choices.map((choice) => choice.label).join(', ')}. Which one should I update?`
+      : 'I found more than one cookbook entry that could match that. Which one should I update?';
+  return {
+    status: 'ambiguous',
+    question,
+    proposedNextAction: buildClarifyActionState({
+      capability: 'cookbook.update',
+      input: {},
+      question,
+      unresolvedFields: ['name'],
+      candidateOptions: choices,
+      contextSummary: 'Continue the pending cookbook update once the user picks the saved recipe.',
+      visibleReplySummary: question,
+    }),
+  };
+}
+
+function normalizeUpdatedCookbookInputRecord(raw, existing) {
+  const existingRecord = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : null;
+  const revisedRecord = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+  if (!existingRecord || !revisedRecord) return null;
+  return buildExplicitCookbookReplacement(existingRecord, {
+    ...revisedRecord,
+    sourceTitle: existingRecord.sourceTitle,
+    sourceUrl: existingRecord.sourceUrl,
+    sourceKind: existingRecord.sourceKind,
+    sourceChatId: existingRecord.sourceChatId,
+    lastUsedAt: existingRecord.lastUsedAt,
+  });
+}
+
+function sameCookbookStructuredBody(leftRaw, rightRaw) {
+  const left = leftRaw && typeof leftRaw === 'object' && !Array.isArray(leftRaw) ? leftRaw : {};
+  const right = rightRaw && typeof rightRaw === 'object' && !Array.isArray(rightRaw) ? rightRaw : {};
+  return JSON.stringify({
+    title: left.title,
+    summary: left.summary,
+    category: left.category || '',
+    recipeType: left.recipeType,
+    ingredients: left.ingredients,
+    instructions: left.instructions,
+    tags: left.tags,
+    sourceTitle: left.sourceTitle || '',
+    sourceUrl: left.sourceUrl || '',
+    notes: left.notes,
+  }) === JSON.stringify({
+    title: right.title,
+    summary: right.summary,
+    category: right.category || '',
+    recipeType: right.recipeType,
+    ingredients: right.ingredients,
+    instructions: right.instructions,
+    tags: right.tags,
+    sourceTitle: right.sourceTitle || '',
+    sourceUrl: right.sourceUrl || '',
+    notes: right.notes,
+  });
 }
 
 function buildLinkedRecipeWorkingContext({
@@ -234,16 +319,41 @@ function buildRecoveryMetadata(runtimeAction = {}, workingContext = null) {
   };
 }
 
+function looksLikeReferentialCookbookTitle(title = '') {
+  return /^(?:it|that|this|recipe|that recipe|this recipe)$/i.test(safeTrim(title));
+}
+
+function requestExplicitlyNamesCookbookTitle(request = '') {
+  const text = safeTrim(request);
+  if (!text) return false;
+  return (
+    /\bas\s+["“][^"”]+["”]/i.test(text) ||
+    /\bas\s+'[^']+'/i.test(text) ||
+    /\bas\s+.+?(?:\s+\b(?:in|into|to)\b\s+(?:our\s+)?(?:cookbook|recipes?)\b|\s*$)/i.test(text) ||
+    /\b(?:call|name)\s+it\s+["“][^"”]+["”]/i.test(text) ||
+    /\b(?:call|name)\s+it\s+'[^']+'/i.test(text)
+  );
+}
+
 export async function executeCookbookSave(runtimeAction, context) {
   const { req, chatId, prompt, anthropic, memoryContext = null, workingContext = null } = context;
   const requestedSave = safeTrim(runtimeAction?.input?.request || prompt);
+  const explicitTargetRecipe =
+    runtimeAction?.input?.targetRecipe && typeof runtimeAction.input.targetRecipe === 'object' && !Array.isArray(runtimeAction.input.targetRecipe)
+      ? runtimeAction.input.targetRecipe
+      : null;
   const recovery = buildRecoveryMetadata(runtimeAction, workingContext);
   const linkedUrl = recovery.sourceUrl || extractFirstUrl(requestedSave);
   const manualPayload = extractManualCookbookRecipePayload(requestedSave, { sourceUrl: linkedUrl });
-  const preferredTitle =
+  const explicitRequestedTitle =
+    !explicitTargetRecipe || requestExplicitlyNamesCookbookTitle(requestedSave) ? manualPayload.requestedCookbookTitle : '';
+  const preferredTitleRaw =
     recovery.preferredTitle ||
-    manualPayload.requestedCookbookTitle ||
+    explicitRequestedTitle ||
     (linkedUrl ? extractPreferredCookbookLabel(requestedSave, linkedUrl) : '');
+  const preferredTitle = looksLikeReferentialCookbookTitle(preferredTitleRaw)
+    ? safeTrim(explicitTargetRecipe?.title || explicitTargetRecipe?.label)
+    : preferredTitleRaw;
   const webSearchEnabled =
     !!memoryContext?.capabilities?.webSearchEnabled ||
     !!context?.webSearchEnabled ||
@@ -256,7 +366,23 @@ export async function executeCookbookSave(runtimeAction, context) {
   let fetchPerformed = false;
   let sourceKind = 'kb_action';
 
-  if (recovery.recoveryMode === 'manual_paste') {
+  if (explicitTargetRecipe?.recipeRecord && typeof explicitTargetRecipe.recipeRecord === 'object' && !Array.isArray(explicitTargetRecipe.recipeRecord)) {
+    inferred = {
+      ...explicitTargetRecipe.recipeRecord,
+      title: safeTrim(preferredTitle) || safeTrim(explicitTargetRecipe.recipeRecord.title || explicitTargetRecipe.title || explicitTargetRecipe.label),
+      sourceTitle: safeTrim(explicitTargetRecipe.recipeRecord.sourceTitle || recovery.sourceTitle),
+      sourceUrl: safeTrim(explicitTargetRecipe.recipeRecord.sourceUrl || linkedUrl),
+      sourceKind: safeTrim(explicitTargetRecipe.recipeRecord.sourceKind || 'kb_generated') || 'kb_action',
+    };
+    sourceKind = safeTrim(inferred.sourceKind || 'kb_action') || 'kb_action';
+  } else if (safeTrim(explicitTargetRecipe?.recipeText)) {
+    inferred = parseCookbookRecipeText(explicitTargetRecipe.recipeText, {
+      preferredTitle: safeTrim(preferredTitle || explicitTargetRecipe.title || explicitTargetRecipe.label),
+      sourceUrl: linkedUrl,
+      sourceTitle: recovery.sourceTitle,
+    });
+    if (inferred) sourceKind = safeTrim(explicitTargetRecipe?.sourceKind || inferred.sourceKind || 'kb_generated') || 'kb_action';
+  } else if (recovery.recoveryMode === 'manual_paste') {
     inferred = parseCookbookRecipeText(manualPayload.recipeBodyText || requestedSave, {
       preferredTitle,
       sourceUrl: linkedUrl,
@@ -476,6 +602,7 @@ export async function executeCookbookSave(runtimeAction, context) {
     latestAssistantText,
     memoryContext,
     sourceKind: sourceKind || inferred?.sourceKind || 'kb_action',
+    preserveTitle: !!preferredTitle,
   });
   if (!record) {
     return {
@@ -672,6 +799,130 @@ export async function executeCookbookDelete(runtimeAction, context) {
   };
 }
 
+export async function executeCookbookUpdate(runtimeAction, context) {
+  const { req, chatId, prompt, anthropic, memoryContext = null } = context;
+  const input = runtimeAction?.input && typeof runtimeAction.input === 'object' && !Array.isArray(runtimeAction.input)
+    ? runtimeAction.input
+    : {};
+  const revisionRequest = safeTrim(input.request || input.payload || input.text || prompt);
+  const requestedName = safeTrim(input.name || input.title || input.recipe) || extractExplicitCookbookUpdateName(revisionRequest);
+  let existing = null;
+
+  if (Number.isFinite(Number(input.id))) {
+    existing = await getCookbookEntryById(req.householdId, Number(input.id));
+  } else if (input.targetCookbookEntry && typeof input.targetCookbookEntry === 'object' && !Array.isArray(input.targetCookbookEntry)) {
+    const target = input.targetCookbookEntry;
+    if (Number.isFinite(Number(target.id))) {
+      existing = await getCookbookEntryById(req.householdId, Number(target.id));
+    }
+  } else if (requestedName) {
+    const entries = await listCookbookEntries(req.householdId);
+    const matches = findCookbookMatches(entries, requestedName);
+    if (matches.length === 0) {
+      return {
+        capability: 'cookbook.update',
+        status: 'missing',
+        requestedName,
+      };
+    }
+    if (matches.length > 1) {
+      return {
+        capability: 'cookbook.update',
+        requestedName,
+        ...buildCookbookUpdateClarify(matches, requestedName),
+      };
+    }
+    existing = matches[0];
+  } else {
+    const selected = Array.isArray(memoryContext?.selectedCookbookEntries) ? memoryContext.selectedCookbookEntries.filter(Boolean) : [];
+    if (selected.length === 1) existing = selected[0];
+  }
+
+  if (!existing) {
+    return {
+      capability: 'cookbook.update',
+      status: 'invalid',
+      error: 'I need to know which saved cookbook recipe you want me to update.',
+    };
+  }
+
+  let replacementRecord = normalizeUpdatedCookbookInputRecord(input.revisedRecord, existing);
+
+  if (!replacementRecord && input.targetRecipe && typeof input.targetRecipe === 'object' && !Array.isArray(input.targetRecipe)) {
+    const explicitTargetRecipe = input.targetRecipe;
+    const explicitRecipeRecord =
+      explicitTargetRecipe.recipeRecord && typeof explicitTargetRecipe.recipeRecord === 'object' && !Array.isArray(explicitTargetRecipe.recipeRecord)
+        ? explicitTargetRecipe.recipeRecord
+        : safeTrim(explicitTargetRecipe.recipeText)
+          ? parseCookbookRecipeText(explicitTargetRecipe.recipeText, {
+              preferredTitle: existing.title,
+              sourceUrl: existing.sourceUrl,
+              sourceTitle: existing.sourceTitle,
+            })
+          : null;
+    if (explicitRecipeRecord) {
+      replacementRecord = normalizeUpdatedCookbookInputRecord(explicitRecipeRecord, existing);
+    }
+  }
+
+  if (!replacementRecord && looksLikeRecipeText(revisionRequest)) {
+    const parsed = parseCookbookRecipeText(revisionRequest, {
+      preferredTitle: existing.title,
+      sourceUrl: existing.sourceUrl,
+      sourceTitle: existing.sourceTitle,
+    });
+    replacementRecord = normalizeUpdatedCookbookInputRecord(parsed, existing);
+  }
+
+  if (!replacementRecord && revisionRequest) {
+    const revised = await reviseStructuredRecipe({
+      anthropic,
+      householdId: req.householdId,
+      chatId,
+      request: revisionRequest,
+      recipeRecord: existing,
+      recentConversation: await getMessages(chatId, req.householdId).then((messages) => messages.slice(-16)),
+      latestAssistantText: '',
+      memoryContext,
+    });
+    replacementRecord = normalizeUpdatedCookbookInputRecord(revised, existing);
+  }
+
+  if (!replacementRecord) {
+    return {
+      capability: 'cookbook.update',
+      status: 'invalid',
+      error: 'I could not build a clean updated cookbook recipe from that request yet.',
+    };
+  }
+
+  if (sameCookbookStructuredBody(existing, replacementRecord)) {
+    return {
+      capability: 'cookbook.update',
+      status: 'unchanged',
+      id: existing.id,
+      title: existing.title,
+      sourceTitle: existing.sourceTitle,
+      sourceUrl: existing.sourceUrl,
+    };
+  }
+
+  await saveCookbookEntry(req.householdId, replacementRecord, {
+    id: existing.id,
+    sourceKind: existing.sourceKind,
+    sourceChatId: existing.sourceChatId,
+    lastUsedAt: existing.lastUsedAt,
+  });
+  return {
+    capability: 'cookbook.update',
+    status: 'updated',
+    id: existing.id,
+    title: replacementRecord.title,
+    sourceTitle: existing.sourceTitle,
+    sourceUrl: existing.sourceUrl,
+  };
+}
+
 export function normalizeCookbookDeleteInput(input, context = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const name = safeTrim(raw.name || raw.title || raw.recipe || raw.payload || raw.text || context.originalPrompt);
@@ -687,7 +938,33 @@ export function normalizeCookbookSaveInput(input, context = {}) {
     sourceUrl: safeTrim(raw.sourceUrl),
     sourceTitle: safeTrim(raw.sourceTitle),
     recoveryMode: safeTrim(raw.recoveryMode),
+    ...(raw.targetRecipe && typeof raw.targetRecipe === 'object' && !Array.isArray(raw.targetRecipe)
+      ? { targetRecipe: raw.targetRecipe }
+      : {}),
   };
+}
+
+export function normalizeCookbookUpdateInput(input, context = {}) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const revisedRecord =
+    raw.revisedRecord && typeof raw.revisedRecord === 'object' && !Array.isArray(raw.revisedRecord)
+      ? raw.revisedRecord
+      : null;
+  const request = safeTrim(raw.request || raw.payload || raw.text || context.originalPrompt);
+  const explicitName = safeTrim(raw.name || raw.title || raw.recipe) || extractExplicitCookbookUpdateName(request);
+  const normalized = {
+    ...(Number.isFinite(Number(raw.id)) ? { id: Number(raw.id) } : {}),
+    ...(explicitName ? { name: explicitName } : {}),
+    ...(request ? { request } : {}),
+    ...(revisedRecord ? { revisedRecord } : {}),
+    ...(raw.targetRecipe && typeof raw.targetRecipe === 'object' && !Array.isArray(raw.targetRecipe)
+      ? { targetRecipe: raw.targetRecipe }
+      : {}),
+    ...(raw.targetCookbookEntry && typeof raw.targetCookbookEntry === 'object' && !Array.isArray(raw.targetCookbookEntry)
+      ? { targetCookbookEntry: raw.targetCookbookEntry }
+      : {}),
+  };
+  return Object.keys(normalized).length > 0 ? normalized : null;
 }
 
 export function interpretCookbookSaveFollowUp(prompt, nextAction, context = {}) {
@@ -752,5 +1029,49 @@ export function interpretCookbookSaveFollowUp(prompt, nextAction, context = {}) 
     };
   }
 
+  return null;
+}
+
+export function interpretCookbookUpdateFollowUp(prompt, nextAction) {
+  const text = safeTrim(prompt);
+  const action = nextAction?.action;
+  if (!text || !action || String(action.capability || '').trim() !== 'cookbook.update') return null;
+  const lowered = text.toLowerCase();
+  const candidateOptions = Array.isArray(nextAction?.candidateOptions) ? nextAction.candidateOptions : [];
+  const matchingCandidate = candidateOptions.find((option) => safeTrim(option?.label).toLowerCase() === lowered);
+  const recipeDisambiguationPending =
+    nextAction?.type === 'clarify_action' &&
+    (Array.isArray(nextAction?.unresolvedFields) ? nextAction.unresolvedFields : []).some((field) =>
+      ['name', 'title', 'recipe'].includes(safeTrim(field).toLowerCase())
+    );
+  if (recipeDisambiguationPending && matchingCandidate) {
+    return {
+      kind: 'execute_action',
+      actions: [{
+        capability: 'cookbook.update',
+        input: {
+          ...(action.input && typeof action.input === 'object' && !Array.isArray(action.input) ? action.input : {}),
+          name: safeTrim(matchingCandidate.label),
+        },
+      }],
+      routePrompt: prompt,
+    };
+  }
+  if (/^(no|nope|cancel|stop|never mind|nevermind)$/i.test(text)) {
+    return { kind: 'reply_only', routePrompt: prompt, replyText: 'Okay, I left the saved cookbook recipe alone.' };
+  }
+  if (
+    /^(yes|yeah|yep|sure|ok|okay|do it|go ahead|replace it|replace that|update it|update that|save it|save that)$/i.test(text) ||
+    /\b(replace|update|save)\b/.test(lowered)
+  ) {
+    return {
+      kind: 'execute_action',
+      actions: [{
+        capability: 'cookbook.update',
+        input: action.input && typeof action.input === 'object' && !Array.isArray(action.input) ? action.input : {},
+      }],
+      routePrompt: prompt,
+    };
+  }
   return null;
 }

@@ -55,6 +55,7 @@ export function formatKbEntityContextText(entityContext = {}) {
 
 export function getKbPromptContextSections(memoryContext = {}) {
   return {
+    groundedTurn: readContextText(memoryContext, 'groundedTurnText'),
     relevantMemory: readContextText(memoryContext, 'promptText'),
     appliedMemory: readContextText(memoryContext, 'applicationText'),
     structuredHouseholdDefaults: readContextText(memoryContext, 'defaultsText'),
@@ -79,7 +80,10 @@ export function getKbPromptContextSections(memoryContext = {}) {
 
 export function buildKbContextSystemText(memoryContext = {}) {
   const sections = getKbPromptContextSections(memoryContext);
-  return `Relevant saved memory for this turn:
+  return `Grounded turn context:
+${sections.groundedTurn}
+
+Relevant saved memory for this turn:
 ${sections.relevantMemory}
 
 Applied memory and household context:

@@ -6,7 +6,8 @@ const LIGHTWEIGHT_CALL_PURPOSES = new Set([
   'memory_policy',
   'chat_title',
   'kb_working_context',
-  'kb_turn_interpretation_primary',
+  'kb_turn_grounding_provisional',
+  'kb_turn_grounding_final',
   'grocery_draft_generation_primary',
   'inventory_section_classification',
 ]);

@@ -206,7 +206,7 @@ test('recordAnthropicUsageFromResponse normalizes placeholder models and zero ch
       chatId: 0,
       runtimeEnabled: true,
       callSurface: 'chat',
-      callPurpose: 'kb_turn_interpretation_primary',
+      callPurpose: 'kb_turn_grounding_final',
       webSearchEnabledAtCall: false,
     });
     const rows = await db.getAnthropicUsageLedgerAllRows({ householdId: created.householdId });
@@ -439,7 +439,7 @@ test('executeKbActions dedupes identical web.search actions within one turn', as
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('interpretKbTurn rejects implicit web.search on ordinary recipe questions', async () => {
+test('interpretKbTurn does not invent implicit web.search on ordinary recipe questions', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-web-search-implicit-'));
   const dbPath = path.join(tempDir, 'implicit.db');
 
@@ -454,21 +454,7 @@ test('interpretKbTurn rejects implicit web.search on ordinary recipe questions',
       pin: '1234',
     });
     const chatId = await db.createChat(created.householdId, 'Rob', 'Chat');
-    let interpreterCalls = 0;
-    const anthropic = {
-      messages: {
-        create: async () => {
-          interpreterCalls += 1;
-          return {
-            model: 'claude-haiku-4-5-20251001',
-            usage: { input_tokens: 12, output_tokens: 22 },
-            content: [{ type: 'text', text: '{"kind":"execute_action","actions":[{"capability":"web.search","input":{"query":"best beef stew recipe"}}]}' }],
-          };
-        },
-      },
-    };
     const turn = await interpretKbTurn({
-      anthropic,
       req: { householdId: created.householdId },
       chatId,
       prompt: 'what goes well with beef stew',
@@ -480,11 +466,9 @@ test('interpretKbTurn rejects implicit web.search on ordinary recipe questions',
         assistantPersona: { assistantName: 'KitchenBot', assistantTone: 'helpful' },
       },
       runtimeProposedNextAction: null,
-      memoriesByKey: new Map(),
-      deps: { stripStoredMessageContentForDisplay: (text) => text },
     });
     const usageRows = await db.getAnthropicUsageLedgerAllRows({ householdId: created.householdId });
-    process.stdout.write(JSON.stringify({ interpreterCalls, turn, usageRows }));
+    process.stdout.write(JSON.stringify({ turn, usageRows }));
   `;
 
   const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
@@ -492,11 +476,9 @@ test('interpretKbTurn rejects implicit web.search on ordinary recipe questions',
     env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
   });
   const parsed = JSON.parse(stdout.trim());
-  assert.equal(parsed.interpreterCalls >= 1, true);
-  assert.equal(parsed.turn, null);
-  assert.equal(parsed.usageRows.length >= 1, true);
-  assert.equal(parsed.usageRows[0].turn_id, 'turn-ordinary');
-  assert.equal(parsed.usageRows[0].prompt_excerpt, 'what goes well with beef stew');
+  assert.equal(parsed.turn.kind, 'reply_only');
+  assert.deepEqual(parsed.turn.replyPlan, { kind: 'generate_reply' });
+  assert.equal(parsed.usageRows.length, 0);
 
   await fs.rm(tempDir, { recursive: true, force: true });
 });

@@ -58,6 +58,7 @@ import {
   getAnthropicUsageLedgerAllRows,
 } from './db.mjs';
 import { handleKbChatTurn } from './kb-runtime.mjs';
+import { respondWithKbErrorReply } from './kb-reply.mjs';
 import {
   buildPersonSummary,
   buildMemoryRecordForStorage,
@@ -602,6 +603,7 @@ async function requireGlobalAdminRead(req, res, next) {
 }
 
 const ANTHROPIC_KEY_USER_MESSAGE = 'Invalid or missing Anthropic key.';
+const ANTHROPIC_RUNTIME_USER_MESSAGE = 'There’s a problem with Anthropic right now. Please try again in a bit.';
 
 function isAnthropicSdkAuthOrKeyError(err) {
   if (!err || typeof err !== 'object') return false;
@@ -612,6 +614,24 @@ function isAnthropicSdkAuthOrKeyError(err) {
   const msg = String(err.message ?? '');
   if (/401|403|invalid[_\s]*(api[_\s]*)?key|authentication|incorrect api key/i.test(msg)) return true;
   return false;
+}
+
+function getAnthropicUserFacingErrorMessage(err) {
+  if (!err || typeof err !== 'object') return '';
+  if (isAnthropicSdkAuthOrKeyError(err)) return ANTHROPIC_KEY_USER_MESSAGE;
+  const status = Number(err.status ?? err.statusCode ?? err.response?.status);
+  const type = String(err.error?.type ?? err.type ?? '').trim().toLowerCase();
+  const message = String(err.error?.message ?? err.message ?? '').trim();
+  if (
+    status === 429 ||
+    status === 529 ||
+    type === 'rate_limit_error' ||
+    type === 'overloaded_error' ||
+    /rate\s*limit|overloaded|capacity|quota|credit balance|usage limit|too many requests|temporarily unavailable/i.test(message)
+  ) {
+    return ANTHROPIC_RUNTIME_USER_MESSAGE;
+  }
+  return '';
 }
 
 async function resolveAnthropicTargetHouseholdId(req, res, rawHouseholdId) {
@@ -4457,17 +4477,21 @@ app.post(
   requireNotImpersonatingReadOnly,
   rateLimitChatMiddleware,
   async (req, res) => {
+    let prompt = '';
+    let name = 'Rob';
+    let chatId = NaN;
+    let kbDeps = null;
     try {
-      const prompt = req.body.prompt?.trim();
-      const name = req.user || req.body.name?.trim() || 'Rob';
-      const chatId = Number(req.body.chatId);
+      prompt = req.body.prompt?.trim();
+      name = req.user || req.body.name?.trim() || 'Rob';
+      chatId = Number(req.body.chatId);
       if (!Number.isFinite(chatId)) {
         return res.status(400).json({ reply: 'chatId is required.' });
       }
 
       const inventoryServices = createBoundInventoryServices();
 
-      const kbDeps = buildKbRuntimeDeps({
+      kbDeps = buildKbRuntimeDeps({
         ANTHROPIC_KEY_USER_MESSAGE,
         addMessage,
         broadcastToChat,
@@ -4477,6 +4501,7 @@ app.post(
         buildKbContextPacket,
         incrementUserMessageCountForSender,
         isAnthropicSdkAuthOrKeyError,
+        getAnthropicUserFacingErrorMessage,
         mergeGroceryItemsFromAi: inventoryServices.mergeGroceryItemsFromAi,
         normalizeGroceryItemsForPost: inventoryServices.normalizeGroceryItemsForPost,
         normalizeInventoryNameKey: inventoryServices.normalizeInventoryNameKey,
@@ -4494,6 +4519,23 @@ app.post(
       });
     } catch (error) {
       console.error(error);
+      const anthropicReply = getAnthropicUserFacingErrorMessage(error);
+      if (!res.headersSent && anthropicReply && Number.isFinite(chatId) && kbDeps) {
+        return await respondWithKbErrorReply({
+          req,
+          res,
+          name,
+          chatId,
+          turnId: req.kbTurnId || null,
+          routePrompt: prompt,
+          replyText: anthropicReply,
+          memoryContext: null,
+          groundedTurn: null,
+          workingContext: null,
+          userMessageAlreadyPersisted: !!req.kbUserMessagePersisted,
+          deps: kbDeps,
+        });
+      }
       if (!res.headersSent) {
         if (isAnthropicSdkAuthOrKeyError(error)) {
           return res.status(503).json({ reply: ANTHROPIC_KEY_USER_MESSAGE });

@@ -3,21 +3,10 @@ import {
   formatWorkingContextText,
   normalizeWorkingContext,
 } from './kb-working-context.mjs';
+import { buildGroundedContextProfile, formatGroundedTurnText } from './kb-grounding.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
-}
-
-export function promptNeedsCookbookContext(prompt = '') {
-  const text = safeTrim(prompt).toLowerCase();
-  if (!text) return false;
-  const talksAboutCookbook =
-    /\b(cookbook|saved recipes?|saved meals?|favorites?|favourites?)\b/.test(text) ||
-    (/\b(recipe|recipes)\b/.test(text) && /\b(save|saved|remember|bookmark|favorite|favourite|again|reuse|our)\b/.test(text));
-  const asksAboutLinkedRecipeProvenance =
-    /\b(url|link|linked recipe|linked page|website|web page)\b/.test(text) &&
-    /\b(read|fetch|fetched|pulled|look(?:ed)?\s*(?:it)?\s*up|actually)\b/.test(text);
-  return talksAboutCookbook || asksAboutLinkedRecipeProvenance;
 }
 
 export function normalizeClientTimeContext(raw) {
@@ -58,22 +47,6 @@ export function formatAppMapContext() {
   ].join('\n');
 }
 
-function promptLooksReferential(prompt) {
-  const text = safeTrim(prompt).toLowerCase();
-  if (!text) return false;
-  return /\b(this|that|those|these|it|them)\b/.test(text) || /\bone of those\b/.test(text);
-}
-
-function promptLooksLikeRecipeBuild(prompt) {
-  const text = safeTrim(prompt).toLowerCase();
-  if (!text) return false;
-  return (
-    /\b(recipe|ingredients|instructions|directions)\b/.test(text) ||
-    /\bhow (?:do i|to) make\b/.test(text) ||
-    /\bshow me\b/.test(text)
-  );
-}
-
 function formatPendingActionContext(pendingAction) {
   if (!pendingAction || typeof pendingAction !== 'object' || Array.isArray(pendingAction)) return '(none)';
   const type = safeTrim(pendingAction.type) || 'unknown';
@@ -110,64 +83,16 @@ function formatCapabilitiesContext(capabilities) {
   ].join('\n');
 }
 
-export function buildPromptContextProfile({ prompt = '', runtimeProposedNextAction = null, workingContext = null } = {}) {
-  const text = safeTrim(prompt).toLowerCase();
-  const normalizedWorkingContext = normalizeWorkingContext(workingContext);
-  const hasWorkingContext = !!normalizedWorkingContext;
-  const hasMealContinuity =
-    hasWorkingContext &&
-    (
-      (Array.isArray(normalizedWorkingContext.mealIdeas) && normalizedWorkingContext.mealIdeas.length > 0) ||
-      (Array.isArray(normalizedWorkingContext.subjectItems) && normalizedWorkingContext.subjectItems.length > 0)
-    );
-  const includeWorkingContext =
-    !!runtimeProposedNextAction ||
-    (hasWorkingContext &&
-      (
-        promptLooksReferential(text) ||
-        /\b(for this|for that|swap|replace|change|revise|redo|make one|show me|add it)\b/.test(text) ||
-        (hasMealContinuity && promptLooksLikeRecipeBuild(text))
-      ));
-
-  const talksAboutGrocery = /\b(grocery|groceries|shopping|shopping list|grocery list|buy|need to buy)\b/.test(text);
-  const asksAboutGroceryState =
-    talksAboutGrocery &&
-    /\b(what'?s on|what is on|any|anything|do we have|already|current|right now|on our)\b/.test(text);
-  const requestsGroceryGeneration =
-    /\b(grocery|groceries|grocery list|shopping list)\b/.test(text) &&
-    /\b(for|from|give me|make|build|show|ingredients|meal|meals|plan|recipe|recipes)\b/.test(text);
-  const requestsMealPlanning =
-    /\b(meal plan|meal plans|plan meals|plan dinners|meals for|dinners for|weekly meals|weekly dinners|dinner ideas|meal ideas)\b/.test(text) ||
-    (/\b(meal|meals|dinner|dinners)\b/.test(text) &&
-      /\b(plan|planning|create|build|make|sketch|suggest|ideas|for this week|for the week|this week|tonight)\b/.test(text));
-  const talksAboutPantry = /\b(pantry|on hand|already have|use what we have|what we have|staples?)\b/.test(text);
-  const asksAboutPantryState = /\bwhat'?s in our pantry|what is in our pantry|what do we have in our pantry\b/.test(text);
-  const asksAboutDefaults =
-    /\b(default dinner portions?|default portions?|portions?|servings?|cooking style|weeknight|household defaults?|default settings|easy meals?|ambitious|normal meals?)\b/.test(text) ||
-    /\bhow many people (do we|are we going to)? cook(?:ing)? for\b/.test(text);
-  const talksAboutCookbook = promptNeedsCookbookContext(text);
-
-  const includeGrocery = talksAboutGrocery;
-  const includePantry =
-    asksAboutPantryState ||
-    (!asksAboutGroceryState && (talksAboutPantry || requestsGroceryGeneration)) ||
-    (talksAboutGrocery && /\b(pantry|on hand|already have|staple|staples)\b/.test(text));
-  const includeDefaults = requestsGroceryGeneration || requestsMealPlanning || asksAboutDefaults;
-  const includeCookbook =
-    talksAboutCookbook ||
-    (requestsMealPlanning && /\b(cookbook|saved|favorite|favourite|recipe|recipes)\b/.test(text)) ||
-    (requestsGroceryGeneration && /\b(cookbook|saved|favorite|favourite|recipe|recipes)\b/.test(text));
-
-  return {
-    includeDefaults,
-    includePantry,
-    includeGrocery,
-    includeCookbook,
-    includeWorkingContext,
-  };
+export function buildPromptContextProfile({ runtimeProposedNextAction = null, workingContext = null, groundedTurn = null, provisionalGrounding = null } = {}) {
+  return buildGroundedContextProfile({
+    groundedTurn,
+    provisionalGrounding,
+    runtimeProposedNextAction,
+    workingContext,
+  });
 }
 
-export function buildRuntimeKbContext({ baseContext, timeContext, workingContext, profile }) {
+export function buildRuntimeKbContext({ baseContext, timeContext, workingContext, profile, groundedTurn = null }) {
   const includeWorkingContext = !!profile?.includeWorkingContext;
   return {
     ...baseContext,
@@ -177,6 +102,8 @@ export function buildRuntimeKbContext({ baseContext, timeContext, workingContext
     timeContext,
     timeContextText: formatClientTimeContext(timeContext),
     pendingActionText: formatPendingActionContext(profile?.pendingAction || null),
+    groundedTurn,
+    groundedTurnText: groundedTurn ? formatGroundedTurnText(groundedTurn) : '(none)',
     workingContext: includeWorkingContext ? workingContext : null,
     workingContextText: includeWorkingContext ? formatWorkingContextText(workingContext) : '(none)',
     appliedWorkingContextText: includeWorkingContext ? formatAppliedWorkingContextText(workingContext) : '(none)',

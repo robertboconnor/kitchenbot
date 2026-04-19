@@ -3,9 +3,12 @@ import {
   executeCookbookDelete,
   executeCookbookList,
   executeCookbookSave,
+  executeCookbookUpdate,
   interpretCookbookSaveFollowUp,
+  interpretCookbookUpdateFollowUp,
   normalizeCookbookDeleteInput,
   normalizeCookbookSaveInput,
+  normalizeCookbookUpdateInput,
 } from './cookbook-executor.mjs';
 import { previewGroceryListFromConversation, writeGroceryListFromConversation } from './grocery-executor.mjs';
 import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, executeGroceryUncheck } from './grocery-action-executor.mjs';
@@ -13,12 +16,14 @@ import { executeHouseholdDefaultsUpdate } from './household-defaults-executor.mj
 import { executeMealRefine } from './meal-refine-executor.mjs';
 import { executeGroceryMoveToPantry, executePantryAdd, executePantryMoveToGrocery, executePantryRemove } from './pantry-executor.mjs';
 import { executeWebSearch } from './web-search-executor.mjs';
+import { executeChatRename, normalizeChatRenameActionInput } from './chat-executor.mjs';
 import {
   inferMemoryKeyAndValue,
   normalizeMemoryKey,
   normalizeMemoryValue,
 } from './kb-memory-policy.mjs';
 import { normalizeWorkingContext } from './kb-working-context.mjs';
+import { executeRecipeRevise } from './recipe-executor.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -28,12 +33,18 @@ function progressTextForNarrationType(narrationType) {
   switch (String(narrationType ?? '').trim()) {
     case 'memory.save':
       return 'Saving memory…';
+    case 'recipe.revise':
+      return 'Reworking the recipe…';
     case 'cookbook.save':
       return 'Saving to cookbook…';
+    case 'cookbook.update':
+      return 'Updating cookbook…';
     case 'cookbook.list':
       return 'Looking through cookbook…';
     case 'cookbook.delete':
       return 'Updating cookbook…';
+    case 'chat.rename':
+      return 'Renaming chat…';
     case 'grocery.write':
       return 'Updating the grocery list…';
     case 'grocery.preview':
@@ -87,13 +98,34 @@ function normalizeMemorySaveActionInput(input, context = {}) {
   return null;
 }
 
+function promptClearlyRequestsDirectGroceryWrite(promptRaw) {
+  const text = safeTrim(promptRaw).toLowerCase();
+  if (!text) return false;
+  const mentionsList = /\b(grocery list|groceries|shopping list|shopping)\b/.test(text);
+  const wantsMutation = /\b(add|buy|get|put|write|update|build|make|create|append|replace|clear|remove|take off|need)\b/.test(text);
+  return mentionsList && wantsMutation;
+}
+
 function normalizeGroceryWriteActionInput(input, context = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const out = {};
+  const groundedCurrentObjectType = safeTrim(context.groundedTurn?.currentObject?.objectType);
   const mode = safeTrim(raw.mode).toLowerCase();
   if (mode && ['append', 'replace'].includes(mode)) out.mode = mode;
   const source = safeTrim(raw.source).toLowerCase();
   if (source) out.source = source;
+  if (raw.sourceMealSet && typeof raw.sourceMealSet === 'object' && !Array.isArray(raw.sourceMealSet)) {
+    out.sourceMealSet = raw.sourceMealSet;
+    out.source = out.source || 'meal_set';
+  }
+  if (raw.sourceMealSetSelection && typeof raw.sourceMealSetSelection === 'object' && !Array.isArray(raw.sourceMealSetSelection)) {
+    out.sourceMealSetSelection = raw.sourceMealSetSelection;
+    out.source = out.source || 'meal_set_selection';
+  }
+  if (raw.sourceGroceryProposal && typeof raw.sourceGroceryProposal === 'object' && !Array.isArray(raw.sourceGroceryProposal)) {
+    out.sourceGroceryProposal = raw.sourceGroceryProposal;
+    out.source = out.source || 'grocery_proposal';
+  }
   if (Array.isArray(raw.items)) {
     const items = raw.items
       .map((item) => ({
@@ -104,19 +136,31 @@ function normalizeGroceryWriteActionInput(input, context = {}) {
       .filter((item) => item.name);
     if (items.length > 0) out.items = items;
   }
-  if (!Array.isArray(out.items) || out.items.length === 0) {
+  const hasStructuredSource =
+    !!out.sourceMealSet ||
+    !!out.sourceMealSetSelection ||
+    !!out.sourceGroceryProposal ||
+    ['meal_set', 'meal_set_selection', 'grocery_proposal'].includes(groundedCurrentObjectType);
+  if ((!Array.isArray(out.items) || out.items.length === 0) && !hasStructuredSource) {
     const inferredItems = inferExplicitGroceryItemsFromPrompt(context.originalPrompt);
     if (inferredItems.length > 0) {
       out.items = inferredItems;
       out.source = out.source || 'explicit_items';
     }
   }
-  if ((!Array.isArray(out.items) || out.items.length === 0) && /\b(add|buy|get|put|all|them|those|ingredients?)\b/i.test(safeTrim(context.originalPrompt))) {
+  const originalPrompt = safeTrim(context.originalPrompt);
+  const followUpLooksReferential =
+    /\b(all|them|those|these|ingredients?)\b/i.test(originalPrompt) ||
+    promptClearlyRequestsDirectGroceryWrite(originalPrompt);
+  if ((!Array.isArray(out.items) || out.items.length === 0) && !hasStructuredSource && followUpLooksReferential) {
     const inferredItems = buildIngredientItemsFromWorkingContext(context.workingContext || context.memoryContext?.workingContext);
     if (inferredItems.length > 0) {
       out.items = inferredItems;
       out.source = out.source || 'offered_items';
     }
+  }
+  if ((!Array.isArray(out.items) || out.items.length === 0) && !safeTrim(out.source) && !promptClearlyRequestsDirectGroceryWrite(originalPrompt)) {
+    return null;
   }
   return out;
 }
@@ -156,7 +200,23 @@ function normalizeEmptyActionInput() {
 function normalizeMealRefineActionInput(input, context = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const request = safeTrim(raw.request || raw.payload || raw.text || raw.change || raw.refinement || context.originalPrompt);
-  return request ? { request } : null;
+  if (!request) return null;
+  const normalized = { request };
+  if (raw.targetMealSet && typeof raw.targetMealSet === 'object' && !Array.isArray(raw.targetMealSet)) {
+    normalized.targetMealSet = raw.targetMealSet;
+  }
+  return normalized;
+}
+
+function normalizeRecipeReviseActionInput(input, context = {}) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const request = safeTrim(raw.request || raw.payload || raw.text || raw.change || raw.revision || context.originalPrompt);
+  const normalized = request ? { request } : null;
+  if (!normalized) return null;
+  if (raw.targetRecipe && typeof raw.targetRecipe === 'object' && !Array.isArray(raw.targetRecipe)) {
+    normalized.targetRecipe = raw.targetRecipe;
+  }
+  return normalized;
 }
 
 function normalizePantryItems(raw) {
@@ -368,10 +428,14 @@ function interpretGroceryWriteFollowUp(prompt, nextAction, context = {}) {
     : buildIngredientItemsFromWorkingContext(context.workingContext || context.memoryContext?.workingContext);
   if (offeredItems.length === 0) return null;
   const names = offeredItems.map((item) => safeTrim(item?.name).toLowerCase()).filter(Boolean);
+  const explicitlyRefersToSet = /\b(all|them|those|these|ingredients?)\b/.test(text);
+  const explicitGroceryIntent = promptClearlyRequestsDirectGroceryWrite(prompt);
+  const mentionsNamedItemWithGroceryIntent = explicitGroceryIntent && names.some((name) => text.includes(name));
   const refersToOfferedSet =
     isAffirmativeFollowUp(prompt) ||
-    /\b(add|buy|get|put|ingredients?)\b/.test(text) ||
-    names.some((name) => text.includes(name));
+    explicitlyRefersToSet ||
+    explicitGroceryIntent ||
+    mentionsNamedItemWithGroceryIntent;
   if (!refersToOfferedSet) return null;
   return {
     kind: 'execute_action',
@@ -401,6 +465,23 @@ export const KB_SKILLS = {
     normalizeActionInput: normalizeMemorySaveActionInput,
     execute: executeMemorySave,
   },
+  'recipe.revise': {
+    id: 'recipe.revise',
+    description: 'Revise the currently active recipe in chat without mutating saved cookbook state.',
+    narrationType: 'recipe.revise',
+    contextProfile: {
+      includeCookbook: true,
+      includeWorkingContext: true,
+    },
+    interpreterDescription:
+      'Revise the active recipe when the user tweaks ingredients, steps, seasoning, heat, substitutions, or structure in conversational recipe-edit terms. This is chat-only unless the user explicitly asks to update the saved cookbook entry.',
+    exampleAction: {
+      capability: 'recipe.revise',
+      input: { request: 'add tajin and work it into the dressing' },
+    },
+    normalizeActionInput: normalizeRecipeReviseActionInput,
+    execute: executeRecipeRevise,
+  },
   'cookbook.save': {
     id: 'cookbook.save',
     description: 'Save the current recipe, meal idea, or web-inspired dish to the household cookbook.',
@@ -419,6 +500,24 @@ export const KB_SKILLS = {
     normalizeActionInput: normalizeCookbookSaveInput,
     interpretFollowUp: interpretCookbookSaveFollowUp,
     execute: executeCookbookSave,
+  },
+  'cookbook.update': {
+    id: 'cookbook.update',
+    description: 'Replace a saved cookbook recipe with an explicitly revised version.',
+    narrationType: 'cookbook.update',
+    contextProfile: {
+      includeCookbook: true,
+      includeWorkingContext: true,
+    },
+    interpreterDescription:
+      'Update an existing saved cookbook recipe when the user explicitly asks to replace, update, or save a revised version of that saved entry.',
+    exampleAction: {
+      capability: 'cookbook.update',
+      input: { request: 'replace that saved recipe with the revised version' },
+    },
+    normalizeActionInput: normalizeCookbookUpdateInput,
+    interpretFollowUp: interpretCookbookUpdateFollowUp,
+    execute: executeCookbookUpdate,
   },
   'cookbook.list': {
     id: 'cookbook.list',
@@ -451,6 +550,20 @@ export const KB_SKILLS = {
     },
     normalizeActionInput: normalizeCookbookDeleteInput,
     execute: executeCookbookDelete,
+  },
+  'chat.rename': {
+    id: 'chat.rename',
+    description: 'Rename the current chat, either to an exact title or a fresh context-aware one.',
+    narrationType: 'chat.rename',
+    contextProfile: {},
+    interpreterDescription:
+      'Rename the current chat when the user explicitly asks to rename or retitle this chat. If they provide a title, use it exactly. If they just ask to rename the chat, generate a fresh short title from the current conversation context.',
+    exampleAction: {
+      capability: 'chat.rename',
+      input: { request: 'rename this chat to Cod And Asparagus Plan' },
+    },
+    normalizeActionInput: normalizeChatRenameActionInput,
+    execute: executeChatRename,
   },
   'grocery.write': {
     id: 'grocery.write',
@@ -738,6 +851,102 @@ export function getKbContextProfileForActions(actions) {
   );
 }
 
+function findGroundedObject(groundedTurn, predicate) {
+  const objects = Array.isArray(groundedTurn?.activeObjects) ? groundedTurn.activeObjects : [];
+  return objects.find((object) => predicate(object)) || null;
+}
+
+function applyGroundedSkillInput(capability, input, context = {}) {
+  const groundedTurn = context.groundedTurn && typeof context.groundedTurn === 'object' ? context.groundedTurn : null;
+  if (!groundedTurn) return input;
+  const out = input && typeof input === 'object' && !Array.isArray(input) ? { ...input } : {};
+  const currentObject = groundedTurn.currentObject && typeof groundedTurn.currentObject === 'object' ? groundedTurn.currentObject : null;
+
+  if (capability === 'recipe.revise' && !out.targetRecipe) {
+    const targetRecipe =
+      (currentObject?.objectType === 'chat_recipe'
+        ? {
+            type: 'chat_recipe',
+            title: safeTrim(currentObject.title),
+            label: safeTrim(currentObject.title || currentObject.versionSummary),
+            recipeText: safeTrim(currentObject.recipeText),
+            recipeRecord: currentObject.recipeRecord,
+          }
+        : null) ||
+      findGroundedObject(groundedTurn, (object) => object?.type === 'chat_recipe') ||
+      findGroundedObject(groundedTurn, (object) => object?.type === 'cookbook_entry');
+    if (targetRecipe) out.targetRecipe = targetRecipe;
+  }
+
+  if (capability === 'cookbook.save' && !out.targetRecipe && currentObject?.objectType === 'chat_recipe') {
+    out.targetRecipe = {
+      type: 'chat_recipe',
+      title: safeTrim(currentObject.title),
+      label: safeTrim(currentObject.title || currentObject.versionSummary),
+      recipeText: safeTrim(currentObject.recipeText),
+      recipeRecord: currentObject.recipeRecord,
+    };
+  }
+
+  if (capability === 'cookbook.update') {
+    const targetEntry = findGroundedObject(groundedTurn, (object) => object?.type === 'cookbook_entry');
+    if (targetEntry) {
+      if (!Number.isFinite(Number(out.id)) && Number.isFinite(Number(targetEntry.id))) out.id = Number(targetEntry.id);
+      if (!safeTrim(out.name) && safeTrim(targetEntry.title || targetEntry.label)) out.name = safeTrim(targetEntry.title || targetEntry.label);
+      if (!out.targetCookbookEntry) out.targetCookbookEntry = targetEntry;
+    }
+    if (!out.targetRecipe && currentObject?.objectType === 'chat_recipe') {
+      out.targetRecipe = {
+        type: 'chat_recipe',
+        title: safeTrim(currentObject.title),
+        label: safeTrim(currentObject.title || currentObject.versionSummary),
+        recipeText: safeTrim(currentObject.recipeText),
+        recipeRecord: currentObject.recipeRecord,
+      };
+    }
+  }
+
+  if (capability.startsWith('grocery.') && !safeTrim(out.targetList)) {
+    const targetList = findGroundedObject(groundedTurn, (object) => object?.type === 'grocery_list');
+    if (targetList) out.targetList = 'household_grocery_list';
+  }
+  if (capability === 'grocery.write') {
+    if (!out.sourceMealSet && currentObject?.objectType === 'meal_set') {
+      out.sourceMealSet = currentObject;
+      out.source = safeTrim(out.source || 'meal_set');
+    }
+    if (!out.sourceMealSetSelection && currentObject?.objectType === 'meal_set_selection') {
+      out.sourceMealSetSelection = currentObject;
+      out.source = safeTrim(out.source || 'meal_set_selection');
+    }
+    if (!out.sourceGroceryProposal && currentObject?.objectType === 'grocery_proposal') {
+      out.sourceGroceryProposal = currentObject;
+      out.source = safeTrim(out.source || 'grocery_proposal');
+    }
+  }
+
+  if (capability.startsWith('pantry.') && !safeTrim(out.targetPantry)) {
+    const pantry = findGroundedObject(groundedTurn, (object) => object?.type === 'pantry_item_or_list');
+    if (pantry) out.targetPantry = 'household_pantry';
+  }
+
+  if (capability === 'memory.save' && !safeTrim(out.targetEntity)) {
+    const entity = findGroundedObject(groundedTurn, (object) => object?.type === 'memory_entity');
+    if (entity) out.targetEntity = safeTrim(entity.label);
+  }
+
+  if (capability === 'chat.rename' && !Number.isFinite(Number(out.targetChatId))) {
+    const chatThread = findGroundedObject(groundedTurn, (object) => object?.type === 'chat_thread');
+    if (chatThread && Number.isFinite(Number(chatThread.id))) out.targetChatId = Number(chatThread.id);
+  }
+
+  if (capability === 'meal.refine' && !out.targetMealSet && currentObject?.objectType === 'meal_set') {
+    out.targetMealSet = currentObject;
+  }
+
+  return out;
+}
+
 export function normalizeKbSkillAction(action, context = {}) {
   if (!action || typeof action !== 'object' || Array.isArray(action)) return null;
   const capability = safeTrim(action.capability);
@@ -747,7 +956,7 @@ export function normalizeKbSkillAction(action, context = {}) {
   if (capability === 'web.search' && !context.webSearchEnabled) return null;
   const input = skill.normalizeActionInput ? skill.normalizeActionInput(action.input, context) : action.input ?? {};
   if (input == null || typeof input !== 'object' || Array.isArray(input)) return null;
-  return { capability, input };
+  return { capability, input: applyGroundedSkillInput(capability, input, context) };
 }
 
 export function buildKbHelpText() {

@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFileCb);
 
-test('respondWithKbReply persists a bounded memory-save next action for yes-style follow-ups', async () => {
+test('respondWithKbReply does not invent a memory-save next action from reply text alone', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-memory-next-action-'));
   const dbPath = path.join(tempDir, 'memory-next-action.db');
 
@@ -34,29 +34,10 @@ test('respondWithKbReply persists a bounded memory-save next action for yes-styl
       messages: {
         create: async () => {
           callCount += 1;
-          if (callCount === 1) {
-            return {
-              model: 'claude-sonnet-4-5',
-              usage: { input_tokens: 10, output_tokens: 40 },
-              content: [{ type: 'text', text: "The cleanest way to store it is: Elle is okay with roasted peppers in supporting roles, but not when they're the main ingredient. Do you want me to save that for her now?" }],
-            };
-          }
           return {
             model: 'claude-sonnet-4-5',
-            usage: { input_tokens: 10, output_tokens: 30 },
-            content: [{ type: 'text', text: JSON.stringify({
-              kind: 'choice',
-              question: 'Do you want me to save that for Elle now?',
-              defaultChoiceId: '1',
-              choices: [
-                {
-                  id: '1',
-                  label: 'Save that preference for Elle',
-                  key: 'Elle.preferences.artichokes',
-                  value: "okay with roasted peppers in supporting roles, but not when they're the main ingredient",
-                },
-              ],
-            }) }],
+            usage: { input_tokens: 10, output_tokens: 40 },
+            content: [{ type: 'text', text: "The cleanest way to store it is: Elle is okay with roasted peppers in supporting roles, but not when they're the main ingredient. If you want me to save that, ask me to save it for Elle." }],
           };
         },
       },
@@ -104,11 +85,83 @@ test('respondWithKbReply persists a bounded memory-save next action for yes-styl
   });
 
   const parsed = JSON.parse(stdout.trim());
-  assert.equal(parsed.callCount >= 2, true);
-  assert.equal(parsed.state.proposedNextAction?.type, 'choice');
-  assert.equal(parsed.state.proposedNextAction?.action?.capability, 'memory.save');
-  assert.equal(parsed.state.proposedNextAction?.defaultChoiceId, '1');
-  assert.equal(parsed.state.proposedNextAction?.choices?.[0]?.actionInput?.key, 'elle_preferences');
+  assert.equal(parsed.callCount >= 1, true);
+  assert.equal(parsed.state.proposedNextAction ?? null, null);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('respondWithKbReply does not persist meal-only working context when there is no bounded next action', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-working-context-persist-'));
+  const dbPath = path.join(tempDir, 'working-context-persist.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const { respondWithKbReply } = await import(new URL('./kb-reply.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Working context persistence');
+    const res = {
+      headers: {},
+      setHeader(name, value) { this.headers[name] = value; },
+      write() {},
+      end() {},
+    };
+
+    await respondWithKbReply({
+      anthropic: null,
+      req: {
+        householdId: created.householdId,
+        user: 'Rob',
+        kbTurnId: 'turn-working-context-persist',
+        kbCapabilities: {},
+      },
+      res,
+      name: 'Rob',
+      chatId,
+      routePrompt: 'We already finished the soup a few nights ago. Remind me what the chicken recipe was.',
+      replyText: 'The chicken recipe was the lemon-herb roast chicken.',
+      replyPlan: null,
+      memoryContext: {
+        assistantPersona: { assistantName: 'KitchenBot', assistantTone: 'helpful' },
+      },
+      workingContext: {
+        topicSummary: 'Old dinner plan',
+        mealIdeas: ['Smoky bean soup', 'Lemon-herb roast chicken'],
+        subjectItems: ['Smoky bean soup', 'Lemon-herb roast chicken'],
+        groceryFocus: ['Smoky bean soup', 'Lemon-herb roast chicken'],
+      },
+      outcomes: [],
+      userMessageAlreadyPersisted: false,
+      proposedNextAction: null,
+      deps: {
+        incrementUserMessageCountForSender: async () => {},
+        buildKbContextPacket: async () => ({
+          assistantPersona: { assistantName: 'KitchenBot', assistantTone: 'helpful' },
+        }),
+        broadcastToChat: () => {},
+        emitKbProgress: async () => {},
+        stripStoredMessageContentForDisplay: (text) => text,
+      },
+    });
+
+    const state = await db.getChatRuntimeState(chatId, created.householdId);
+    process.stdout.write(JSON.stringify({ state }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.state?.proposedNextAction ?? null, null);
+  assert.equal(parsed.state?.workingContext ?? null, null);
 
   await fs.rm(tempDir, { recursive: true, force: true });
 });

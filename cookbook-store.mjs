@@ -104,11 +104,11 @@ export function looksLikeRecipeText(raw) {
   if (!text.trim()) return false;
   const lines = text.split('\n').map((line) => safeTrim(line)).filter(Boolean);
   if (lines.length < 6) return false;
-  const joined = lines.join('\n').toLowerCase();
+  const normalizedLines = lines.map((line) => normalizeRecipeHeader(line));
   const hasSectionHeaders =
-    /(^|\n)(?:[*#\s-]*)ingredients?\s*:?(?:\n|$)/i.test(joined) &&
-    /(^|\n)(?:[*#\s-]*)(?:instructions?|directions?|method)\s*:?(?:\n|$)/i.test(joined);
-  const ingredientishLines = lines.filter((line) =>
+    normalizedLines.some((line) => /^ingredients?$/.test(line)) &&
+    normalizedLines.some((line) => /^(instructions?|directions?|method|steps?)$/.test(line));
+  const ingredientishLines = lines.map((line) => cleanRecipeLine(line)).filter((line) =>
     /^(\d+\/?\d*|\d+\.\d+|one|two|three|four|five|six|seven|eight|nine|ten|pinch|salt|pepper)\b/i.test(line)
   ).length;
   return hasSectionHeaders || ingredientishLines >= 5;
@@ -166,6 +166,14 @@ function sanitizeCookbookSourceTitle(raw, { title = '' } = {}) {
   if (
     lowered.startsWith("here's the full recipe for ") ||
     lowered.startsWith('here is the full recipe for ') ||
+    lowered.startsWith("here's the updated ") ||
+    lowered.startsWith('here is the updated ') ||
+    lowered.startsWith("here's the revised ") ||
+    lowered.startsWith('here is the revised ') ||
+    lowered.startsWith("here's the edited ") ||
+    lowered.startsWith('here is the edited ') ||
+    lowered.startsWith('updated recipe for ') ||
+    lowered.startsWith('revised recipe for ') ||
     lowered.startsWith('full recipe for ') ||
     lowered === 'saved recipe'
   ) {
@@ -381,15 +389,82 @@ function cleanRecipeLine(line) {
   return safeTrim(line)
     .replace(/^[\u2022*\-]+\s*/, '')
     .replace(/^\d+\.\s*/, '')
-    .replace(/^\*\*(.+?)\*\*[:\s]*/,'$1: ')
+    .replace(/^[_*]+(.+?)[_*]+$/, '$1')
+    .replace(/^\*\*(.+?)\*\*[:\s]*/, '$1: ')
+    .replace(/^\*(.+?)\*[:\s]*/, '$1: ')
+    .replace(/\*\*/g, '')
+    .replace(/\*+$/g, '')
+    .replace(/::+/g, ':')
     .replace(/\s+/g, ' ');
 }
 
 function normalizeRecipeHeader(line) {
   return safeTrim(line)
     .replace(/^[#*\-\s]+/, '')
+    .replace(/[*_]+$/g, '')
     .replace(/[:\s]+$/, '')
+    .replace(/[*_]+$/g, '')
     .toLowerCase();
+}
+
+function isRecipeMetadataLine(line) {
+  const lowered = normalizeRecipeHeader(line);
+  return (
+    /^(prep(?: time)?|cook(?: time)?|active(?: time)?|total(?: time)?|yield|special equipment|tips?)$/i.test(lowered) ||
+    /^serves?(?:\s+\d[\w\s/-]*)?$/i.test(lowered) ||
+    /^\d+\s+servings?$/i.test(lowered)
+  );
+}
+
+function isRecipeMetadataValueLine(line) {
+  const text = safeTrim(line);
+  if (!text) return false;
+  return (
+    /^(?:about\s+)?\d+\s*(?:mins?|minutes?|hrs?|hours?)(?:\s+\d+\s*(?:mins?|minutes?))?$/i.test(text) ||
+    /^\d+\s*-\s*\d+\s*(?:mins?|minutes?|hrs?|hours?)$/i.test(text) ||
+    /^\d+\s+servings?$/i.test(text) ||
+    /^\d+\s*-\s*\d+\s+servings?$/i.test(text)
+  );
+}
+
+function looksLikeConversationalOfferLine(line) {
+  const lowered = safeTrim(line).toLowerCase();
+  if (!lowered) return false;
+  return (
+    /\b(want me to|would you like me to|do you want me to|if you want, i can|i can replace|i can save|save this to your cookbook|add any ingredients to your grocery list|grocery list tab)\b/.test(
+      lowered
+    ) ||
+    /\b(which i know you do|if she'?ll be eating this too|if he'?ll be eating this too|for rob|for elle|you love)\b/.test(lowered)
+  );
+}
+
+function chooseRecipeTitleFromPreamble(lines = []) {
+  const candidates = (Array.isArray(lines) ? lines : [])
+    .map((line) => safeTrim(line))
+    .filter(Boolean)
+    .filter((line) => !/^(jump to recipe)$/i.test(line))
+    .filter((line) => !looksLikeSectionHeader(line))
+    .filter((line) => !isRecipeMetadataLine(line))
+    .filter((line) => !isRecipeMetadataValueLine(line))
+    .filter((line) => !looksLikeConversationalOfferLine(line))
+    .map((line) => sanitizeCookbookDisplayTitle(line))
+    .filter(Boolean);
+  if (candidates.length === 0) return '';
+
+  return (
+    [...candidates]
+      .reverse()
+      .find(
+        (line) =>
+          line.length <= 80 &&
+          !/[.!?]$/.test(line) &&
+          !line.includes(':') &&
+          line.split(/\s+/).filter(Boolean).length <= 10 &&
+          /\b[a-z]/i.test(line)
+      ) ||
+    candidates[0] ||
+    ''
+  );
 }
 
 export function inferCookbookCategory(raw) {
@@ -447,6 +522,7 @@ export function parseCookbookRecipeText(raw, { preferredTitle = '', sourceUrl = 
   let instructions = [];
   const notes = [];
   let section = 'preamble';
+  const preambleLines = [];
 
   for (const originalLine of lines) {
     const line = safeTrim(originalLine);
@@ -456,42 +532,39 @@ export function parseCookbookRecipeText(raw, { preferredTitle = '', sourceUrl = 
       section = 'ingredients';
       continue;
     }
-    if (/^(instructions?|directions?|method)$/i.test(lowered)) {
+    if (/^(instructions?|directions?|method|steps?)$/i.test(lowered)) {
       section = 'instructions';
       continue;
     }
-    if (/^notes?$/i.test(lowered)) {
+    if (/^(notes?|tips?)$/i.test(lowered)) {
       section = 'notes';
       continue;
     }
-    if (!title && section === 'preamble') {
-      if (!/^(jump to recipe|prep|cook|active|total|serves|yield)$/i.test(lowered)) {
-        title = line;
-        continue;
-      }
+    if (section === 'preamble') {
+      if (!/^(jump to recipe)$/i.test(lowered)) preambleLines.push(line);
+      continue;
     }
     if (section === 'ingredients') {
-      ingredients.push(cleanRecipeLine(line));
+      const cleaned = cleanRecipeLine(line);
+      if (cleaned && !looksLikeConversationalOfferLine(cleaned)) ingredients.push(cleaned);
       continue;
     }
     if (section === 'instructions') {
-      instructions.push(cleanRecipeLine(line));
+      const cleaned = cleanRecipeLine(line);
+      if (cleaned && !looksLikeConversationalOfferLine(cleaned)) instructions.push(cleaned);
       continue;
     }
-    if (/^(prep|cook|active|total|serves|yield|special equipment)$/i.test(lowered)) {
+    if (isRecipeMetadataLine(line)) {
       notes.push(line);
       continue;
     }
-    if (section === 'preamble' && /^(jump to recipe)$/i.test(lowered)) continue;
-    if (section === 'preamble' && /^special equipment$/i.test(lowered)) {
-      section = 'notes';
-      continue;
-    }
     if (section === 'notes') {
-      notes.push(cleanRecipeLine(line));
+      const cleaned = cleanRecipeLine(line);
+      if (cleaned && !looksLikeConversationalOfferLine(cleaned)) notes.push(cleaned);
     }
   }
 
+  title = chooseRecipeTitleFromPreamble(preambleLines);
   const parsedTitle = normalizeCookbookTitle(title || 'Saved recipe');
   title = normalizeCookbookTitle(preferredTitle || parsedTitle || 'Saved recipe');
   ingredients = normalizeStringList(ingredients, 40, 220);
@@ -670,6 +743,7 @@ export async function shapeCookbookRecordForStorage({
   latestAssistantText = '',
   memoryContext = null,
   sourceKind = '',
+  preserveTitle = false,
 }) {
   const baseRecord = buildCookbookRecordForStorage({
     ...(candidateRecord || {}),
@@ -729,7 +803,7 @@ Rules:
     return (
       buildCookbookRecordForStorage({
         ...baseRecord,
-        title: shaped?.title || baseRecord.title,
+        title: preserveTitle ? baseRecord.title : (shaped?.title || baseRecord.title),
         summary: shaped?.summary || baseRecord.summary,
         category: shaped?.category || baseRecord.category,
         tags: Array.isArray(shaped?.tags) && shaped.tags.length > 0 ? shaped.tags : baseRecord.tags,
@@ -1158,9 +1232,23 @@ export function selectRelevantCookbookEntries(entries, prompt, limit = 8) {
     40
   ).map((term) => term.toLowerCase());
 
+  const promptText = String(prompt ?? '');
+  const explicitCookbookReference = /\b(cookbook|saved recipes?|saved meals?|favorites?)\b/i.test(promptText);
+  const asksForSpecificRecipe =
+    /\b(give me|show me|open|pull up|remind me|update|replace|revise|edit|make)\b/i.test(promptText) &&
+    /\b(recipe|dish|meal)\b/i.test(promptText);
   const wantsCookbookOverview =
-    /\b(cookbook|saved recipes?|saved meals?|favorites?)\b/i.test(String(prompt ?? '')) &&
-    /\b(what|show|list|saved|have|in|our)\b/i.test(String(prompt ?? ''));
+    !asksForSpecificRecipe &&
+    explicitCookbookReference &&
+    /\b(what|show|list|saved|have|in|our)\b/i.test(promptText);
+  const asksForFreshRecipeDraft =
+    !explicitCookbookReference &&
+    /\b(give me|suggest|come up with|create|build|draft)\b/i.test(promptText) &&
+    /\b(recipe|dish|meal)\b/i.test(promptText);
+  const asksForSpecificSavedRecipeRecall =
+    !explicitCookbookReference &&
+    /\b(show me|open|pull up|remind me|give me the recipe for|full recipe for|what was)\b/i.test(promptText) &&
+    /\b(recipe|dish|meal)\b/i.test(promptText);
 
   const sorted = [...(Array.isArray(entries) ? entries : [])].sort(
     (a, b) =>
@@ -1169,8 +1257,9 @@ export function selectRelevantCookbookEntries(entries, prompt, limit = 8) {
   );
 
   if (wantsCookbookOverview || textTerms.length === 0) return sorted.slice(0, limit);
+  if (asksForFreshRecipeDraft) return [];
 
-  return sorted
+  const scored = sorted
     .map((entry) => {
       const haystack = [
         entry.title,
@@ -1188,9 +1277,16 @@ export function selectRelevantCookbookEntries(entries, prompt, limit = 8) {
       return { entry, score };
     })
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map((item) => item.entry);
+    .sort((a, b) => b.score - a.score);
+
+  if (!explicitCookbookReference && !asksForSpecificSavedRecipeRecall) {
+    return scored
+      .filter((item) => item.score >= 5)
+      .slice(0, limit)
+      .map((item) => item.entry);
+  }
+
+  return scored.slice(0, limit).map((item) => item.entry);
 }
 
 export function formatCookbookEntriesText(entries = []) {
@@ -1249,5 +1345,12 @@ export function findCookbookMatches(entries, rawName) {
   const list = Array.isArray(entries) ? entries : [];
   const exact = list.filter((entry) => normalizeCookbookTitleKey(entry?.title) === query);
   if (exact.length > 0) return exact;
-  return list.filter((entry) => normalizeCookbookTitleKey(entry?.title).includes(query));
+  const contains = list.filter((entry) => normalizeCookbookTitleKey(entry?.title).includes(query));
+  if (contains.length > 0) return contains;
+  const queryTokens = query.split(' ').filter(Boolean);
+  if (queryTokens.length === 0) return [];
+  return list.filter((entry) => {
+    const titleTokens = new Set(normalizeCookbookTitleKey(entry?.title).split(' ').filter(Boolean));
+    return queryTokens.every((token) => titleTokens.has(token));
+  });
 }

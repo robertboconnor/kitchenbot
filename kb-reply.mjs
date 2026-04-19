@@ -1,13 +1,19 @@
 import {
   addMessage,
   clearChatRuntimeState,
+  getChatSummary,
   getMessages,
   setChatRuntimeState,
   updateChatTitle,
 } from './db.mjs';
+import {
+  fallbackChatTitle,
+  generateChatTitle,
+  sanitizeChatTitle,
+} from './chat-title.mjs';
 import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
-import { promptNeedsCookbookContext } from './kb-context-policy.mjs';
+import { buildGroundedContextProfile } from './kb-grounding.mjs';
 import {
   buildKbAssistantPersonaSystemText,
   buildKbContextSystemText,
@@ -20,18 +26,64 @@ import {
   formatWorkingContextText,
   normalizeWorkingContext,
   refreshKbWorkingContext,
+  selectContinuationWorkingContext,
 } from './kb-working-context.mjs';
-import { buildChoiceActionState, buildClarifyActionState } from './kb-next-action.mjs';
+import { formatGroundedTurnText } from './kb-grounding.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
 }
 
-function normalizeLooseEntityKey(raw) {
-  return safeTrim(raw)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
+function promptMentionsGrocerySurface(prompt = '') {
+  return /\b(grocery list|groceries|shopping list|shopping)\b/i.test(safeTrim(prompt));
+}
+
+function hasRealCookbookContext(memoryContext = null) {
+  const selected = Array.isArray(memoryContext?.selectedCookbookEntries) ? memoryContext.selectedCookbookEntries.filter(Boolean) : [];
+  const cookbookText = safeTrim(memoryContext?.cookbookText);
+  return selected.length > 0 || (!!cookbookText && cookbookText !== '(none)');
+}
+
+function promptExplicitlyRequestsCookbookContext(prompt = '') {
+  const text = safeTrim(prompt).toLowerCase();
+  if (!text) return false;
+  return /\b(cookbook|saved recipes?|saved meals?|favorites?)\b/.test(text);
+}
+
+function promptLooksLikeSpecificRecipeRecall(prompt = '') {
+  const text = safeTrim(prompt).toLowerCase();
+  if (!text) return false;
+  return (
+    /\b(show me|open|pull up|remind me|full recipe for|what was)\b/.test(text) &&
+    /\b(recipe|dish|meal)\b/.test(text)
+  );
+}
+
+function shouldEmitCookbookProgress({ routePrompt = '', groundedTurn = null, memoryContext = null } = {}) {
+  if (!hasRealCookbookContext(memoryContext)) return false;
+  const groundedSurface = safeTrim(groundedTurn?.surface);
+  const groundedIntent = safeTrim(groundedTurn?.intent);
+  const currentObjectType = safeTrim(groundedTurn?.currentObject?.objectType);
+  const selectedCookbookEntries = Array.isArray(memoryContext?.selectedCookbookEntries) ? memoryContext.selectedCookbookEntries.filter(Boolean) : [];
+  if (groundedSurface === 'cookbook') return true;
+  if (['save_recipe', 'update_saved_recipe', 'list_saved_recipes', 'delete_saved_recipe'].includes(groundedIntent)) return true;
+  if (['cookbook_entry', 'linked_recipe'].includes(currentObjectType)) return true;
+  if (selectedCookbookEntries.length > 0 && promptLooksLikeSpecificRecipeRecall(routePrompt)) return true;
+  return promptExplicitlyRequestsCookbookContext(routePrompt);
+}
+
+function shouldSuppressCookbookRecallForFreshRecipeAsk(routePrompt = '', groundedTurn = null) {
+  const promptText = safeTrim(routePrompt);
+  if (!promptText) return false;
+  const lower = promptText.toLowerCase();
+  const mentionsCookbook = /\b(cookbook|saved recipes?|saved meals?|favorites?)\b/.test(lower);
+  if (mentionsCookbook) return false;
+  const requestsRecipeBuild =
+    /\b(recipe|ingredients|instructions|directions|how (?:do i|to) make|show me|give me|suggest|create|build)\b/.test(lower);
+  if (!requestsRecipeBuild) return false;
+  const groundedSurface = safeTrim(groundedTurn?.surface);
+  if (groundedSurface && groundedSurface !== 'conversation') return false;
+  return /\b(give me|suggest|come up with|create|build|draft)\b/.test(lower);
 }
 
 function parseJsonObject(raw) {
@@ -51,18 +103,6 @@ function parseJsonObject(raw) {
   }
 }
 
-function getDominantWorkingContextDish(workingContext) {
-  const context = normalizeWorkingContext(workingContext);
-  if (!context) return '';
-  if (Array.isArray(context.subjectItems) && context.subjectItems.length > 0) {
-    return safeTrim(context.subjectItems[0]);
-  }
-  if (Array.isArray(context.mealIdeas) && context.mealIdeas.length > 0) {
-    return safeTrim(context.mealIdeas[0]);
-  }
-  return '';
-}
-
 function promptLooksLikeMealPlanningDraft(prompt = '') {
   const text = safeTrim(prompt).toLowerCase();
   if (!text) return false;
@@ -77,19 +117,6 @@ function promptLooksLikeMealPlanningDraft(prompt = '') {
   return asksToPlan && mentionsMeals && mentionsSlots;
 }
 
-function promptLooksLikeGenericRecipeFollowUp(prompt = '') {
-  const text = safeTrim(prompt).toLowerCase().replace(/[.!?]+$/g, '');
-  if (!text) return false;
-  return [
-    'show me the recipe',
-    'give me the recipe',
-    'show me the full recipe',
-    'give me the full recipe',
-    'the recipe',
-    'full recipe',
-  ].includes(text);
-}
-
 function replyLooksLikePlanningMenu(replyText = '') {
   const text = safeTrim(replyText);
   if (!text) return false;
@@ -98,13 +125,32 @@ function replyLooksLikePlanningMenu(replyText = '') {
     /\b(do any of these|which sounds better|which direction|would you rather|does this direction feel right|do these directions feel right)\b/.test(lower);
   const alternativeCount = (lower.match(/\bor\b/g) || []).length;
   const hedges = (lower.match(/\b(maybe|could be|options include|i'm thinking|how about)\b/g) || []).length;
-  return asksToChoose || alternativeCount >= 4 || hedges >= 3;
+  const followUpChoicePrompt =
+    /\b(what sounds good to you|what sounds best|want me to narrow|do you want me to|would you like me to)\b/.test(lower);
+  const bulletChoiceCount = (text.match(/^\s*[-*]\s+\*\*/gm) || []).length;
+  const questionMarks = (text.match(/\?/g) || []).length;
+  const slotInterviewPrompts =
+    (lower.match(/\b(what kind of|are you thinking|what's your go-to|what's your preferred|any proteins|any particular|do you want to see|what are you craving)\b/g) || [])
+      .length;
+  const asksForMoreDirection =
+    /\b(once you give me a bit more direction|once you give me more direction|once you tell me more|once you narrow it down|once you narrow these down)\b/.test(lower);
+  return (
+    asksToChoose ||
+    followUpChoicePrompt ||
+    alternativeCount >= 4 ||
+    hedges >= 3 ||
+    bulletChoiceCount >= 2 ||
+    questionMarks >= 3 ||
+    slotInterviewPrompts >= 2 ||
+    asksForMoreDirection
+  );
 }
 
 function formatStructuredMealPlanRewrite(structured) {
   if (!structured || typeof structured !== 'object' || Array.isArray(structured)) return '';
   const intro = safeTrim(structured.intro);
-  const closing = safeTrim(structured.closing);
+  const closingRaw = safeTrim(structured.closing);
+  const closing = replyLooksLikePlanningMenu(closingRaw) ? '' : closingRaw;
   const slots = Array.isArray(structured.slots) ? structured.slots : [];
   const normalizedSlots = slots
     .map((slot) => ({
@@ -123,6 +169,115 @@ function formatStructuredMealPlanRewrite(structured) {
   return lines.join('\n\n').trim();
 }
 
+async function requestStructuredMealPlanDraft({
+  anthropic,
+  req,
+  chatId,
+  turnId,
+  routePrompt,
+  recentConversationText,
+  resolvedMemoryContext,
+  draftText = '',
+  failureNote = '',
+  mode = 'rewrite',
+}) {
+  const fromScratchInstruction =
+    mode === 'fresh_draft'
+      ? '\n- Ignore the failed draft if needed and produce a clean first-pass meal plan directly from the user request.'
+      : '';
+  const response = await createLoggedAnthropicMessage(
+    anthropic,
+    {
+      model: resolveAnthropicModelForCallPurpose('chat_reply'),
+      max_tokens: 500,
+      system: `${buildKbAssistantPersonaSystemText(resolvedMemoryContext)}
+
+Choose one concrete first-pass meal plan from the draft.
+
+Rules:
+- Keep the same overall user intent, household constraints, and cooking vibe.
+- Fill each requested slot with one chosen dish.
+- Choose a leading dish when several would work.
+- Returning a menu of options, "or" comparisons, or a request for the user to choose is a failure unless the original prompt truly made a concrete draft impossible.${fromScratchInstruction}
+- Return ONLY JSON with this shape:
+{"intro":"...","slots":[{"label":"...","dish":"...","why":"..."}],"closing":"..."}
+- "intro" and "closing" are optional strings.
+- Each slot must have exactly one chosen dish.
+- "why" should be short and natural, not a whole recipe.
+- No markdown fences.`,
+      messages: [
+        {
+          role: 'user',
+          content: `Latest user prompt:\n${routePrompt}\n\nRecent conversation:\n${recentConversationText}\n\nDraft reply to rewrite:\n${draftText}${failureNote}`,
+        },
+      ],
+    },
+    {
+      householdId: req.householdId,
+      chatId,
+      turnId: turnId || null,
+      prompt: routePrompt,
+      runtimeEnabled: true,
+      callSurface: 'chat',
+      callPurpose: 'chat_reply',
+      webSearchEnabledAtCall: false,
+      usedWebSearchTool: false,
+    }
+  );
+  const rewritten = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
+  const parsed = parseJsonObject(rewritten);
+  const formatted = formatStructuredMealPlanRewrite(parsed);
+  if (safeTrim(formatted)) return formatted;
+  if (safeTrim(rewritten)) return rewritten;
+  return '';
+}
+
+async function generateDirectMealPlanningDraft({
+  anthropic,
+  req,
+  chatId,
+  turnId,
+  routePrompt,
+  recentConversationText,
+  resolvedMemoryContext,
+}) {
+  if (!anthropic) return '';
+  if (!promptLooksLikeMealPlanningDraft(routePrompt)) return '';
+  try {
+    let candidate = await requestStructuredMealPlanDraft({
+      anthropic,
+      req,
+      chatId,
+      turnId,
+      routePrompt,
+      recentConversationText,
+      resolvedMemoryContext,
+      draftText: '(none yet)',
+      mode: 'fresh_draft',
+    });
+    if (!safeTrim(candidate)) return '';
+    for (let attempt = 0; attempt < 2 && replyLooksLikePlanningMenu(candidate); attempt += 1) {
+      candidate = await requestStructuredMealPlanDraft({
+        anthropic,
+        req,
+        chatId,
+        turnId,
+        routePrompt,
+        recentConversationText,
+        resolvedMemoryContext,
+        draftText: candidate,
+        failureNote:
+          '\n\nThe previous answer still behaved like a menu or interview. Choose one concrete dish per requested slot now.',
+        mode: 'fresh_draft',
+      });
+      if (!safeTrim(candidate)) return '';
+    }
+    return replyLooksLikePlanningMenu(candidate) ? '' : candidate;
+  } catch {
+    return '';
+  }
+}
+
 async function maybeRewriteMealPlanningDraft({
   anthropic,
   req,
@@ -135,68 +290,67 @@ async function maybeRewriteMealPlanningDraft({
 }) {
   if (!anthropic) return replyText;
   if (!promptLooksLikeMealPlanningDraft(routePrompt)) return replyText;
-  if (!replyLooksLikePlanningMenu(replyText)) return replyText;
-
-  let candidate = replyText;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const failureNote =
-      attempt > 0
-        ? '\n\nThe previous rewrite still returned options or asked the user to choose. Fix that by choosing one leading dish per slot now.'
-        : '';
-    const response = await createLoggedAnthropicMessage(
+  try {
+    const originalLooksLikeMenu = replyLooksLikePlanningMenu(replyText);
+    let candidate = replyText;
+    const initialRewrite = await requestStructuredMealPlanDraft({
       anthropic,
-      {
-        model: resolveAnthropicModelForCallPurpose('chat_reply'),
-        max_tokens: 500,
-        system: `${buildKbAssistantPersonaSystemText(resolvedMemoryContext)}
-
-Choose one concrete first-pass meal plan from the draft.
-
-Rules:
-- Keep the same overall user intent, household constraints, and cooking vibe.
-- Fill each requested slot with one chosen dish.
-- Choose a leading dish when several would work.
-- Returning a menu of options, "or" comparisons, or a request for the user to choose is a failure unless the original prompt truly made a concrete draft impossible.
-- Return ONLY JSON with this shape:
-{"intro":"...","slots":[{"label":"...","dish":"...","why":"..."}],"closing":"..."}
-- "intro" and "closing" are optional strings.
-- Each slot must have exactly one chosen dish.
-- "why" should be short and natural, not a whole recipe.
-- No markdown fences.`,
-        messages: [
-          {
-            role: 'user',
-            content: `Latest user prompt:\n${routePrompt}\n\nRecent conversation:\n${recentConversationText}\n\nDraft reply to rewrite:\n${candidate}${failureNote}`,
-          },
-        ],
-      },
-      {
-        householdId: req.householdId,
-        chatId,
-        turnId: turnId || null,
-        prompt: routePrompt,
-        runtimeEnabled: true,
-        callSurface: 'chat',
-        callPurpose: 'chat_reply',
-        webSearchEnabledAtCall: false,
-        usedWebSearchTool: false,
-      }
-    );
-
-    const rewritten = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
-    const parsed = parseJsonObject(rewritten);
-    const formatted = formatStructuredMealPlanRewrite(parsed);
-    if (safeTrim(formatted)) {
-      candidate = formatted;
-    } else if (safeTrim(rewritten)) {
-      candidate = rewritten;
-    } else {
-      break;
+      req,
+      chatId,
+      turnId,
+      routePrompt,
+      recentConversationText,
+      resolvedMemoryContext,
+      draftText: candidate,
+      mode: 'rewrite',
+    });
+    if (safeTrim(initialRewrite)) {
+      candidate = initialRewrite;
     }
-    if (!replyLooksLikePlanningMenu(candidate)) break;
-  }
 
-  return candidate;
+    for (let attempt = 0; attempt < 3 && replyLooksLikePlanningMenu(candidate); attempt += 1) {
+      const rewrittenCandidate = await requestStructuredMealPlanDraft({
+        anthropic,
+        req,
+        chatId,
+        turnId,
+        routePrompt,
+        recentConversationText,
+        resolvedMemoryContext,
+        draftText: candidate,
+        failureNote:
+          '\n\nThe previous rewrite still returned options or asked the user to choose. Fix that by choosing one leading dish per slot now.',
+        mode: 'rewrite',
+      });
+      if (!safeTrim(rewrittenCandidate)) break;
+      candidate = rewrittenCandidate;
+    }
+
+    if (replyLooksLikePlanningMenu(candidate)) {
+      const rebuilt = await requestStructuredMealPlanDraft({
+        anthropic,
+        req,
+        chatId,
+        turnId,
+        routePrompt,
+        recentConversationText,
+        resolvedMemoryContext,
+        draftText: candidate,
+        failureNote:
+          '\n\nThe earlier answer still behaved like a menu. Ignore it if needed and draft the week from scratch with one concrete dish per requested slot.',
+        mode: 'fresh_draft',
+      });
+      if (safeTrim(rebuilt)) candidate = rebuilt;
+    }
+
+    if (!originalLooksLikeMenu && replyLooksLikePlanningMenu(candidate)) {
+      return replyText;
+    }
+
+    return candidate;
+  } catch {
+    return replyText;
+  }
 }
 
 function chunkReplyForStreaming(text, maxChunkLength = 160) {
@@ -268,18 +422,6 @@ async function streamReplyText({ res, deps, chatId, householdId, turnId, text })
   res.end();
 }
 
-function sanitizeChatTitle(raw) {
-  let text = safeTrim(raw)
-    .replace(/^["'`]+|["'`]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .replace(/[.!?]+$/g, '');
-  if (!text) return '';
-  if (text.length > 48) {
-    text = text.slice(0, 48).trim();
-  }
-  return text || '';
-}
-
 function getAssistantNameFromContext(memoryContext = null) {
   return getKbAssistantPersona(memoryContext).assistantName;
 }
@@ -347,88 +489,31 @@ async function resolveAssistantName({ req, routePrompt = '', memoryContext = nul
   return getAssistantNameFromContext(resolvedMemoryContext);
 }
 
-function fallbackChatTitle(messages, routePrompt) {
-  const userMessages = (Array.isArray(messages) ? messages : [])
-    .filter((message) => message.role === 'user')
-    .map((message) => safeTrim(message.content))
-    .filter(Boolean);
-  const preferred =
-    userMessages.find((text) => text.length >= 8 && !/^(hi|hello|hey|yo|sup|ok|okay)$/i.test(text)) ||
-    safeTrim(routePrompt) ||
-    userMessages[0] ||
-    'Kitchen Chat';
-  const cleaned = preferred
-    .replace(/^(can you|could you|please|hey|hi|hello)\s+/i, '')
-    .replace(/\bi need\b/i, '')
-    .replace(/\bhelp me\b/i, '')
-    .trim();
-  const words = cleaned.split(/\s+/).filter(Boolean).slice(0, 6);
-  const title = words
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-  return sanitizeChatTitle(title || 'Kitchen Chat') || 'Kitchen Chat';
-}
-
 async function maybeAutoTitleChat({ anthropic, req, chatId, routePrompt, deps }) {
+  const chat = await getChatSummary(chatId, req.householdId).catch(() => null);
+  if (Number(chat?.title_locked) === 1) return;
   const messages = await getMessages(chatId, req.householdId);
   const userMessages = messages.filter((message) => message.role === 'user');
   const userMessageCount = userMessages.length;
   if (userMessageCount !== 1 && userMessageCount !== 3) return;
 
-  let nextTitle = '';
-  if (anthropic) {
-    try {
-      const transcript = userMessages
-        .slice(0, Math.min(userMessages.length, 3))
-        .map((message) => `${message.name || 'User'}: ${safeTrim(message.content)}`)
-        .join('\n');
-      const response = await createLoggedAnthropicMessage(
-        anthropic,
-        {
-          model: resolveAnthropicModelForCallPurpose('chat_title'),
-          max_tokens: 24,
-          system: `Write a very short chat title for KitchenBot.
-
-Rules:
-- 2 to 5 words when possible.
-- Plain text only.
-- No quotes.
-- No trailing punctuation.
-- Title case.
-- Reflect the main topic of the conversation so far.
-- If the first user message is vague, make the best lightweight title now; it may be refined later.`,
-          messages: [
-            {
-              role: 'user',
-              content: `User message count: ${userMessageCount}\nLatest prompt: ${routePrompt}\nConversation so far:\n${transcript || '(none)'}`,
-            },
-          ],
-        },
-        {
-          householdId: req.householdId,
-          chatId,
-          turnId: req.kbTurnId || null,
-          prompt: routePrompt,
-          runtimeEnabled: true,
-          callSurface: 'background',
-          callPurpose: 'chat_title',
-          webSearchEnabledAtCall: false,
-          usedWebSearchTool: false,
-        }
-      );
-      nextTitle = sanitizeChatTitle(
-        response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n')
-      );
-    } catch (error) {
-      nextTitle = '';
-    }
-  }
-
-  if (!nextTitle) {
-    nextTitle = fallbackChatTitle(messages, routePrompt);
-  }
+  const nextTitle = await generateChatTitle({
+    anthropic,
+    req,
+    chatId,
+    turnId: req.kbTurnId || null,
+    prompt: routePrompt,
+    messages,
+    includePromptInTitleContext: true,
+  });
   if (!nextTitle) return;
   await updateChatTitle(chatId, req.householdId, nextTitle).catch(() => {});
+}
+
+function shouldSkipAutoTitle(outcomes = []) {
+  return (Array.isArray(outcomes) ? outcomes : []).some(
+    (outcome) => safeTrim(outcome?.capability || outcome?.narrationType) === 'chat.rename'
+  );
 }
 
 function formatGroceryItemsCompact(items) {
@@ -649,6 +734,19 @@ function fallbackPantryReply(outcome) {
   return 'I updated the Pantry.';
 }
 
+function fallbackChatRenameReply(outcome) {
+  if (!outcome || typeof outcome !== 'object') return 'I could not rename this chat.';
+  if (outcome.status === 'invalid') return safeTrim(outcome.error) || 'I could not rename this chat.';
+  const title = safeTrim(outcome.title);
+  if (outcome.status === 'unchanged') {
+    return title ? `This chat is already named ${title}.` : 'This chat already had that title.';
+  }
+  if (outcome.status === 'renamed') {
+    return title ? `I renamed this chat to ${title}.` : 'I renamed this chat.';
+  }
+  return 'I could not rename this chat.';
+}
+
 function fallbackWebSearchReply(outcome) {
   if (!outcome || typeof outcome !== 'object') return 'I could not complete a live web search.';
   if (outcome.status === 'disabled') {
@@ -705,9 +803,11 @@ function fallbackCookbookReply(outcome) {
   if (outcome.status === 'unchanged') {
     const title = getCookbookDisplayTitle({ title: outcome.title });
     if (outcome.fetchPerformed) {
-      return title ? `I read the linked recipe, and ${title} was already in your cookbook.` : 'I read the linked recipe, and it was already in your cookbook.';
+      return title
+        ? `I read the linked recipe, and ${title} already reflects that change in your cookbook.`
+        : 'I read the linked recipe, and it already reflects that change in your cookbook.';
     }
-    return title ? `${title} was already in your cookbook.` : 'I already had that in your cookbook.';
+    return title ? `${title} already reflects that change in your cookbook.` : 'That cookbook entry already reflects the change you asked for.';
   }
   if (outcome.status === 'listed') {
     const entries = Array.isArray(outcome.entries) ? outcome.entries : [];
@@ -731,186 +831,29 @@ function fallbackCookbookReply(outcome) {
   return 'I updated the cookbook.';
 }
 
+function fallbackRecipeReviseReply(outcome) {
+  if (!outcome || typeof outcome !== 'object') return 'I could not revise that recipe.';
+  if (outcome.status === 'invalid') return safeTrim(outcome.error) || 'I could not revise that recipe.';
+  if (outcome.status === 'needs_context') {
+    return safeTrim(outcome.question) || safeTrim(outcome.error) || 'Which recipe do you want me to revise?';
+  }
+  const body = safeTrim(outcome.replyText);
+  if (!body) return outcome.status === 'unchanged' ? 'That recipe already reflects the change you asked for.' : 'I revised the recipe.';
+  const question = safeTrim(outcome?.proposedNextAction?.question);
+  return question ? `${body}\n\n${question}` : body;
+}
+
 export function shouldForceDeterministicOutcomeReply(outcomes) {
   const list = Array.isArray(outcomes) ? outcomes.filter(Boolean) : [];
   return list.some((outcome) => {
     const capability = safeTrim(outcome?.capability || outcome?.narrationType);
     const status = safeTrim(outcome?.status).toLowerCase();
+    if (capability === 'chat.rename') return true;
+    if (capability === 'recipe.revise') return true;
     if (capability === 'web.search' && ['disabled', 'invalid', 'unavailable', 'no_results'].includes(status)) return true;
     if (capability === 'grocery.write' && status === 'already_present') return true;
     return false;
   });
-}
-
-function buildImplicitSearchNextAction(workingContext) {
-  const context = normalizeWorkingContext(workingContext);
-  const query = safeTrim(context?.offeredSearchTopic);
-  if (!query) return null;
-  return buildClarifyActionState({
-    capability: 'web.search',
-    input: { query },
-    question: `If you want, I can search for ${query}.`,
-    contextSummary: `Continue the pending web search for ${query}.`,
-    unresolvedFields: [],
-    visibleReplySummary: `If you want, I can search for ${query}.`,
-  });
-}
-
-function buildImplicitGroceryNextAction(workingContext) {
-  const context = normalizeWorkingContext(workingContext);
-  const items = (Array.isArray(context?.offeredIngredients) ? context.offeredIngredients : [])
-    .map((name) => ({ name: safeTrim(name), amount: '', section: '' }))
-    .filter((item) => item.name);
-  if (items.length === 0) return null;
-  return buildClarifyActionState({
-    capability: 'grocery.write',
-    input: { source: 'offered_items', items },
-    question: 'If you want, I can add those ingredients to the Grocery List tab.',
-    contextSummary: 'Continue the pending grocery add for the offered ingredient set.',
-    unresolvedFields: [],
-    visibleReplySummary: 'If you want, I can add those ingredients to the Grocery List tab.',
-  });
-}
-
-async function deriveImplicitMemoryNextAction({
-  anthropic,
-  req,
-  chatId,
-  turnId,
-  routePrompt,
-  replyText,
-  memoryContext,
-}) {
-  if (!anthropic) return null;
-  const combined = `${safeTrim(routePrompt)}\n${safeTrim(replyText)}`.toLowerCase();
-  if (!/\b(save|remember|memory|preference|preferences|store)\b/.test(combined)) return null;
-  const knownPeople = [
-    ...(memoryContext?.selectedMemoryItems || [])
-      .filter((item) => String(item?.memoryType || item?.type || '').trim().toLowerCase() === 'person')
-      .map((item) => safeTrim(item?.label)),
-    ...(memoryContext?.rows || [])
-      .map((row) => safeTrim(row?.key))
-      .filter((key) => /_preferences$/i.test(key))
-      .map((key) => key.replace(/_preferences$/i, '')),
-  ].filter(Boolean);
-  const knownPersonKeys = new Set(knownPeople.map((label) => normalizeLooseEntityKey(label)).filter(Boolean));
-  const response = await createLoggedAnthropicMessage(
-    anthropic,
-    {
-      model: resolveAnthropicModelForCallPurpose('chat_reply'),
-      max_tokens: 260,
-      system: `You decide whether KitchenBot's reply is offering a bounded memory save that the user can accept on the next turn.
-
-Return ONLY JSON.
-
-If no bounded memory save is being offered, return:
-{"kind":"none"}
-
-If a bounded memory save is being offered, return:
-{"kind":"choice","question":"...","defaultChoiceId":"1","choices":[{"id":"1","label":"...","key":"...","value":"..."}]}
-
-Rules:
-- Only propose memory.save next actions.
-- Only do this when the reply clearly offers to save a specific memory now.
-- Use the exact new fact KitchenBot should save next. Do not merge it with older stored memory.
-- If the reply offered multiple explicit wording options, return one choice per option.
-- If the reply offered one recommended wording, return one choice.
-- Choice labels should be short and user-facing.
-- Do not invent facts beyond the prompt and reply.`,
-      messages: [
-        {
-          role: 'user',
-          content: JSON.stringify({
-            prompt: routePrompt,
-            reply: replyText,
-            knownPeople,
-          }),
-        },
-      ],
-    },
-    {
-      householdId: req.householdId,
-      chatId,
-      turnId: turnId || null,
-      prompt: routePrompt,
-      runtimeEnabled: true,
-      callSurface: 'background',
-      callPurpose: 'chat_reply',
-      webSearchEnabledAtCall: false,
-      usedWebSearchTool: false,
-    }
-  );
-
-  const raw = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
-  const parsed = parseJsonObject(raw);
-  if (!parsed || safeTrim(parsed.kind).toLowerCase() !== 'choice') return null;
-  const choices = (Array.isArray(parsed.choices) ? parsed.choices : [])
-    .map((choice, index) => {
-      const rawKey = safeTrim(choice?.key);
-      const normalizedKey = normalizeLooseEntityKey(rawKey);
-      const normalizedKeyBase = normalizedKey.replace(/_preferences$/i, '');
-      const matchedKnownPerson = [...knownPersonKeys].find(
-        (personKey) =>
-          normalizedKey === personKey ||
-          normalizedKey.startsWith(`${personKey}_`) ||
-          normalizedKeyBase === personKey
-      );
-      const key =
-        normalizedKey && /_preferences$/i.test(normalizedKey)
-          ? normalizedKey
-          : matchedKnownPerson
-            ? `${matchedKnownPerson}_preferences`
-            : rawKey;
-      const value = safeTrim(choice?.value);
-      const label = safeTrim(choice?.label || choice?.value || `Option ${index + 1}`);
-      const id = safeTrim(choice?.id || String(index + 1));
-      if (!key || !value || !label || !id) return null;
-      return {
-        id,
-        label,
-        capability: 'memory.save',
-        actionInput: { key, value },
-      };
-    })
-    .filter(Boolean);
-  if (choices.length === 0) return null;
-  const defaultChoiceId = safeTrim(parsed.defaultChoiceId || choices[0]?.id);
-  return buildChoiceActionState({
-    capability: 'memory.save',
-    choices,
-    question: safeTrim(parsed.question || 'Do you want me to save that?'),
-    visibleReplySummary: safeTrim(parsed.question || 'Do you want me to save that?'),
-    defaultChoiceId: choices.some((choice) => choice.id === defaultChoiceId) ? defaultChoiceId : choices[0].id,
-  });
-}
-
-async function deriveImplicitOfferNextAction({
-  anthropic,
-  req,
-  chatId,
-  turnId,
-  routePrompt,
-  replyText,
-  workingContext,
-  memoryContext,
-}) {
-  const reply = safeTrim(replyText);
-  if (!reply) return null;
-  if (/\b(search the web|search for|look (?:that|it) up|look up)\b/i.test(reply)) {
-    return buildImplicitSearchNextAction(workingContext);
-  }
-  if (/\b(add\b.*\b(grocery list|grocery list tab)|grocery list\b.*\badd|want me to add)\b/i.test(reply)) {
-    return buildImplicitGroceryNextAction(workingContext);
-  }
-  return deriveImplicitMemoryNextAction({
-    anthropic,
-    req,
-    chatId,
-    turnId,
-    routePrompt,
-    replyText,
-    memoryContext,
-  }).catch(() => null);
 }
 
 export function rewriteUngroundedActionOfferReply(replyText, proposedNextAction = null) {
@@ -929,9 +872,52 @@ export function rewriteUngroundedActionOfferReply(replyText, proposedNextAction 
     /\b(?:Would you like|Do you want|Want)\s+me\s+to\s+add\s+(.+?)\s+to\s+your\s+Grocery List(?: tab)?\?/i,
     'If you want me to add $1 to the Grocery List tab, ask me to add it.'
   );
+  next = next.replace(
+    /\b(?:Would you like|Do you want|Want)\s+me\s+to\s+save\s+(.+?)\?/i,
+    'If you want me to save $1, ask me to save it.'
+  );
+  next = next.replace(
+    /\bShould I\s+save\s+(.+?)\?/i,
+    'If you want me to save $1, ask me to save it.'
+  );
+  next = next.replace(
+    /\bIf you(?:'d| would)\s+like\s+me\s+to\s+save\s+(.+?),\s+just let me know\.?/i,
+    'If you want me to save $1, ask me to save it.'
+  );
   next = next.replace(/\bSay yes and I(?:'|’)ll\s+/gi, 'If you want that, ask me to ');
   next = next.replace(/\bGot it[—-]I(?:'|’)ll\s+/gi, 'If you want that, ask me to ');
   return next;
+}
+
+export function rewriteUngroundedMutationClaimReply(
+  replyText,
+  { outcomes = [], groundedTurn = null, routePrompt = '', proposedNextAction = null } = {}
+) {
+  const reply = safeTrim(replyText);
+  if (!reply || proposedNextAction) return reply;
+  const list = Array.isArray(outcomes) ? outcomes.filter(Boolean) : [];
+  const hasGroceryWrite = list.some((outcome) => safeTrim(outcome?.capability || outcome?.narrationType) === 'grocery.write');
+  const currentObjectType = safeTrim(groundedTurn?.currentObject?.objectType);
+  if (
+    !['meal_set', 'meal_set_selection', 'grocery_proposal', 'chat_recipe'].includes(currentObjectType)
+  ) return reply;
+
+  if (!hasGroceryWrite && promptMentionsGrocerySurface(routePrompt)) {
+    if (
+      /\b(i(?:'ve| have)? added|i added|i updated the grocery list|all set! you can find .*grocery list|the list is ready whenever you want to head to the store)\b/i
+        .test(reply)
+    ) {
+      return 'If you want me to add the ingredients from that to the Grocery List tab, ask me to add them.';
+    }
+  }
+
+  const hasCookbookMutation = list.some((outcome) => String(outcome?.capability || outcome?.narrationType || '').startsWith('cookbook.'));
+  if (!hasCookbookMutation && /\b(cookbook|saved recipes?|saved meals?|favorites?)\b/i.test(routePrompt)) {
+    if (/\b(i(?:'ve| have)? saved|i saved|i(?:'ve| have)? added .* to your cookbook|you(?:'ll| will) find .* in your cookbook)\b/i.test(reply)) {
+      return 'If you want me to save that to your cookbook, ask me to save it.';
+    }
+  }
+  return reply;
 }
 
 function buildSkillOutcomeFacts(outcomes) {
@@ -977,16 +963,16 @@ function buildSkillOutcomeFacts(outcomes) {
         if (safeTrim(outcome?.title)) parts.push(`title=${safeTrim(outcome.title)}`);
         if (safeTrim(outcome?.deletedTitle)) parts.push(`deletedTitle=${safeTrim(outcome.deletedTitle)}`);
         if (safeTrim(outcome?.requestedName)) parts.push(`requestedName=${safeTrim(outcome.requestedName)}`);
-      if (safeTrim(outcome?.sourceTitle)) parts.push(`sourceTitle=${safeTrim(outcome.sourceTitle)}`);
-      if (safeTrim(outcome?.sourceUrl)) parts.push(`sourceUrl=${safeTrim(outcome.sourceUrl)}`);
-      if (outcome?.urlBacked != null) parts.push(`urlBacked=${outcome.urlBacked ? 'true' : 'false'}`);
-      if (outcome?.fetchPerformed != null) parts.push(`fetchPerformed=${outcome.fetchPerformed ? 'true' : 'false'}`);
-      if (outcome?.fetchedExactUrl != null) parts.push(`fetchedExactUrl=${outcome.fetchedExactUrl ? 'true' : 'false'}`);
-      if (outcome?.extractionSucceeded != null) parts.push(`extractionSucceeded=${outcome.extractionSucceeded ? 'true' : 'false'}`);
-      if (safeTrim(outcome?.sourceKind)) parts.push(`sourceKind=${safeTrim(outcome.sourceKind)}`);
-      if (safeTrim(outcome?.failureReason)) parts.push(`failureReason=${safeTrim(outcome.failureReason)}`);
-      if (safeTrim(outcome?.suggestedRecoveryAction)) parts.push(`suggestedRecoveryAction=${safeTrim(outcome.suggestedRecoveryAction)}`);
-      if (Array.isArray(outcome?.entries) && outcome.entries.length > 0) {
+        if (safeTrim(outcome?.sourceTitle)) parts.push(`sourceTitle=${safeTrim(outcome.sourceTitle)}`);
+        if (safeTrim(outcome?.sourceUrl)) parts.push(`sourceUrl=${safeTrim(outcome.sourceUrl)}`);
+        if (outcome?.urlBacked != null) parts.push(`urlBacked=${outcome.urlBacked ? 'true' : 'false'}`);
+        if (outcome?.fetchPerformed != null) parts.push(`fetchPerformed=${outcome.fetchPerformed ? 'true' : 'false'}`);
+        if (outcome?.fetchedExactUrl != null) parts.push(`fetchedExactUrl=${outcome.fetchedExactUrl ? 'true' : 'false'}`);
+        if (outcome?.extractionSucceeded != null) parts.push(`extractionSucceeded=${outcome.extractionSucceeded ? 'true' : 'false'}`);
+        if (safeTrim(outcome?.sourceKind)) parts.push(`sourceKind=${safeTrim(outcome.sourceKind)}`);
+        if (safeTrim(outcome?.failureReason)) parts.push(`failureReason=${safeTrim(outcome.failureReason)}`);
+        if (safeTrim(outcome?.suggestedRecoveryAction)) parts.push(`suggestedRecoveryAction=${safeTrim(outcome.suggestedRecoveryAction)}`);
+        if (Array.isArray(outcome?.entries) && outcome.entries.length > 0) {
           parts.push(
             `entries=${outcome.entries
               .map((entry) => [safeTrim(entry?.title), safeTrim(entry?.summary)].filter(Boolean).join(' — '))
@@ -994,6 +980,15 @@ function buildSkillOutcomeFacts(outcomes) {
               .join(' ; ')}`
           );
         }
+      }
+      if (capability === 'recipe.revise') {
+        if (safeTrim(outcome?.title)) parts.push(`title=${safeTrim(outcome.title)}`);
+        if (safeTrim(outcome?.replyText)) parts.push(`replyText=${safeTrim(outcome.replyText)}`);
+      }
+      if (capability === 'chat.rename') {
+        if (safeTrim(outcome?.title)) parts.push(`title=${safeTrim(outcome.title)}`);
+        if (safeTrim(outcome?.previousTitle)) parts.push(`previousTitle=${safeTrim(outcome.previousTitle)}`);
+        if (safeTrim(outcome?.mode)) parts.push(`mode=${safeTrim(outcome.mode)}`);
       }
       if (outcome?.defaults && typeof outcome.defaults === 'object') {
         if (Number.isFinite(Number(outcome.defaults.defaultDinnerPortions))) {
@@ -1052,6 +1047,9 @@ export function fallbackSkillOutcomeReply(outcomes) {
   if (list.length === 0) return 'Okay.';
   if (list.length === 1) {
     const outcome = list[0];
+    if ((outcome?.capability || outcome?.narrationType) === 'recipe.revise') {
+      return fallbackRecipeReviseReply(outcome);
+    }
     if ((outcome?.capability || outcome?.narrationType) === 'grocery.preview') {
       const base = fallbackGroceryPreviewReply(outcome?.items || []);
       const question = safeTrim(outcome?.question);
@@ -1068,6 +1066,9 @@ export function fallbackSkillOutcomeReply(outcomes) {
     }
     if ((outcome?.capability || outcome?.narrationType) === 'household.defaults.update') {
       return fallbackHouseholdDefaultsUpdateReply(outcome);
+    }
+    if ((outcome?.capability || outcome?.narrationType) === 'chat.rename') {
+      return fallbackChatRenameReply(outcome);
     }
     if (['pantry.add', 'pantry.remove', 'pantry.move_to_grocery', 'grocery.move_to_pantry'].includes(outcome?.capability || outcome?.narrationType)) {
       return fallbackPantryReply(outcome);
@@ -1089,6 +1090,7 @@ export function fallbackSkillOutcomeReply(outcomes) {
   }
   return list
     .map((outcome) => {
+      if ((outcome?.capability || outcome?.narrationType) === 'recipe.revise') return fallbackRecipeReviseReply(outcome);
       if ((outcome?.capability || outcome?.narrationType) === 'memory.save') return fallbackMemoryOutcomeReply(outcome);
       if ((outcome?.capability || outcome?.narrationType) === 'grocery.write') return fallbackGroceryWriteReply(outcome);
       if (['grocery.remove', 'grocery.check', 'grocery.uncheck', 'grocery.clear'].includes(outcome?.capability || outcome?.narrationType)) {
@@ -1096,6 +1098,9 @@ export function fallbackSkillOutcomeReply(outcomes) {
       }
       if ((outcome?.capability || outcome?.narrationType) === 'household.defaults.update') {
         return fallbackHouseholdDefaultsUpdateReply(outcome);
+      }
+      if ((outcome?.capability || outcome?.narrationType) === 'chat.rename') {
+        return fallbackChatRenameReply(outcome);
       }
       if (['pantry.add', 'pantry.remove', 'pantry.move_to_grocery', 'grocery.move_to_pantry'].includes(outcome?.capability || outcome?.narrationType)) {
         return fallbackPantryReply(outcome);
@@ -1136,11 +1141,13 @@ export async function respondWithKbClarify({
   proposedNextAction = null,
   memoryContext = null,
   workingContext = null,
+  groundedTurn = null,
   deps,
 }) {
   const reply = safeTrim(question) || 'Can you clarify what you want me to do?';
   const assistantName = await resolveAssistantName({ req, routePrompt, memoryContext, deps });
   await addMessage(chatId, req.householdId, 'user', name, routePrompt);
+  req.kbUserMessagePersisted = true;
   await deps.incrementUserMessageCountForSender?.(req);
   await addMessage(chatId, req.householdId, 'assistant', assistantName, reply);
   const refreshedWorkingContext = await maybeRefreshWorkingContext({
@@ -1172,6 +1179,40 @@ export async function respondWithKbClarify({
   return;
 }
 
+export async function respondWithKbErrorReply({
+  req,
+  res,
+  name,
+  chatId,
+  turnId = null,
+  routePrompt = '',
+  replyText = '',
+  memoryContext = null,
+  groundedTurn = null,
+  workingContext = null,
+  userMessageAlreadyPersisted = false,
+  deps,
+}) {
+  return respondWithKbReply({
+    anthropic: null,
+    req,
+    res,
+    name,
+    chatId,
+    turnId,
+    routePrompt,
+    replyText,
+    replyPlan: null,
+    memoryContext,
+    groundedTurn,
+    workingContext,
+    outcomes: [],
+    userMessageAlreadyPersisted,
+    proposedNextAction: null,
+    deps,
+  });
+}
+
 export async function respondWithKbReply({
   anthropic,
   req,
@@ -1182,6 +1223,7 @@ export async function respondWithKbReply({
   replyText,
   replyPlan = null,
   memoryContext = null,
+  groundedTurn = null,
   workingContext = null,
   outcomes = [],
   userMessageAlreadyPersisted = false,
@@ -1190,7 +1232,10 @@ export async function respondWithKbReply({
 }) {
   if (!userMessageAlreadyPersisted) {
     await addMessage(chatId, req.householdId, 'user', name, routePrompt);
+    req.kbUserMessagePersisted = true;
     await deps.incrementUserMessageCountForSender?.(req);
+  } else {
+    req.kbUserMessagePersisted = true;
   }
   const assistantName = await resolveAssistantName({ req, routePrompt, memoryContext, deps });
 
@@ -1207,7 +1252,7 @@ export async function respondWithKbReply({
       phase: 'reply.write',
       senderRes: res,
     });
-    finalReply = await generateKbReply({ anthropic, req, res, chatId, routePrompt, memoryContext, deps });
+    finalReply = await generateKbReply({ anthropic, req, res, chatId, routePrompt, memoryContext, groundedTurn, deps });
   }
   if (!finalReply && replyPlan?.kind === 'skill_outcomes') {
     await deps.emitKbProgress?.({
@@ -1225,21 +1270,19 @@ export async function respondWithKbReply({
       routePrompt,
       outcomes: replyPlan?.outcomes || [],
       memoryContext,
+      groundedTurn,
       deps,
     });
   }
   finalReply = finalReply || 'Okay.';
-  let finalProposedNextAction = proposedNextAction || await deriveImplicitOfferNextAction({
-    anthropic,
-    req,
-    chatId,
-    turnId: req.kbTurnId || null,
-    routePrompt,
-    replyText: finalReply,
-    workingContext: workingContext || memoryContext?.workingContext,
-    memoryContext,
-  });
+  let finalProposedNextAction = proposedNextAction || null;
   finalReply = rewriteUngroundedActionOfferReply(finalReply, finalProposedNextAction);
+  finalReply = rewriteUngroundedMutationClaimReply(finalReply, {
+    outcomes,
+    groundedTurn,
+    routePrompt,
+    proposedNextAction: finalProposedNextAction,
+  });
 
   await addMessage(chatId, req.householdId, 'assistant', assistantName, finalReply);
   const refreshedWorkingContext = await maybeRefreshWorkingContext({
@@ -1306,18 +1349,23 @@ async function persistKbRuntimeState({ chatId, householdId, proposedNextAction, 
   const normalizedWorkingContext = normalizeWorkingContext(workingContext);
   const hasProposedNextAction =
     proposedNextAction && typeof proposedNextAction === 'object' && !Array.isArray(proposedNextAction);
-  if (!hasProposedNextAction && !normalizedWorkingContext) {
+  const persistedWorkingContext = selectPersistentWorkingContext(normalizedWorkingContext, proposedNextAction);
+  if (!hasProposedNextAction && !persistedWorkingContext) {
     await clearChatRuntimeState(chatId, householdId).catch(() => {});
     return;
   }
   await setChatRuntimeState(chatId, householdId, {
     mode: 'kb',
     proposedNextAction: hasProposedNextAction ? proposedNextAction : null,
-    workingContext: normalizedWorkingContext,
+    workingContext: persistedWorkingContext,
   }).catch(() => {});
 }
 
-async function generateKbReply({ anthropic, req, res, chatId, routePrompt, memoryContext, deps }) {
+function selectPersistentWorkingContext(workingContext, proposedNextAction = null) {
+  return selectContinuationWorkingContext(workingContext, proposedNextAction);
+}
+
+async function generateKbReply({ anthropic, req, res, chatId, routePrompt, memoryContext, groundedTurn = null, deps }) {
   if (!anthropic) return 'I can help think this through, save a memory, or update the grocery list.';
 
   const promptText = safeTrim(routePrompt).toLowerCase();
@@ -1330,10 +1378,24 @@ async function generateKbReply({ anthropic, req, res, chatId, routePrompt, memor
     (await deps.buildKbContextPacket(req.householdId, routePrompt, {
       limit: 6,
       activeSpeakerName: req.user,
-      includeCookbook: promptNeedsCookbookContext(routePrompt),
+      ...buildGroundedContextProfile({ groundedTurn }),
       capabilities: req.kbCapabilities,
     }));
-  if (resolvedMemoryContext?.selectedCookbookEntries?.length > 0 || resolvedMemoryContext?.cookbookText) {
+  const suppressCookbookRecall = shouldSuppressCookbookRecallForFreshRecipeAsk(routePrompt, groundedTurn);
+  const cookbookScopedMemoryContext = suppressCookbookRecall
+    ? {
+        ...resolvedMemoryContext,
+        cookbookEntries: [],
+        selectedCookbookEntries: [],
+        cookbookText: '(none)',
+        appliedCookbookText: '(none)',
+      }
+    : resolvedMemoryContext;
+  const promptMemoryContext =
+    groundedTurn && cookbookScopedMemoryContext && cookbookScopedMemoryContext.groundedTurn !== groundedTurn
+      ? { ...cookbookScopedMemoryContext, groundedTurn, groundedTurnText: formatGroundedTurnText(groundedTurn) }
+      : cookbookScopedMemoryContext;
+  if (shouldEmitCookbookProgress({ routePrompt, groundedTurn, memoryContext: cookbookScopedMemoryContext })) {
     await deps.emitKbProgress?.({
       chatId,
       householdId: req.householdId,
@@ -1360,31 +1422,40 @@ async function generateKbReply({ anthropic, req, res, chatId, routePrompt, memor
       assistantLabel: persona.assistantName,
       assistantPersona: resolvedMemoryContext?.assistantPersona,
     }) || '(none)';
-  const dominantDish = getDominantWorkingContextDish(resolvedMemoryContext?.workingContext);
-  const resolvedRecipeTarget =
-    requestsRecipeBuild && dominantDish && promptLooksLikeGenericRecipeFollowUp(routePrompt)
-      ? dominantDish
-      : '';
+
+  const directMealPlanningDraft = await generateDirectMealPlanningDraft({
+    anthropic,
+    req,
+    chatId,
+    turnId: req.kbTurnId || null,
+    routePrompt,
+    recentConversationText,
+    cookbookScopedMemoryContext,
+  });
+  if (safeTrim(directMealPlanningDraft)) {
+    return directMealPlanningDraft;
+  }
 
   const response = await createLoggedAnthropicMessage(
     anthropic,
     {
       model: resolveAnthropicModelForCallPurpose('chat_reply'),
       max_tokens: 800,
-      system: `${buildKbAssistantPersonaSystemText(resolvedMemoryContext)}
+      system: `${buildKbAssistantPersonaSystemText(promptMemoryContext)}
 
 Operating rules:
 - Reply naturally unless a real server action already happened.
 - Never claim you changed memory or the grocery list unless that action actually happened.
 - Use relevant household and person memory when it clearly helps.
 - Treat the applied memory below as live household context. If it materially changes the answer, adapt the answer to fit it without fanfare.
-- Treat the applied working context below as the current chat thread you have been following. Use it for referential follow-ups like "this", "that", or "one of those".
-- If the latest user turn narrows an open meal slot to one concrete dish, treat that dish as the dominant target for the next reply. Do not reopen the whole option set unless the user explicitly asks to compare options again.
-- After the user narrows to one dish, follow-ups like "show me the recipe", "save it", or "make it spicier" should default to that chosen dish.
-- If the latest prompt is a generic recipe follow-up and a dominant dish is already resolved below, answer for that dish directly instead of asking which recipe they mean.
+- Treat the applied working context below as a weak compression of immediately recent continuity, not as authoritative hidden state.
+- Recent visible conversation matters more than background working context when they conflict.
+- If the user clearly frames the latest turn as a fresh cooking-help moment, a different night, or a different dish, follow that fresh framing instead of dragging old meal continuity forward.
+- If the user says they already made something, finished it earlier, or that this is a new night, treat old meal-planning context as background unless they explicitly refer back to it.
 - If the user names a specific target inside the active dish, infer from the conversation whether they mean a self-contained sub-recipe or prep versus the whole dish.
 - If the user uses a loose reference like "the fish one", "the handheld one", "the sauce recipe", or "that one", resolve it from the actual recent conversation and working context instead of acting like the thread reset.
 - Answer direct sub-recipe asks from the active dish context when that reading is well supported. Do not pivot to cookbook availability, web search, or recipe-saving workflows just because that sub-recipe is not already saved if the active dish context gives you enough to answer helpfully.
+- If the user asks for a fresh recipe draft in ordinary conversation, do not treat a matching saved cookbook entry as the primary answer unless they explicitly asked for the saved version or the cookbook.
 - If the named target is too vague or reads more like a loose ingredient/reference than a recipe-worthy component, clarify briefly instead of guessing.
 - If the user selects one concrete dish from a previously open slot, accept that as enough to proceed. Do not ask a second round of optional customization questions unless the user explicitly asks to customize or the missing detail is truly required.
 - When the user asks to plan a set of meals by slot or vibe, your default job is to give a concrete first draft. Propose one clear leading dish per slot.
@@ -1395,19 +1466,21 @@ Operating rules:
 - Treat the app map below as the live structure of the app when the user asks where to find something.
 - Treat the Grocery List below as live household app state, just like Pantry.
 - If the user asks what is on the grocery list or whether something is already there, answer from that state instead of implying you cannot see it.
+- Respect local, turn-scoped overrides of durable preferences when the user clearly states them for one recipe, one night, or one person. Do not treat those local overrides as memory changes unless the user explicitly asks to save them.
 - Use the user's local time context when timing, deadlines, or relative-time phrasing matters.
 - Do not mention the time unless it materially helps.
 - Do not invite a bare yes/no follow-up unless the reply corresponds to a real stored next action or a concrete multiple-choice question.
 - If you are offering future help without a stored next action, ask the user to say the action explicitly instead of replying with only "yes".
 - If the user asks who you are, what your name is, or what your tone is supposed to be, answer from the configured assistant persona above.
 - If the user asks whether you can search the web or why you did not look something up, answer from the household capabilities below.
+- Never claim a chat was renamed unless a real chat.rename action already happened.
 - Do not mention internal tools, modes, or hidden workflows.
 
-${buildKbContextSystemText(resolvedMemoryContext)}`,
+${buildKbContextSystemText(promptMemoryContext)}`,
       messages: [
         {
           role: 'user',
-          content: `Recent conversation:\n${recentConversationText}\n\nLatest user prompt:\n${routePrompt}\n\nDominant working-context dish:\n${dominantDish || '(none)'}\n\nResolved generic recipe target:\n${resolvedRecipeTarget || '(none)'}\n\nContinuity rule:\n${dominantDish ? `Use "${dominantDish}" as the default target for generic follow-ups unless the latest user turn clearly reopens comparison or ambiguity.` : 'No dominant dish is locked yet; resolve from the recent conversation normally.'}\n\nPlanning contract:\nIf the latest prompt is asking KitchenBot to plan meals by slot, vibe, or course, draft one concrete dish per requested slot now unless the user explicitly asked for options.`,
+          content: `Recent conversation:\n${recentConversationText}\n\nLatest user prompt:\n${routePrompt}\n\nFresh-turn rule:\nIf the latest prompt clearly starts a fresh cooking-help moment, a different night, or a different dish, trust that framing over older compressed continuity.\n\nPlanning contract:\nIf the latest prompt is asking KitchenBot to plan meals by slot, vibe, or course, draft one concrete dish per requested slot now unless the user explicitly asked for options.`,
         },
       ],
     },
@@ -1457,7 +1530,7 @@ async function generateSkillOutcomeReply({ anthropic, req, chatId, routePrompt, 
     (await deps.buildKbContextPacket(req.householdId, routePrompt, {
       limit: 6,
       activeSpeakerName: req.user,
-      includeCookbook: promptNeedsCookbookContext(routePrompt),
+      ...buildGroundedContextProfile({ groundedTurn: null }),
       capabilities: req.kbCapabilities,
     }));
   const persona = getKbAssistantPersona(resolvedMemoryContext);

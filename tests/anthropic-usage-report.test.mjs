@@ -22,8 +22,8 @@ function makeRow(overrides = {}) {
 
 test('classifyAnthropicUsageFunction groups raw purposes into human-readable functions', () => {
   assert.equal(classifyAnthropicUsageFunction('chat_reply'), 'Conversation replies');
-  assert.equal(classifyAnthropicUsageFunction('kb_turn_interpretation_primary'), 'Turn interpretation');
-  assert.equal(classifyAnthropicUsageFunction('kb_turn_interpretation_fallback'), 'Turn interpretation');
+  assert.equal(classifyAnthropicUsageFunction('kb_turn_grounding_provisional'), 'Turn interpretation');
+  assert.equal(classifyAnthropicUsageFunction('kb_turn_grounding_final'), 'Turn interpretation');
   assert.equal(classifyAnthropicUsageFunction('kb_working_context'), 'Context loading');
   assert.equal(classifyAnthropicUsageFunction('meal_refine'), 'Meal planning / refinement');
   assert.equal(classifyAnthropicUsageFunction('grocery_draft_generation_fallback'), 'Grocery drafting');
@@ -36,8 +36,8 @@ test('classifyAnthropicUsageFunction groups raw purposes into human-readable fun
 test('buildAnthropicUsageReport rolls visible chat work into meaningful function families', () => {
   const rows = [
     makeRow({ call_purpose: 'chat_reply', input_tokens: 1400, output_tokens: 250 }),
-    makeRow({ call_purpose: 'kb_turn_interpretation_primary', input_tokens: 2200, output_tokens: 300 }),
-    makeRow({ call_purpose: 'kb_turn_interpretation_fallback', input_tokens: 800, output_tokens: 90 }),
+    makeRow({ call_purpose: 'kb_turn_grounding_provisional', input_tokens: 2200, output_tokens: 300 }),
+    makeRow({ call_purpose: 'kb_turn_grounding_final', input_tokens: 800, output_tokens: 90 }),
     makeRow({ call_purpose: 'kb_working_context', input_tokens: 1000, output_tokens: 160 }),
     makeRow({
       call_purpose: 'web_search',
@@ -66,7 +66,7 @@ test('buildAnthropicUsageReport rolls visible chat work into meaningful function
   assert.equal(byFunction.Other.callCount, 1);
 
   assert.equal(byPurpose.chat_reply.callCount, 1);
-  assert.equal(byPurpose.kb_turn_interpretation_primary.callCount, 1);
+  assert.equal(byPurpose.kb_turn_grounding_provisional.callCount, 1);
   assert.equal(byPurpose.kb_working_context.callCount, 1);
 
   assert.equal(byWebSearchUsage.used.callCount, 1);
@@ -82,7 +82,7 @@ test('buildAnthropicUsageReport keeps known cost totals visible when a few rows 
   const rows = [
     makeRow({ call_purpose: 'chat_reply', model: 'claude-haiku-4-5-20251001', input_tokens: 1000, output_tokens: 200 }),
     makeRow({ call_purpose: 'chat_reply', model: 'x', input_tokens: 1, output_tokens: 1 }),
-    makeRow({ call_purpose: 'kb_turn_interpretation_primary', model: 'claude-sonnet-4-5-20250929', input_tokens: 2000, output_tokens: 300 }),
+    makeRow({ call_purpose: 'kb_turn_grounding_final', model: 'claude-sonnet-4-5-20250929', input_tokens: 2000, output_tokens: 300 }),
   ];
 
   const report = buildAnthropicUsageReport(rows);

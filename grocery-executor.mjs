@@ -107,6 +107,27 @@ function buildGroceryConversationContextForPrompt(recentConversation, deps) {
   return compact || '(none)';
 }
 
+function buildMealSetContextForPrompt(mealSet = null) {
+  if (!mealSet || typeof mealSet !== 'object' || Array.isArray(mealSet)) return '';
+  const meals = (Array.isArray(mealSet.mealIdeas) ? mealSet.mealIdeas : [])
+    .map((item) => safeTrim(item))
+    .filter(Boolean);
+  const constraints = (Array.isArray(mealSet.activeConstraints) ? mealSet.activeConstraints : [])
+    .map((item) => safeTrim(item))
+    .filter(Boolean);
+  const groceryFocus = (Array.isArray(mealSet.groceryFocus) ? mealSet.groceryFocus : [])
+    .map((item) => safeTrim(item))
+    .filter(Boolean);
+  const parts = [];
+  if (safeTrim(mealSet.versionSummary || mealSet.topicSummary)) {
+    parts.push(`Current meal set: ${safeTrim(mealSet.versionSummary || mealSet.topicSummary)}`);
+  }
+  if (meals.length > 0) parts.push(`Meals: ${meals.join('; ')}`);
+  if (constraints.length > 0) parts.push(`Constraints: ${constraints.join('; ')}`);
+  if (groceryFocus.length > 0) parts.push(`Grocery focus: ${groceryFocus.join('; ')}`);
+  return parts.join('\n');
+}
+
 function hasUsableWorkingContext(memoryContext) {
   const workingContext = memoryContext?.workingContext;
   return !!(
@@ -161,6 +182,27 @@ function minimumExpectedItems(memoryContext) {
   if (mealIdeas === 2) return 6;
   if (mealIdeas === 1) return 4;
   return 1;
+}
+
+function minimumExpectedItemsForSourceMealSet(sourceMealSet = null, memoryContext = null) {
+  const explicitMealCount = Array.isArray(sourceMealSet?.mealIdeas) ? sourceMealSet.mealIdeas.filter(Boolean).length : 0;
+  if (explicitMealCount >= 3) return 8;
+  if (explicitMealCount === 2) return 6;
+  if (explicitMealCount === 1) return 4;
+  return minimumExpectedItems(memoryContext);
+}
+
+function resolveSourceMealSetForDraft(runtimeAction = null) {
+  const sourceMealSetSelection =
+    runtimeAction?.input?.sourceMealSetSelection &&
+    typeof runtimeAction.input.sourceMealSetSelection === 'object' &&
+    !Array.isArray(runtimeAction.input.sourceMealSetSelection)
+      ? runtimeAction.input.sourceMealSetSelection
+      : null;
+  if (sourceMealSetSelection) return sourceMealSetSelection;
+  return runtimeAction?.input?.sourceMealSet && typeof runtimeAction.input.sourceMealSet === 'object' && !Array.isArray(runtimeAction.input.sourceMealSet)
+    ? runtimeAction.input.sourceMealSet
+    : null;
 }
 
 function shouldEscalatePrimaryGroceryDraft(normalizedItems, memoryContext) {
@@ -304,8 +346,22 @@ async function generateGroceryDraft(runtimeAction, context) {
     deps = {},
   } = context;
   const requestedSource = runtimeAction?.input?.source || null;
+  const sourceMealSet = resolveSourceMealSetForDraft(runtimeAction);
+  const sourceGroceryProposal =
+    runtimeAction?.input?.sourceGroceryProposal && typeof runtimeAction.input.sourceGroceryProposal === 'object' && !Array.isArray(runtimeAction.input.sourceGroceryProposal)
+      ? runtimeAction.input.sourceGroceryProposal
+      : null;
   const directOfferedItems = Array.isArray(runtimeAction?.input?.items)
     ? runtimeAction.input.items
+        .map((item) => ({
+          section: safeTrim(item?.section),
+          name: safeTrim(item?.name),
+          amount: safeTrim(item?.amount),
+        }))
+        .filter((item) => item.name)
+    : [];
+  const proposalItems = Array.isArray(sourceGroceryProposal?.items)
+    ? sourceGroceryProposal.items
         .map((item) => ({
           section: safeTrim(item?.section),
           name: safeTrim(item?.name),
@@ -320,15 +376,18 @@ async function generateGroceryDraft(runtimeAction, context) {
   const recentConversation = conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
 
   const existingGroceryItems = await getGroceryItems(req.householdId);
-  const conversationContextCompact = buildGroceryConversationContextForPrompt(recentConversation, deps);
+  const objectContextCompact = buildMealSetContextForPrompt(sourceMealSet);
+  const conversationContextCompact = objectContextCompact || buildGroceryConversationContextForPrompt(recentConversation, deps);
 
-  const claudeMessages = recentConversation.map((message) => ({
-    role: message.role,
-    content:
-      message.role === 'user'
-        ? `${message.name}: ${message.content}`
-        : deps.stripStoredMessageContentForDisplay?.(message.content) ?? String(message.content ?? ''),
-  }));
+  const claudeMessages = objectContextCompact
+    ? []
+    : recentConversation.map((message) => ({
+        role: message.role,
+        content:
+          message.role === 'user'
+            ? `${message.name}: ${message.content}`
+            : deps.stripStoredMessageContentForDisplay?.(message.content) ?? String(message.content ?? ''),
+      }));
 
   const systemPrompt = `You are a household assistant that generates grocery lists.
 
@@ -424,6 +483,47 @@ Where:
     };
   }
 
+  if ((requestedSource === 'grocery_proposal' || requestedSource === 'explicit_items') && proposalItems.length > 0) {
+    const normalizedItems =
+      typeof deps.normalizeGroceryItemsForPost === 'function'
+        ? await deps.normalizeGroceryItemsForPost(proposalItems, {
+            householdId: req.householdId,
+            chatId,
+            runtimeEnabled: !!kbModeEnabled,
+            callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
+          })
+        : await resolveInventoryItems({
+            target: 'grocery',
+            items: proposalItems,
+            anthropic: anthropic || null,
+            householdId: req.householdId,
+            chatId,
+            runtimeEnabled: !!kbModeEnabled,
+            callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
+          });
+    const priorKeys = new Set(existingGroceryItems.map((item) => deps.normalizeInventoryNameKey(item?.name)).filter(Boolean));
+    const runKeys = new Set(normalizedItems.map((i) => deps.normalizeInventoryNameKey(i.name)).filter(Boolean));
+    const likelyRemovedKeys = new Set([...priorKeys].filter((k) => !runKeys.has(k)));
+    const likelyAddedKeys = new Set([...runKeys].filter((k) => !priorKeys.has(k)));
+    return {
+      recentConversation,
+      existingGroceryItems,
+      pantryItems: Array.isArray(memoryContext?.pantryItems) ? memoryContext.pantryItems : [],
+      pantryContextStatus: safeTrim(memoryContext?.pantryContextStatus) || 'unavailable',
+      pantryContextAvailable: !!memoryContext?.pantryContextAvailable,
+      pantryItemCount: Number.isFinite(Number(memoryContext?.pantryItemCount)) ? Number(memoryContext.pantryItemCount) : 0,
+      conversationContextCompact,
+      normalizedItems,
+      systemPrompt,
+      groceryReconciliationSystemPrompt,
+      priorKeys,
+      runKeys,
+      likelyRemovedKeys,
+      likelyAddedKeys,
+      draftChatOfferCommit: false,
+    };
+  }
+
   const usePrimary = shouldUsePrimaryGroceryModel(runtimeAction, context);
   let groceryResponse = await requestGroceryDraft({
     anthropic,
@@ -446,7 +546,7 @@ Where:
     runtimeManagedResponse,
     deps,
   });
-  if (usePrimary && shouldEscalatePrimaryGroceryDraft(normalizedItems, memoryContext)) {
+  if (usePrimary && (Array.isArray(normalizedItems) ? normalizedItems.length : 0) < minimumExpectedItemsForSourceMealSet(sourceMealSet, memoryContext)) {
     groceryResponse = await requestGroceryDraft({
       anthropic,
       callPurpose: 'grocery_draft_generation_fallback',

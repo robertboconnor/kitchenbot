@@ -53,7 +53,7 @@ export function classifyAnthropicUsageFunction(callPurpose) {
   const purpose = String(callPurpose ?? '').trim();
   if (!purpose) return 'Other';
   if (purpose === 'chat_reply') return 'Conversation replies';
-  if (purpose.startsWith('kb_turn_interpretation')) return 'Turn interpretation';
+  if (purpose.startsWith('kb_turn_interpretation') || purpose.startsWith('kb_turn_grounding')) return 'Turn interpretation';
   if (purpose === 'kb_working_context') return 'Context loading';
   if (purpose === 'meal_refine' || purpose === 'kb_memory_shape') {
     return 'Meal planning / refinement';

@@ -32,6 +32,37 @@ Serve hot.`, { preferredTitle: 'favorite beef stew' });
   assert.equal(parsed.category, 'soups');
 });
 
+test('selectRelevantCookbookEntries does not hijack fresh conversational recipe asks into cookbook recall', async () => {
+  const module = await import(new URL(`../cookbook-store.mjs?cookbook-selection-fresh=${Date.now()}`, import.meta.url).href);
+  const entries = [
+    {
+      title: 'Elotes-Style Pasta Salad',
+      summary: 'A creamy pasta salad with charred corn and cotija.',
+      ingredients: ['1 lb pasta', 'corn', 'cotija'],
+      updatedAt: '2026-04-18 12:00:00',
+    },
+  ];
+
+  const selected = module.selectRelevantCookbookEntries(entries, 'Give me a good elotes-style pasta salad recipe.');
+  assert.deepEqual(selected, []);
+});
+
+test('selectRelevantCookbookEntries still finds saved recipes for direct recall asks', async () => {
+  const module = await import(new URL(`../cookbook-store.mjs?cookbook-selection-recall=${Date.now()}`, import.meta.url).href);
+  const entries = [
+    {
+      title: 'The Loaded Italian Sub Reimagined',
+      summary: 'A sandwich dinner favorite.',
+      ingredients: ['sub rolls', 'salami'],
+      updatedAt: '2026-04-18 12:00:00',
+    },
+  ];
+
+  const selected = module.selectRelevantCookbookEntries(entries, 'Show me the full recipe for loaded italian sub.');
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].title, 'The Loaded Italian Sub Reimagined');
+});
+
 test('parseCookbookRecipeText handles KB-style recipe headers with colons and classifies pasta correctly', async () => {
   const module = await import(new URL(`../cookbook-store.mjs?recipe-parse-colons=${Date.now()}`, import.meta.url).href);
   const parsed = module.parseCookbookRecipeText(`Mexican Street Corn Pasta
@@ -61,6 +92,88 @@ Use extra lime juice if it needs more brightness.`, {});
   assert.match(parsed.summary, /chorizo|corn|lime|cotija/i);
   assert.deepEqual(parsed.notes, ['Use extra lime juice if it needs more brightness.']);
   assert.deepEqual(parsed.tags, ['mexican', 'street', 'corn', 'pasta']);
+});
+
+test('parseCookbookRecipeText understands KB markdown recipe replies with intro text and strips app offers', async () => {
+  const module = await import(new URL(`../cookbook-store.mjs?recipe-parse-markdown-intro=${Date.now()}`, import.meta.url).href);
+  const parsed = module.parseCookbookRecipeText(`Here's an elotes-style pasta salad recipe that brings those Mexican street corn flavors to pasta:
+
+## Elotes Pasta Salad
+
+**Serves:** 6-8
+**Prep time:** 25 minutes
+
+**Ingredients:**
+
+*Salad:*
+- 1 lb pasta
+- 4 cups corn kernels
+- 1 cup cotija
+
+*Creamy Elotes Dressing:*
+- 3/4 cup mayonnaise
+- juice of 2 limes
+- 1 tsp chili powder
+
+**Instructions:**
+
+1. Cook the pasta.
+2. Char the corn.
+3. Make the dressing.
+4. Combine and chill.
+
+**Tips:**
+- The charred corn really makes this.
+
+Would you like me to save this to your Cookbook or add any ingredients to your Grocery List?`, {});
+
+  assert.equal(parsed.title, 'Elotes Pasta Salad');
+  assert.ok(parsed.ingredients.includes('Salad:'));
+  assert.ok(parsed.ingredients.includes('Creamy Elotes Dressing:'));
+  assert.ok(parsed.instructions[0].startsWith('Cook the pasta'));
+  assert.equal(parsed.notes.some((note) => /cookbook|grocery list/i.test(note)), false);
+});
+
+test('parseCookbookRecipeText understands live KB recipe replies that use Steps and a conversational outro', async () => {
+  const module = await import(new URL(`../cookbook-store.mjs?recipe-parse-live-steps=${Date.now()}`, import.meta.url).href);
+  const parsed = module.parseCookbookRecipeText(`Here's a great elotes-style pasta salad that plays into your love of cheese!
+
+**Elotes Pasta Salad**
+
+*Ingredients:*
+- 1 lb pasta (small shapes like fusilli or penne work best)
+- 3 cups corn (fresh, frozen, or roasted)
+- 1 cup crumbled cotija cheese
+- 1/2 cup mayonnaise
+- 1/4 cup sour cream or Mexican crema
+- 2 limes, juiced
+- 1/2 cup fresh cilantro, chopped
+- 2 green onions, sliced
+- Salt and pepper to taste
+
+*Steps:*
+1. Cook pasta according to package directions, drain, and let cool slightly.
+2. In a large bowl, whisk together mayo, sour cream, and lime juice until smooth.
+3. Add the cooled pasta and corn. Toss until coated.
+4. Fold in most of the cotija cheese, reserving some for topping.
+5. Season with salt and pepper. Chill until ready to serve.
+6. Top with remaining cotija and green onions just before serving.
+
+The cheese really shines here. You can make this ahead.
+Would you like me to save this to your cookbook, or do you want to adjust anything before cooking?`, {});
+
+  assert.equal(parsed.title, 'Elotes Pasta Salad');
+  assert.ok(parsed.ingredients.some((line) => /cotija cheese/i.test(line)));
+  assert.ok(parsed.instructions.some((line) => /whisk together mayo, sour cream, and lime juice/i.test(line)));
+  assert.equal(parsed.notes.some((note) => /save this to your cookbook|adjust anything before cooking/i.test(note)), false);
+});
+
+test('looksLikeRecipeText recognizes KB markdown recipes that use Steps headers and bullet-prefixed ingredients', async () => {
+  const module = await import(new URL(`../cookbook-store.mjs?looks-like-recipe-steps=${Date.now()}`, import.meta.url).href);
+  assert.equal(
+    module.looksLikeRecipeText(`Here's a great elotes-style pasta salad:\n\n**Elotes Pasta Salad**\n\n**Ingredients:**\n- 1 lb pasta\n- 3 cups corn\n- 1 cup cotija\n- 4 tbsp mayo\n- 2 tbsp lime juice\n\n**Steps:**\n1. Cook pasta.\n2. Whisk the dressing.\n3. Toss and chill.`),
+    true
+  );
 });
 
 test('cookbook provenance labels distinguish source recipes, KB-generated recipes, saved recipes, and meal ideas', async () => {
@@ -126,7 +239,7 @@ test('cookbook source shaping suppresses assistant framing residue but preserves
     recipeType: 'saved_recipe',
     ingredients: ['1 lb pasta', 'miso paste', 'butter'],
     instructions: ['Cook the pasta.', 'Make the sauce.', 'Finish with eggs.'],
-    sourceTitle: "Here's the full recipe for **Miso Butter Pasta with Roasted Mushrooms & Soft Scrambled Eggs**:",
+    sourceTitle: "Here's the updated Poblano White Chicken Chili with cream cheese added:",
     sourceKind: 'kb_action',
   });
   const realSource = module.buildCookbookRecordForStorage({
@@ -260,6 +373,22 @@ test('extractPreferredCookbookLabel ignores cookbook boilerplate without alias a
       'https://www.seriouseats.com/all-american-beef-stew-recipe'
     ),
     'favorite beef stew'
+  );
+});
+
+test('findCookbookMatches treats shared title tokens as an ambiguity instead of a miss', async () => {
+  const module = await import(new URL(`../cookbook-store.mjs?cookbook-matches-token-overlap=${Date.now()}`, import.meta.url).href);
+  const matches = module.findCookbookMatches(
+    [
+      { id: 1, title: 'Codex Test Chili One 1776515712' },
+      { id: 2, title: 'Codex Test Chili Two 1776515712' },
+    ],
+    'Codex Test Chili 1776515712'
+  );
+
+  assert.deepEqual(
+    matches.map((entry) => entry.id),
+    [1, 2]
   );
 });
 
@@ -493,6 +622,138 @@ The olive salad is the soul of the sandwich, so do not skimp on it.\`
     '1 cup chopped roasted red peppers',
   ]);
   assert.doesNotMatch(parsed.entry.title, /bacon/i);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('executeCookbookSave can save directly from a grounded chat_recipe object', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-save-current-object-'));
+  const dbPath = path.join(tempDir, 'cookbook-save-current-object.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const executor = await import(new URL('./cookbook-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Cookbook save current object');
+    await db.addMessage(created.householdId, chatId, 'assistant', 'KitchenBot', 'Here is a meal plan with three weeknight dinners.');
+
+    const outcome = await executor.executeCookbookSave(
+      {
+        capability: 'cookbook.save',
+        input: {
+          request: 'save it to our cookbook',
+          targetRecipe: {
+            type: 'chat_recipe',
+            title: 'Easy Thai Coconut Soup',
+            recipeRecord: {
+              title: 'Easy Thai Coconut Soup',
+              summary: 'A very simple coconut soup for weeknights.',
+              recipeType: 'saved_recipe',
+              ingredients: ['1 can coconut milk', '2 cups chicken broth', '8 oz chicken breast'],
+              instructions: ['Simmer the broth and coconut milk.', 'Add the chicken and cook until done.'],
+              tags: ['soup', 'weeknight'],
+              sourceKind: 'kb_generated',
+            },
+          },
+        },
+      },
+      {
+        req: { householdId: created.householdId },
+        chatId,
+        prompt: 'save it to our cookbook',
+        anthropic: null,
+        memoryContext: { capabilities: { webSearchEnabled: false } },
+        workingContext: {
+          topicSummary: 'Three weeknight dinners',
+          mealIdeas: ['sheet-pan sausages', 'easy thai coconut soup', 'baked potatoes'],
+        },
+      }
+    );
+
+    const entries = await db.listCookbookEntries(created.householdId);
+    process.stdout.write(JSON.stringify({ outcome, entries }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath },
+  });
+  const parsed = JSON.parse(stdout.trim());
+
+  assert.equal(parsed.outcome.status, 'saved');
+  assert.equal(parsed.entries.length, 1);
+  assert.equal(parsed.entries[0].title, 'Easy Thai Coconut Soup');
+  assert.deepEqual(parsed.entries[0].ingredients, ['1 can coconut milk', '2 cups chicken broth', '8 oz chicken breast']);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('executeCookbookSave does not let generic save prompt wording override the grounded recipe title', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-save-generic-prompt-title-'));
+  const dbPath = path.join(tempDir, 'cookbook-save-generic-prompt-title.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const executor = await import(new URL('./cookbook-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Cookbook save generic prompt title');
+
+    const outcome = await executor.executeCookbookSave(
+      {
+        capability: 'cookbook.save',
+        input: {
+          request: 'Okay this looks really good. Add it to our cookbook.',
+          targetRecipe: {
+            type: 'chat_recipe',
+            title: 'Make-Ahead Stock for Wonton Soup',
+            recipeRecord: {
+              title: 'Make-Ahead Stock for Wonton Soup',
+              summary: 'A flavorful stock to reheat with frozen wontons and greens.',
+              recipeType: 'saved_recipe',
+              ingredients: ['6 cups low-sodium chicken broth', '3 cloves garlic', '2-inch piece fresh ginger'],
+              instructions: ['Combine the ingredients.', 'Simmer for 20 minutes.', 'Strain and store.'],
+              tags: ['soup', 'stock', 'weeknight'],
+              sourceKind: 'kb_generated',
+            },
+          },
+        },
+      },
+      {
+        req: { householdId: created.householdId },
+        chatId,
+        prompt: 'Okay this looks really good. Add it to our cookbook.',
+        anthropic: null,
+        memoryContext: { capabilities: { webSearchEnabled: false } },
+        workingContext: null,
+      }
+    );
+
+    const entries = await db.listCookbookEntries(created.householdId);
+    process.stdout.write(JSON.stringify({ outcome, entries }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath },
+  });
+  const parsed = JSON.parse(stdout.trim());
+
+  assert.equal(parsed.outcome.status, 'saved');
+  assert.equal(parsed.outcome.title, 'Make-Ahead Stock for Wonton Soup');
+  assert.equal(parsed.entries.length, 1);
+  assert.equal(parsed.entries[0].title, 'Make-Ahead Stock for Wonton Soup');
 
   await fs.rm(tempDir, { recursive: true, force: true });
 });
@@ -1141,6 +1402,497 @@ test('cookbook skill owns generic recipe-choice follow-up after cookbook save cl
   assert.equal(turn.actions[0].capability, 'cookbook.save');
   assert.equal(turn.actions[0].input.request, 'can you add this recipe to our cookbook?');
   assert.equal(turn.actions[0].input.preferredTitle, 'street corn pasta');
+});
+
+test('executeRecipeRevise updates the active recipe in chat and offers cookbook replacement without mutating groceries', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-recipe-revise-'));
+  const dbPath = path.join(tempDir, 'recipe-revise.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const recipe = await import(new URL('./recipe-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Recipe revise');
+    await db.addMessage(created.householdId, chatId, 'assistant', 'KitchenBot', \`Elotes-Style Pasta Salad
+
+Ingredients
+1 lb pasta
+4 cups corn kernels
+1 cup cotija cheese
+2 limes
+
+Instructions
+Cook the pasta.
+Char the corn.
+Whisk the dressing.
+Fold in the cotija and serve.\`);
+
+    const cookbookId = await db.saveCookbookEntry(created.householdId, {
+      title: 'Elotes-Style Pasta Salad',
+      normalizedTitle: 'elotes style pasta salad',
+      summary: 'A creamy pasta salad with charred corn, lime, and cotija.',
+      category: 'pasta',
+      recipeType: 'saved_recipe',
+      ingredients: ['1 lb pasta', '4 cups corn kernels', '1 cup cotija cheese', '2 limes'],
+      instructions: ['Cook the pasta.', 'Char the corn.', 'Whisk the dressing.', 'Fold in the cotija and serve.'],
+      tags: ['corn', 'pasta'],
+      sourceTitle: 'Elotes Pasta Salad',
+      sourceUrl: 'https://example.com/elotes-pasta',
+      notes: [],
+      sourceKind: 'web_fetch',
+      sourceChatId: chatId,
+      lastUsedAt: null,
+    }, {
+      sourceKind: 'web_fetch',
+      sourceChatId: chatId,
+    });
+
+    const entry = await db.getCookbookEntryById(created.householdId, cookbookId);
+    const anthropic = {
+      messages: {
+        create: async () => ({
+          model: 'claude-haiku-4-5',
+          usage: { input_tokens: 10, output_tokens: 10 },
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              title: 'Elotes-Style Pasta Salad',
+              summary: 'A creamy pasta salad with charred corn, lime, cotija, and Tajin.',
+              ingredients: ['1 lb pasta', '4 cups corn kernels', '1 cup cotija cheese', '2 limes', '1-2 tsp Tajin'],
+              instructions: ['Cook the pasta.', 'Char the corn.', 'Whisk the dressing with Tajin.', 'Fold in the cotija, finish with more Tajin, and serve.'],
+              tags: ['corn', 'pasta', 'tajin'],
+              notes: [],
+            }),
+          }],
+        }),
+      },
+    };
+
+    const outcome = await recipe.executeRecipeRevise(
+      { capability: 'recipe.revise', input: { request: 'add tajin' } },
+      {
+        req: { householdId: created.householdId },
+        chatId,
+        prompt: 'add tajin',
+        anthropic,
+        memoryContext: {
+          cookbookEntries: [entry],
+          selectedCookbookEntries: [entry],
+          applicationText: '',
+          appliedDefaultsText: '',
+          capabilities: { webSearchEnabled: false },
+        },
+      }
+    );
+
+    const groceryItems = await db.getGroceryItems(created.householdId);
+    process.stdout.write(JSON.stringify({ outcome, groceryItems }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.outcome.capability, 'recipe.revise');
+  assert.equal(parsed.outcome.status, 'revised');
+  assert.match(parsed.outcome.replyText, /Tajin/i);
+  assert.match(parsed.outcome.replyText, /Whisk the dressing with Tajin/i);
+  assert.equal(parsed.outcome.proposedNextAction?.action?.capability, 'cookbook.update');
+  assert.equal(parsed.groceryItems.length, 0);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('executeRecipeRevise relies on the structured model revision for swap edits instead of semantic fallback rewriting', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-recipe-revise-swap-'));
+  const dbPath = path.join(tempDir, 'recipe-revise-swap.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const recipe = await import(new URL('./recipe-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Recipe revise swap');
+    await db.addMessage(created.householdId, chatId, 'assistant', 'KitchenBot', \`Elotes-Style Pasta Salad
+
+Ingredients
+For the salad:
+- 1 lb pasta
+- 4 cups corn kernels
+- 1/4 cup cilantro
+- 2 scallions
+
+Instructions
+1. Cook the pasta.
+2. Toss the corn, cilantro, and scallions together.
+3. Dress and chill.\`);
+
+    const anthropic = {
+      messages: {
+        create: async () => ({
+          model: 'claude-haiku-4-5',
+          usage: { input_tokens: 10, output_tokens: 10 },
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              title: 'Elotes-Style Pasta Salad',
+              summary: 'A creamy pasta salad with charred corn, lime, cotija, and extra scallions.',
+              ingredients: ['For the salad:', '1 lb pasta', '4 cups corn kernels', '4 scallions, thinly sliced', '2 limes'],
+              instructions: ['Cook the pasta.', 'Toss the corn and scallions together.', 'Dress and chill.'],
+              tags: ['corn', 'pasta'],
+              notes: [],
+            }),
+          }],
+        }),
+      },
+    };
+
+    const outcome = await recipe.executeRecipeRevise(
+      { capability: 'recipe.revise', input: { request: 'swap the cilantro for extra scallions' } },
+      {
+        req: { householdId: created.householdId },
+        chatId,
+        prompt: 'swap the cilantro for extra scallions',
+        anthropic,
+        memoryContext: {
+          applicationText: '',
+          appliedDefaultsText: '',
+          capabilities: { webSearchEnabled: false },
+        },
+      }
+    );
+
+    process.stdout.write(JSON.stringify({ outcome }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.outcome.capability, 'recipe.revise');
+  assert.equal(parsed.outcome.status, 'revised');
+  assert.match(parsed.outcome.replyText, /4 scallions, thinly sliced/i);
+  assert.doesNotMatch(parsed.outcome.replyText, /cilantro/i);
+  assert.doesNotMatch(parsed.outcome.replyText, /\*\*|::/);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('executeRecipeRevise retries additive edits with explicit required additions before giving up', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-recipe-revise-additive-retry-'));
+  const dbPath = path.join(tempDir, 'recipe-revise-additive-retry.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const recipe = await import(new URL('./recipe-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Recipe additive retry');
+    await db.addMessage(created.householdId, chatId, 'assistant', 'KitchenBot', \`Elotes Pasta Salad
+
+Ingredients
+For the dressing:
+- 3/4 cup mayonnaise
+- 2 tbsp lime juice
+- 1 tsp chili powder
+
+Instructions
+1. Cook the pasta.
+2. Whisk the dressing.
+3. Toss and chill.\`);
+
+    let callCount = 0;
+    const anthropic = {
+      messages: {
+        create: async ({ messages }) => {
+          callCount += 1;
+          const payload = JSON.parse(messages[0].content);
+          if (callCount === 1 || callCount === 2) {
+            return {
+              model: 'claude-haiku-4-5',
+              usage: { input_tokens: 10, output_tokens: 10 },
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  title: 'Elotes Pasta Salad',
+                  summary: 'A creamy pasta salad with corn and lime.',
+                  ingredients: ['For the dressing:', '3/4 cup mayonnaise', '2 tbsp lime juice', '1 tsp chili powder'],
+                  instructions: ['Cook the pasta.', 'Whisk the dressing.', 'Toss and chill.'],
+                  tags: ['pasta'],
+                  notes: [],
+                }),
+              }],
+            };
+          }
+          if (callCount === 4 && payload.requiredAdditions) {
+            return {
+              model: 'claude-haiku-4-5',
+              usage: { input_tokens: 10, output_tokens: 10 },
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  title: 'Elotes Pasta Salad',
+                  summary: 'A creamy pasta salad with corn, lime, and Tajin in the dressing.',
+                  ingredients: ['For the dressing:', '3/4 cup mayonnaise', '2 tbsp lime juice', '1 tsp chili powder', '1 tsp Tajin'],
+                  instructions: ['Cook the pasta.', 'Whisk the dressing with Tajin.', 'Toss and chill.'],
+                  tags: ['pasta'],
+                  notes: [],
+                }),
+              }],
+            };
+          }
+          return {
+            model: 'claude-haiku-4-5',
+            usage: { input_tokens: 10, output_tokens: 10 },
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ingredientAdds: ['1 tsp Tajin'],
+                instructionAdds: ['Whisk the dressing with Tajin.'],
+                ingredientSection: 'dressing',
+                instructionCue: 'whisk the dressing',
+              }),
+            }],
+          };
+        },
+      },
+    };
+
+    const outcome = await recipe.executeRecipeRevise(
+      { capability: 'recipe.revise', input: { request: 'add tajin to the dressing too' } },
+      {
+        req: { householdId: created.householdId },
+        chatId,
+        prompt: 'add tajin to the dressing too',
+        anthropic,
+        memoryContext: {
+          applicationText: '',
+          appliedDefaultsText: '',
+          capabilities: { webSearchEnabled: false },
+        },
+      }
+    );
+
+    process.stdout.write(JSON.stringify({ callCount, outcome }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.callCount, 4);
+  assert.equal(parsed.outcome.capability, 'recipe.revise');
+  assert.equal(parsed.outcome.status, 'revised');
+  assert.match(parsed.outcome.replyText, /1 tsp Tajin/i);
+  assert.match(parsed.outcome.replyText, /Whisk the dressing with Tajin/i);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('executeCookbookUpdate replaces recipe body fields without merging duplicates and preserves source metadata', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-update-'));
+  const dbPath = path.join(tempDir, 'cookbook-update.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const executor = await import(new URL('./cookbook-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Cookbook update');
+    const cookbookId = await db.saveCookbookEntry(created.householdId, {
+      title: 'Poblano White Chicken Chili',
+      normalizedTitle: 'poblano white chicken chili',
+      summary: 'A creamy white chili with poblanos, chicken, and beans.',
+      category: 'soups',
+      recipeType: 'web_recipe',
+      ingredients: ['2 poblano peppers', '1 1/2 lbs chicken', '2 cans white beans'],
+      instructions: ['Roast the poblanos.', 'Simmer the chili.', 'Serve hot.'],
+      tags: ['chili', 'poblano'],
+      sourceTitle: 'Poblano White Chicken Chili',
+      sourceUrl: 'https://www.gimmesomeoven.com/poblano-white-chicken-chili/',
+      notes: ['Original version'],
+      sourceKind: 'web_fetch',
+      sourceChatId: chatId,
+      lastUsedAt: null,
+    }, {
+      sourceKind: 'web_fetch',
+      sourceChatId: chatId,
+    });
+
+    const anthropic = {
+      messages: {
+        create: async () => ({
+          model: 'claude-haiku-4-5',
+          usage: { input_tokens: 10, output_tokens: 10 },
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              title: 'Poblano White Chicken Chili',
+              summary: 'A creamy white chili with poblanos, chicken, beans, and cream cheese stirred in at the end.',
+              ingredients: ['2 poblano peppers', '1 1/2 lbs chicken', '2 cans white beans', '1 block cream cheese'],
+              instructions: ['Roast the poblanos.', 'Simmer the chili.', 'Stir in the cream cheese at the end and serve.'],
+              tags: ['chili', 'poblano'],
+              notes: [],
+            }),
+          }],
+        }),
+      },
+    };
+
+    const outcome = await executor.executeCookbookUpdate(
+      { capability: 'cookbook.update', input: { id: cookbookId, request: 'add a block of cream cheese at the end' } },
+      {
+        req: { householdId: created.householdId },
+        chatId,
+        prompt: 'replace it',
+        anthropic,
+        memoryContext: {
+          selectedCookbookEntries: [await db.getCookbookEntryById(created.householdId, cookbookId)],
+          applicationText: '',
+          appliedDefaultsText: '',
+          capabilities: { webSearchEnabled: false },
+        },
+      }
+    );
+
+    const updated = await db.getCookbookEntryById(created.householdId, cookbookId);
+    process.stdout.write(JSON.stringify({ outcome, updated }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.outcome.capability, 'cookbook.update');
+  assert.equal(parsed.outcome.status, 'updated');
+  assert.equal(parsed.updated.sourceTitle, 'Poblano White Chicken Chili');
+  assert.equal(parsed.updated.sourceUrl, 'https://www.gimmesomeoven.com/poblano-white-chicken-chili/');
+  assert.equal(parsed.updated.summary, 'A creamy white chili with poblanos, chicken, beans, and cream cheese stirred in at the end.');
+  assert.equal(parsed.updated.category, 'soups');
+  assert.deepEqual(parsed.updated.tags, ['chili', 'poblano']);
+  assert.equal(parsed.updated.ingredients.filter((item) => /cream cheese/i.test(item)).length, 1);
+  assert.equal(parsed.updated.instructions.filter((item) => /cream cheese/i.test(item)).length, 1);
+  assert.equal(parsed.updated.instructions.length, 3);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('executeCookbookUpdate can resolve an explicit cookbook title directly from a raw update request', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-update-explicit-title-'));
+  const dbPath = path.join(tempDir, 'cookbook-update-explicit-title.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const executor = await import(new URL('./cookbook-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Cookbook update explicit title');
+    await db.saveCookbookEntry(created.householdId, {
+      title: 'Live Poblano Chili v2',
+      normalizedTitle: 'live poblano chili v2',
+      summary: 'A creamy white chili with poblanos and chicken.',
+      category: 'soups',
+      recipeType: 'web_recipe',
+      ingredients: ['2 poblano peppers', '1 1/2 lbs chicken', '2 cans white beans'],
+      instructions: ['Roast the poblanos.', 'Simmer the chili.', 'Serve hot.'],
+      tags: ['chili', 'poblano'],
+      sourceTitle: 'Poblano White Chicken Chili',
+      sourceUrl: 'https://www.gimmesomeoven.com/poblano-white-chicken-chili/',
+      notes: [],
+      sourceKind: 'web_fetch',
+      sourceChatId: chatId,
+      lastUsedAt: null,
+    }, {
+      sourceKind: 'web_fetch',
+      sourceChatId: chatId,
+    });
+
+    const anthropic = {
+      messages: {
+        create: async () => ({
+          model: 'claude-haiku-4-5',
+          usage: { input_tokens: 10, output_tokens: 10 },
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              title: 'Live Poblano Chili v2',
+              summary: 'A creamy white chili with poblanos, chicken, beans, and cream cheese stirred in at the end.',
+              ingredients: ['2 poblano peppers', '1 1/2 lbs chicken', '2 cans white beans', '8 oz cream cheese'],
+              instructions: ['Roast the poblanos.', 'Simmer the chili.', 'Stir in 8 oz cream cheese at the end and serve.'],
+              tags: ['chili', 'poblano'],
+              notes: [],
+            }),
+          }],
+        }),
+      },
+    };
+
+    const outcome = await executor.executeCookbookUpdate(
+      { capability: 'cookbook.update', input: { request: 'Update Live Poblano Chili v2 in our cookbook to add 8 ounces of cream cheese at the end, in both the ingredients and the instructions.' } },
+      {
+        req: { householdId: created.householdId },
+        chatId,
+        prompt: 'Update Live Poblano Chili v2 in our cookbook to add 8 ounces of cream cheese at the end, in both the ingredients and the instructions.',
+        anthropic,
+        memoryContext: {
+          applicationText: '',
+          appliedDefaultsText: '',
+          capabilities: { webSearchEnabled: false },
+        },
+      }
+    );
+
+    const updated = await db.getCookbookEntryByNormalizedTitle(created.householdId, 'live poblano chili v2');
+    process.stdout.write(JSON.stringify({ outcome, updated }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.outcome.capability, 'cookbook.update');
+  assert.equal(parsed.outcome.status, 'updated');
+  assert.equal(parsed.outcome.title, 'Live Poblano Chili v2');
+  assert.equal(parsed.updated.instructions.filter((item) => /cream cheese/i.test(item)).length, 1);
+  assert.equal(parsed.updated.ingredients.filter((item) => /cream cheese/i.test(item)).length, 1);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
 });
 
 test('executeCookbookSave manual recovery preserves preferred title and source title', async () => {

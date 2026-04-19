@@ -1,6 +1,7 @@
 node_modules
 .env
 kitchenbot.db
+kitchenbot.sqlite
 .DS_Store
 .cursor/
 AGENTS.md

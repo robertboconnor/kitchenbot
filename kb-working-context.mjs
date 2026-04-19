@@ -79,6 +79,90 @@ export function normalizeWorkingContext(raw) {
   };
 }
 
+function pendingCapabilityBucket(proposedNextAction = null) {
+  const capability = safeTrim(proposedNextAction?.action?.capability);
+  if (!capability) return '';
+  if (capability === 'meal.refine') return 'meal';
+  if (capability === 'grocery.write') return 'grocery';
+  if (capability === 'web.search') return 'search';
+  if (capability.startsWith('cookbook.')) return 'cookbook';
+  return 'other';
+}
+
+export function selectContinuationWorkingContext(workingContext, proposedNextAction = null) {
+  const context = normalizeWorkingContext(workingContext);
+  if (!context) return null;
+  const bucket = pendingCapabilityBucket(proposedNextAction);
+  if (!bucket) {
+    return normalizeWorkingContext({
+      offeredIngredients: Array.isArray(context.offeredIngredients) ? context.offeredIngredients : [],
+      offeredSearchTopic: safeTrim(context.offeredSearchTopic),
+      linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
+      linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
+      linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),
+      linkedRecipeFailureReason: safeTrim(context.linkedRecipeFailureReason),
+      linkedRecipeSuggestedRecoveryAction: safeTrim(context.linkedRecipeSuggestedRecoveryAction),
+      linkedRecipeFetchBlocked: !!context.linkedRecipeFetchBlocked,
+      linkedRecipeBlockerKind: safeTrim(context.linkedRecipeBlockerKind),
+      linkedRecipeFailureKind: safeTrim(context.linkedRecipeFailureKind),
+      linkedRecipeHttpStatus: Number(context.linkedRecipeHttpStatus) || 0,
+    });
+  }
+  if (bucket === 'meal') return context;
+  if (bucket === 'grocery') {
+    return normalizeWorkingContext({
+      offeredIngredients: Array.isArray(context.offeredIngredients) ? context.offeredIngredients : [],
+      linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
+      linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
+      linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),
+      linkedRecipeFailureReason: safeTrim(context.linkedRecipeFailureReason),
+      linkedRecipeSuggestedRecoveryAction: safeTrim(context.linkedRecipeSuggestedRecoveryAction),
+      linkedRecipeFetchBlocked: !!context.linkedRecipeFetchBlocked,
+      linkedRecipeBlockerKind: safeTrim(context.linkedRecipeBlockerKind),
+      linkedRecipeFailureKind: safeTrim(context.linkedRecipeFailureKind),
+      linkedRecipeHttpStatus: Number(context.linkedRecipeHttpStatus) || 0,
+    });
+  }
+  if (bucket === 'search') {
+    return normalizeWorkingContext({
+      offeredSearchTopic: safeTrim(context.offeredSearchTopic),
+      linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
+      linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
+      linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),
+      linkedRecipeFailureReason: safeTrim(context.linkedRecipeFailureReason),
+      linkedRecipeSuggestedRecoveryAction: safeTrim(context.linkedRecipeSuggestedRecoveryAction),
+      linkedRecipeFetchBlocked: !!context.linkedRecipeFetchBlocked,
+      linkedRecipeBlockerKind: safeTrim(context.linkedRecipeBlockerKind),
+      linkedRecipeFailureKind: safeTrim(context.linkedRecipeFailureKind),
+      linkedRecipeHttpStatus: Number(context.linkedRecipeHttpStatus) || 0,
+    });
+  }
+  if (bucket === 'cookbook') {
+    return normalizeWorkingContext({
+      linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
+      linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
+      linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),
+      linkedRecipeFailureReason: safeTrim(context.linkedRecipeFailureReason),
+      linkedRecipeSuggestedRecoveryAction: safeTrim(context.linkedRecipeSuggestedRecoveryAction),
+      linkedRecipeFetchBlocked: !!context.linkedRecipeFetchBlocked,
+      linkedRecipeBlockerKind: safeTrim(context.linkedRecipeBlockerKind),
+      linkedRecipeFailureKind: safeTrim(context.linkedRecipeFailureKind),
+      linkedRecipeHttpStatus: Number(context.linkedRecipeHttpStatus) || 0,
+    });
+  }
+  return normalizeWorkingContext({
+    linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
+    linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
+    linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),
+    linkedRecipeFailureReason: safeTrim(context.linkedRecipeFailureReason),
+    linkedRecipeSuggestedRecoveryAction: safeTrim(context.linkedRecipeSuggestedRecoveryAction),
+    linkedRecipeFetchBlocked: !!context.linkedRecipeFetchBlocked,
+    linkedRecipeBlockerKind: safeTrim(context.linkedRecipeBlockerKind),
+    linkedRecipeFailureKind: safeTrim(context.linkedRecipeFailureKind),
+    linkedRecipeHttpStatus: Number(context.linkedRecipeHttpStatus) || 0,
+  });
+}
+
 function parseJsonObject(raw) {
   let text = safeTrim(raw);
   const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)```$/im);
@@ -107,62 +191,6 @@ function formatRecentConversation(messages, deps) {
     )
     .filter(Boolean)
     .join('\n\n');
-}
-
-function extractLikelyDishPhrase(text) {
-  const cleaned = safeTrim(
-    String(text ?? '')
-      .replace(/^[-*]\s*/, '')
-      .replace(/^\d+\.\s*/, '')
-      .replace(/\*\*/g, '')
-  );
-  if (!cleaned) return '';
-  return safeTrim(
-    cleaned
-      .split(/\s+(?:with|served|topped|plus|alongside|paired with|finished with)\s+/i)[0]
-      .replace(/[—–-]\s.*$/, '')
-      .replace(/[.?!]\s.*$/, '')
-  ).slice(0, 120);
-}
-
-function extractMealIdeasFromAssistantMessage(content) {
-  const ideas = [];
-  const lines = String(content ?? '').split(/\n+/);
-  for (const rawLine of lines) {
-    const line = safeTrim(rawLine);
-    if (!line) continue;
-    const normalizedLine = line.replace(/\*\*/g, '');
-    const colonIndex = normalizedLine.indexOf(':');
-    if (colonIndex > 0) {
-      const dish = extractLikelyDishPhrase(normalizedLine.slice(colonIndex + 1));
-      if (dish) ideas.push(dish);
-      continue;
-    }
-    const listed = line.match(/^(?:[-*]\s+|\d+\.\s+)(.+)$/);
-    if (listed) {
-      const dish = extractLikelyDishPhrase(listed[1]);
-      if (dish) ideas.push(dish);
-    }
-  }
-  return sanitizeList(ideas);
-}
-
-function buildFallbackWorkingContextFromConversation({ routePrompt = '', conversation = [], existingContext = null, deps = {} } = {}) {
-  if (existingContext) return existingContext;
-  const recentAssistant = [...(Array.isArray(conversation) ? conversation : [])]
-    .reverse()
-    .find((message) => message?.role === 'assistant' && safeTrim(message.content));
-  if (!recentAssistant) return existingContext;
-  const visibleContent = deps.stripStoredMessageContentForDisplay?.(recentAssistant.content) ?? recentAssistant.content;
-  const mealIdeas = extractMealIdeasFromAssistantMessage(visibleContent);
-  if (mealIdeas.length < 2) return existingContext;
-  const promptText = safeTrim(routePrompt);
-  return normalizeWorkingContext({
-    topicSummary: promptText ? `Current meal planning thread: ${promptText}` : 'Current meal planning thread.',
-    mealIdeas,
-    subjectItems: mealIdeas,
-    groceryFocus: mealIdeas,
-  });
 }
 
 export function formatWorkingContextText(workingContext) {
@@ -205,15 +233,12 @@ export function formatWorkingContextText(workingContext) {
 export function formatAppliedWorkingContextText(workingContext) {
   const context = normalizeWorkingContext(workingContext);
   if (!context) return '(none)';
-  const parts = ['Use this as short-term chat continuity when the user refers to "this", "that", or earlier meal ideas.'];
+  const parts = ['Use this only as lightweight short-term continuity for immediately recent follow-ups.'];
   if (context.mealIdeas.length > 0) {
-    parts.push(`Current meal set: ${context.mealIdeas.join('; ')}.`);
+    parts.push(`Recent meal or dish ideas still in the conversation: ${context.mealIdeas.join('; ')}.`);
   }
   if (context.subjectItems.length > 0) {
-    parts.push(`Current dishes, drinks, or recipes under discussion: ${context.subjectItems.join('; ')}.`);
-  }
-  if (context.subjectItems.length > 0) {
-    parts.push(`Treat the first listed subject item as the dominant current dish unless the latest turn clearly reopens ambiguity.`);
+    parts.push(`Recent dishes, drinks, or recipes mentioned near the current turn: ${context.subjectItems.join('; ')}.`);
   }
   if (context.activeConstraints.length > 0) {
     parts.push(`Active refinements to honor: ${context.activeConstraints.join('; ')}.`);
@@ -222,7 +247,7 @@ export function formatAppliedWorkingContextText(workingContext) {
     parts.push(`If groceries are requested, start from: ${context.groceryFocus.join('; ')}.`);
   }
   if (context.offeredIngredients.length > 0) {
-    parts.push(`If the user says "add them", "all", or similar, treat these offered ingredients as the likely target: ${context.offeredIngredients.join('; ')}.`);
+    parts.push(`If the user clearly refers back to the offered ingredient set as "them", "those", "all of that", or explicitly asks to add those items to the Grocery List tab, treat these offered ingredients as the likely target: ${context.offeredIngredients.join('; ')}.`);
   }
   if (context.offeredSearchTopic) {
     parts.push(`If the user says "search that", "just that", or similar, treat this as the likely search topic: ${context.offeredSearchTopic}.`);
@@ -253,14 +278,14 @@ export function isMealGroceryRelevantTurn({ prompt = '', outcomes = [], workingC
     return capability === 'grocery.preview' || capability === 'grocery.write' || capability === 'meal.refine' || capability === 'web.search';
   });
   if (hasRelevantOutcome) return true;
-  if (!text) return !!normalizeWorkingContext(workingContext);
+  if (!text) return false;
 
   const broadCulinaryIntent =
     /\b(grocery|groceries|shopping list|grocery list|pantry|cookbook|recipe|recipes|ingredients|instructions|directions|cook|cooking|meal|meals|dinner|dinners|lunch|breakfast|dish|dishes|menu|menus|drink|drinks|cocktail|cocktails)\b/;
   if (broadCulinaryIntent.test(text)) return true;
 
   if (normalizeWorkingContext(workingContext) && isReferentialFollowUp(text)) return true;
-  if (normalizeWorkingContext(workingContext) && /\b(swap|replace|change|revise|redo|show me|add it|add them|search that|just that|save it|make it)\b/.test(text)) {
+  if (normalizeWorkingContext(workingContext) && /\b(show me|make it|make one|add them|search that|just that)\b/.test(text)) {
     return true;
   }
   return false;
@@ -312,22 +337,21 @@ Goal:
 
 Rules:
 - Return ONLY JSON.
-- If the conversation no longer has useful culinary continuity, return {"keep":false}.
+- If the conversation no longer has useful immediate culinary continuity, return {"keep":false}.
 - Otherwise return:
   {"keep":true,"topicSummary":"...","mealIdeas":["..."],"subjectItems":["..."],"activeConstraints":["..."],"offeredIngredients":["..."],"offeredSearchTopic":"...","groceryFocus":["..."]}
 - Keep all strings short and concrete.
-- mealIdeas should be the current dishes or meal ideas under discussion.
-- subjectItems should include the concrete dishes, drinks, recipes, or natural shorthand variants currently being discussed.
-- Order subjectItems from most active to least active. If one dish is clearly dominant, put it first.
-- If the user chooses one concrete dish for a previously open slot, treat that chosen dish as dominant immediately instead of keeping the whole option set equally active.
-- When that happens, move the chosen dish to the front of subjectItems and, when possible, rewrite the matching mealIdeas slot to use the chosen dish name rather than the old generic slot label.
-- If the user explicitly zooms in on a self-contained sub-recipe or prep within an active dish, keep the parent dish in context but let that more specific target become the first subject item for immediate follow-up.
+- mealIdeas should contain only still-relevant meal ideas or dishes from the recent part of the chat.
+- subjectItems should include any concrete dishes, drinks, recipes, or natural shorthand variants that are still immediately relevant.
+- Do not treat subjectItems as an authoritative hidden workflow state. They are only a lightweight compression of recent continuity.
+- If the latest user turn clearly starts a fresh cooking-help moment, a different night, or a different dish, drop stale older meal ideas instead of stretching them forward.
+- If the user explicitly zooms in on a self-contained sub-recipe or prep within an active dish, it is okay to include both the parent dish and the more specific prep, but keep only what is immediately relevant now.
 - activeConstraints should capture refinements introduced in this chat.
 - offeredIngredients should capture the specific ingredients KitchenBot most recently proposed or confirmed when they are likely to be referred to as "them" or "all".
 - offeredSearchTopic should capture the concrete thing KitchenBot most recently offered to search for.
 - groceryFocus should capture the items or meal set a grocery request would most likely refer to.
-- Prefer preserving the current meal set when the latest turn is referential ("this", "that", "one of those").
-- Prefer preserving the currently dominant dish when the user narrows from several meal ideas to one dish, or asks for the full recipe for one of them.
+- Prefer keeping continuity only when the latest turn is clearly referential or continuing the same immediate task.
+- If the latest turn or recent transcript says this is a new night, they are making something now, or they already finished the prior dish, treat that as fresh context and stop carrying old meal state forward.
 - This is short-term chat context only. Do not restate durable household memory or defaults unless they materially shape the current culinary thread.
 - If the turn is unrelated and no culinary thread remains active, return {"keep":false}.`,
         messages: [
@@ -361,23 +385,12 @@ Rules:
 
     const raw = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
     const parsed = parseJsonObject(raw);
-    const fallbackContext = buildFallbackWorkingContextFromConversation({
-      routePrompt,
-      conversation,
-      existingContext,
-      deps,
-    });
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fallbackContext;
-    if (parsed.keep === false) return fallbackContext && !existingContext ? fallbackContext : null;
-    if (parsed.keep !== true) return fallbackContext;
-    return normalizeWorkingContext(parsed) || fallbackContext;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    if (parsed.keep === false) return null;
+    if (parsed.keep !== true) return null;
+    return normalizeWorkingContext(parsed);
   } catch (error) {
     console.error('KitchenBot working context refresh failed:', error?.message || error);
-    return buildFallbackWorkingContextFromConversation({
-      routePrompt,
-      conversation,
-      existingContext,
-      deps,
-    });
+    return null;
   }
 }

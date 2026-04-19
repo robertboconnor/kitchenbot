@@ -185,6 +185,7 @@ async function initializeSchema() {
       household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
       owner TEXT NOT NULL,
       title TEXT NOT NULL,
+      title_locked INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -306,6 +307,12 @@ async function initializeSchema() {
     CREATE INDEX IF NOT EXISTS idx_usage_created_at ON anthropic_usage_ledger(created_at);
     CREATE INDEX IF NOT EXISTS idx_usage_household_created_at ON anthropic_usage_ledger(household_id, created_at);
   `);
+
+  const chatColumns = await all(`PRAGMA table_info(chats)`);
+  const chatColumnNames = new Set(chatColumns.map((row) => String(row?.name || '').trim()));
+  if (!chatColumnNames.has('title_locked')) {
+    await run(`ALTER TABLE chats ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0`);
+  }
 
   const chatRuntimeStateColumns = await all(`PRAGMA table_info(chat_runtime_state)`);
   const chatRuntimeStateColumnNames = new Set(chatRuntimeStateColumns.map((row) => String(row?.name || '').trim()));
@@ -648,7 +655,7 @@ export async function createChat(householdId, owner, title) {
 
 export async function listChats(householdId, owner) {
   return await all(
-    `SELECT id, household_id, owner, title, created_at, updated_at
+    `SELECT id, household_id, owner, title, title_locked, created_at, updated_at
      FROM chats
      WHERE household_id = ? AND owner = ?
      ORDER BY updated_at DESC, id DESC`,
@@ -658,7 +665,7 @@ export async function listChats(householdId, owner) {
 
 export async function listAllChats(householdId) {
   return await all(
-    `SELECT id, household_id, owner, title, created_at, updated_at
+    `SELECT id, household_id, owner, title, title_locked, created_at, updated_at
      FROM chats
      WHERE household_id = ?
      ORDER BY updated_at DESC, id DESC`,
@@ -674,6 +681,24 @@ export async function touchChat(chatId, householdId) {
 export async function updateChatTitle(chatId, householdId, title) {
   await run(`UPDATE chats SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND household_id = ?`, [
     String(title ?? '').trim() || 'Chat',
+    chatId,
+    householdId,
+  ]);
+  return true;
+}
+
+export async function getChatSummary(chatId, householdId) {
+  return await get(
+    `SELECT id, household_id, owner, title, title_locked, created_at, updated_at
+     FROM chats
+     WHERE id = ? AND household_id = ?`,
+    [chatId, householdId]
+  );
+}
+
+export async function setChatTitleLock(chatId, householdId, locked) {
+  await run(`UPDATE chats SET title_locked = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND household_id = ?`, [
+    locked ? 1 : 0,
     chatId,
     householdId,
   ]);
@@ -703,6 +728,8 @@ export async function getMessages(chatId, householdId) {
     [chatId, householdId]
   );
 }
+
+export const getChatMessages = getMessages;
 
 export async function clearMessages(chatId, householdId) {
   const result = await run(`DELETE FROM messages WHERE chat_id = ? AND household_id = ?`, [chatId, householdId]);
