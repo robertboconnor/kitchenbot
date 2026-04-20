@@ -103,6 +103,7 @@ test('main app runtime treats #cookbook as a first-class route into the cookbook
   const source = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../public/app.js'), 'utf8');
   assert.match(source, /function isCookbookHash\(/);
   assert.match(source, /\^#cookbook\(\?:\\\/\\d\+\)\?\$\//);
+  assert.match(source, /function reapplyVisibleAppTab\(/);
   assert.match(source, /const shouldOpenCookbookFromHash = isCookbookHash\(\)/);
   assert.match(source, /if \(isCookbookHash\(\)\) \{/);
   assert.match(source, /const KITCHEN_SECTION_STORAGE_KEY = 'kb_kitchen_active_section'/);
@@ -112,6 +113,7 @@ test('main app runtime treats #cookbook as a first-class route into the cookbook
   assert.match(source, /function closeSidebarAndGoToSettingsTab\(/);
   assert.match(source, /sidebarHouseholdButton\.style\.display = r\.ok \? '' : 'none'/);
   assert.match(source, /closeSidebarAndGoToSettingsTab\(\)/);
+  assert.match(source, /window\.addEventListener\('pageshow', \(\) => \{\s*reapplyVisibleAppTab\(\);/);
 });
 
 test('settings UI includes household id and key slots for quick household-context debugging', async () => {

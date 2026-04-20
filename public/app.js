@@ -771,6 +771,24 @@
           if (tab === 'settings') loadSettingsPanel();
         }
 
+        function reapplyVisibleAppTab() {
+          if (!appArea || appArea.style.display === 'none') return;
+          if (isCookbookHash()) {
+            setActiveTab('groceries');
+            setGroceriesSubview('cookbook');
+            return;
+          }
+          if (settingsPanel && settingsPanel.style.display === 'flex') {
+            setActiveTab('settings');
+            return;
+          }
+          if ((groceryPanel && groceryPanel.style.display === 'flex') || tabGroceries.classList.contains('tab-active')) {
+            setActiveTab('groceries');
+            return;
+          }
+          setActiveTab('chat');
+        }
+
         function closeSidebar() {
           sidebar.classList.remove('open');
           sidebarBackdrop.classList.remove('open');
@@ -4227,6 +4245,7 @@
           void refreshRealtimeChatView();
         });
         window.addEventListener('pageshow', () => {
+          reapplyVisibleAppTab();
           void refreshRealtimeChatView();
         });
         checkAuth();
