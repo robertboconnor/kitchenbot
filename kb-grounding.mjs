@@ -1,6 +1,11 @@
 import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
-import { findCookbookMatches, looksLikeRecipeText, parseCookbookRecipeText } from './cookbook-store.mjs';
+import {
+  findCookbookMatches,
+  findLatestExplicitRecipeCandidate,
+  looksLikeRecipeText,
+  parseCookbookRecipeText,
+} from './cookbook-store.mjs';
 import { formatKbRecentConversation, getKbPromptContextSections } from './kb-prompt-context.mjs';
 import { normalizeWorkingContext } from './kb-working-context.mjs';
 
@@ -195,6 +200,24 @@ export function findLatestAssistantRecipe(messages = []) {
     };
   }
   return null;
+}
+
+export function findLatestRecentRecipe(messages = []) {
+  const candidate = findLatestExplicitRecipeCandidate(messages);
+  if (!candidate) return null;
+  return {
+    type: 'chat_recipe',
+    label: safeTrim(candidate.label || candidate.title),
+    title: safeTrim(candidate.title),
+    source: safeTrim(candidate.source || 'recent_conversation'),
+    recipeText: safeTrim(candidate.recipeText),
+    recipeRecord: candidate.recipeRecord && typeof candidate.recipeRecord === 'object' && !Array.isArray(candidate.recipeRecord)
+      ? clonePlainObject(candidate.recipeRecord)
+      : null,
+    sourceMessages: Array.isArray(candidate.sourceMessages)
+      ? JSON.parse(JSON.stringify(candidate.sourceMessages))
+      : [],
+  };
 }
 
 function extractMealEntriesFromAssistantText(text = '') {
@@ -561,6 +584,12 @@ function promptClearlyRequestsCookbookSave(prompt = '') {
   return mentionsCookbook && asksToSave;
 }
 
+function promptLikelyRefersToRecipe(prompt = '') {
+  const lower = safeTrim(prompt).toLowerCase();
+  if (!lower) return false;
+  return /\b(recipe|ingredients?|dish|meal|soup|salad|pasta|stew|chili|cake|cookies?|this|that|it|them|those|these)\b/.test(lower);
+}
+
 function buildMealSelectionAliases(entry = null) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
   return dedupeStrings([
@@ -675,7 +704,7 @@ export function deriveCurrentObject({
   const grounded = normalizeGroundedTurn(groundedTurn);
   const activeObjects = Array.isArray(grounded.activeObjects) ? grounded.activeObjects : [];
   const lowerPrompt = safeTrim(prompt).toLowerCase();
-  const chatRecipe = activeObjects.find((object) => safeTrim(object?.type) === 'chat_recipe') || findLatestAssistantRecipe(recentMessages);
+  const chatRecipe = activeObjects.find((object) => safeTrim(object?.type) === 'chat_recipe') || findLatestRecentRecipe(recentMessages);
   const recentMealSet = findLatestAssistantMealSet(recentMessages);
   const mealThread =
     activeObjects.find((object) => safeTrim(object?.type) === 'meal_plan_or_meal_set') ||
@@ -707,6 +736,10 @@ export function deriveCurrentObject({
     safeTrim(grounded.intent) === 'revise_recipe' &&
     chatRecipe
   ) {
+    return buildChatRecipeCurrentObject(chatRecipe);
+  }
+
+  if (grounded.surface === 'grocery' && chatRecipe && promptLikelyRefersToRecipe(prompt)) {
     return buildChatRecipeCurrentObject(chatRecipe);
   }
 
@@ -845,7 +878,7 @@ function buildCandidateObjects({
       source: 'chat_context',
     });
   }
-  const activeChatRecipe = findLatestAssistantRecipe(recentMessages);
+  const activeChatRecipe = findLatestRecentRecipe(recentMessages);
   if (activeChatRecipe) objects.push(activeChatRecipe);
   const activeMealSet = findLatestAssistantMealSet(recentMessages);
   if (activeMealSet) objects.push(activeMealSet);

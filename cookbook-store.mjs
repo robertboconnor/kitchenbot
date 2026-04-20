@@ -401,10 +401,17 @@ function cleanRecipeLine(line) {
 
 function normalizeRecipeHeader(line) {
   return safeTrim(line)
-    .replace(/^[#*\-\s]+/, '')
-    .replace(/[*_]+$/g, '')
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/^[\u2022*\-\s]+/, '')
+    .replace(/^[_*`]+|[_*`]+$/g, '')
+    .replace(/^\*\*(.+?)\*\*$/g, '$1')
+    .replace(/^__(.+?)__$/g, '$1')
+    .replace(/^\*(.+?)\*$/g, '$1')
+    .replace(/^_(.+?)_$/g, '$1')
+    .replace(/\s+/g, ' ')
     .replace(/[:\s]+$/, '')
-    .replace(/[*_]+$/g, '')
+    .replace(/\s*\([^)]*\)\s*$/g, '')
+    .replace(/\s*[-\u2013\u2014]\s*(?:serves?|yield|makes?)\b.*$/i, '')
     .toLowerCase();
 }
 
@@ -594,6 +601,52 @@ export function parseCookbookRecipeText(raw, { preferredTitle = '', sourceUrl = 
   });
 }
 
+function clonePlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function buildRecentRecipeCandidateFromMessage(message = null) {
+  const role = safeTrim(message?.role);
+  if (!['user', 'assistant'].includes(role)) return null;
+  const recipeText = safeTrim(message?.content);
+  if (!looksLikeRecipeText(recipeText)) return null;
+  const parsed = parseCookbookRecipeText(recipeText, {});
+  if (!parsed) return null;
+  const recipeRecord = {
+    ...clonePlainObject(parsed),
+    sourceKind: role === 'assistant'
+      ? safeTrim(parsed.sourceKind || 'kb_action') || 'kb_action'
+      : safeTrim(parsed.sourceKind || 'manual') || 'manual',
+  };
+  return {
+    type: 'chat_recipe',
+    role,
+    title: safeTrim(recipeRecord.title),
+    label: safeTrim(recipeRecord.title || 'Active recipe in chat'),
+    source: 'recent_conversation',
+    sourceKind: recipeRecord.sourceKind,
+    recipeText,
+    recipeRecord,
+    sourceMessages: [
+      {
+        role,
+        id: Number.isFinite(Number(message?.id)) ? Number(message.id) : null,
+        contentPreview: recipeText.slice(0, 240),
+      },
+    ],
+  };
+}
+
+export function findLatestExplicitRecipeCandidate(messages = []) {
+  const recentMessages = Array.isArray(messages) ? messages : [];
+  for (let index = recentMessages.length - 1; index >= 0; index -= 1) {
+    const candidate = buildRecentRecipeCandidateFromMessage(recentMessages[index]);
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
 export function getCookbookRecordQuality(raw) {
   const record = buildCookbookRecordForStorage(raw);
   if (!record) return { label: 'meal_idea', rank: 0 };
@@ -634,7 +687,7 @@ export function getCookbookDisplayProvenance(raw) {
   if (!record) return 'Meal idea';
   const structuredRecipe = isStructuredCookbookRecipe(record);
   if (!structuredRecipe) return 'Meal idea';
-  if (hasCookbookExternalSource(record)) return 'Source recipe';
+  if (hasCookbookExternalSource(record)) return 'Sourced recipe';
   if (record.sourceKind === 'kb_action') return 'KitchenBot generated';
   return 'Saved recipe';
 }

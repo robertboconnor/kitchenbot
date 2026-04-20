@@ -259,6 +259,52 @@ The other two stay as-is: Cacio e Pepe and White Bean Parmesan Soup.`,
   assert.deepEqual(grounded.currentObject?.mealIdeas, ['Cacio e Pepe', 'White Bean and Parmesan Soup']);
 });
 
+test('groundTurnFinal promotes the latest explicit user-pasted recipe as the grocery current object', async () => {
+  const grounded = await groundTurnFinal({
+    anthropic: makeAnthropic({
+      turnMode: 'execute_action',
+      surface: 'grocery',
+      intent: 'add_grocery_items',
+      confidence: 'high',
+    }),
+    prompt: 'Add the lemony artichoke soup ingredients to our grocery list.',
+    recentMessages: [
+      {
+        role: 'user',
+        name: 'Elle',
+        content: `Lemony Artichoke Soup
+
+Ingredients
+1/4 cup butter
+1 small white onion, diced
+1 celery stalk, diced
+3 garlic cloves, minced
+6 cups chicken or vegetable stock
+3 (14-ounce) jars artichoke hearts, drained
+1/4 cup freshly-squeezed lemon juice
+
+Instructions
+1. Melt the butter and sauté the onion and celery.
+2. Add the garlic and cook until fragrant.
+3. Add the stock and artichokes and simmer.
+4. Blend until smooth.
+5. Stir in the lemon juice and serve.`,
+      },
+      {
+        role: 'assistant',
+        name: 'KitchenBot',
+        content: 'That sounds bright and cozy. Want me to add the ingredients to your grocery list too?',
+      },
+    ],
+    activeSpeakerName: 'Rob',
+  });
+
+  assert.equal(grounded.surface, 'grocery');
+  assert.equal(grounded.currentObject?.objectType, 'chat_recipe');
+  assert.equal(grounded.currentObject?.title, 'Lemony Artichoke Soup');
+  assert.ok(grounded.currentObject?.recipeRecord?.ingredients.some((line) => /artichoke hearts/i.test(line)));
+});
+
 test('groundTurnFinal promotes the just-expanded recipe over the broader meal set for cookbook saves', async () => {
   const grounded = await groundTurnFinal({
     anthropic: makeAnthropic({

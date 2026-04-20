@@ -7,7 +7,7 @@ import {
   normalizeGroceryItemsForPost,
   normalizeInventoryNameKey,
 } from '../inventory-service.mjs';
-import { resolveInventoryItems } from '../inventory-classification.mjs';
+import { normalizeInventoryItemName, resolveInventoryItems } from '../inventory-classification.mjs';
 
 test('inventory auto-classification fallback is consistent for pantry and grocery', async () => {
   const [groceryItem] = await resolveInventoryItems({
@@ -27,6 +27,14 @@ test('inventory auto-classification fallback is consistent for pantry and grocer
 
 test('inventory name key normalization is shared and stable', () => {
   assert.equal(normalizeInventoryNameKey('  Greek   Yogurt '), 'greek yogurt');
+});
+
+test('inventory item name normalization strips prep phrases but keeps shopping-useful identity', () => {
+  assert.equal(normalizeInventoryItemName('1 small white onion, diced'.replace(/^\d+\s+/, '')), 'white onion');
+  assert.equal(normalizeInventoryItemName('garlic cloves, minced'), 'garlic');
+  assert.equal(normalizeInventoryItemName('celery stalk, diced'), 'celery');
+  assert.equal(normalizeInventoryItemName('freshly-squeezed lemon juice'), 'lemons');
+  assert.equal(normalizeInventoryItemName('artichoke hearts, drained'), 'artichoke hearts');
 });
 
 test('probably pantry item inference stays tightly scoped for grocery rows', () => {
@@ -113,6 +121,37 @@ test('shared grocery normalization still vetoes usually refrigerated items', asy
 
   assert.equal(item.section, 'dry');
   assert.equal(item.probablyPantryItem, false);
+});
+
+test('shared grocery normalization cleans recipe-derived names and classifies obvious shelf-stable ingredients sanely', async () => {
+  const items = await normalizeGroceryItemsForPost(
+    [
+      { name: 'small white onion, diced', amount: '1', section: '' },
+      { name: 'celery stalk, diced', amount: '1', section: '' },
+      { name: 'garlic cloves, minced', amount: '3', section: '' },
+      { name: 'chicken or vegetable stock', amount: '6 cups', section: '' },
+      { name: 'artichoke hearts, drained', amount: '3 14-ounce jars', section: '' },
+      { name: 'freshly-squeezed lemon juice', amount: '1/4 cup', section: '' },
+      { name: 'dried thyme', amount: '1 tsp', section: '' },
+    ],
+    {
+      householdId: 1,
+      getAnthropicClient: async () => {
+        throw new Error('no anthropic');
+      },
+      callSurface: 'kb_action',
+      runtimeEnabled: true,
+    }
+  );
+
+  const byName = new Map(items.map((item) => [item.name, item]));
+  assert.equal(byName.get('white onion')?.section, 'produce');
+  assert.equal(byName.get('celery')?.section, 'produce');
+  assert.equal(byName.get('garlic')?.section, 'produce');
+  assert.equal(byName.get('chicken or vegetable stock')?.section, 'dry');
+  assert.equal(byName.get('artichoke hearts')?.section, 'dry');
+  assert.equal(byName.get('lemons')?.section, 'produce');
+  assert.equal(byName.get('dried thyme')?.section, 'dry');
 });
 
 test('mergeGroceryItemsFromAi updates matching rows and inserts new ones', async () => {

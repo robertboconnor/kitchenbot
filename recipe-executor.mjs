@@ -4,6 +4,7 @@ import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mj
 import { buildClarifyActionState } from './kb-next-action.mjs';
 import {
   buildCookbookRecordForStorage,
+  findLatestExplicitRecipeCandidate,
   looksLikeRecipeText,
   parseCookbookRecipeText,
 } from './cookbook-store.mjs';
@@ -47,13 +48,8 @@ function compactRecentConversation(messages = []) {
 }
 
 function findLatestAssistantRecipeText(messages = []) {
-  const assistantMessages = [...(Array.isArray(messages) ? messages : [])]
-    .filter((message) => message?.role === 'assistant')
-    .reverse();
-  for (const message of assistantMessages) {
-    const text = safeTrim(message?.content);
-    if (looksLikeRecipeText(text)) return text;
-  }
+  const recentRecipe = findLatestExplicitRecipeCandidate(messages);
+  if (recentRecipe?.role === 'assistant') return safeTrim(recentRecipe.recipeText);
   return '';
 }
 
@@ -623,23 +619,24 @@ async function resolveRecipeBase({ req, chatId, memoryContext = null, targetReci
   }
   const conversation = await getMessages(chatId, req.householdId);
   const recentConversation = conversation.slice(-16);
+  const recentRecipeCandidate = findLatestExplicitRecipeCandidate(recentConversation);
   const latestAssistantText = findLatestAssistantRecipeText(recentConversation);
-  const parsedAssistantRecipe = latestAssistantText ? parseCookbookRecipeText(latestAssistantText, {}) : null;
-  const cookbookTarget = findSelectedCookbookTarget(memoryContext, parsedAssistantRecipe?.title || '');
-  if (parsedAssistantRecipe) {
+  const parsedRecentRecipe = recentRecipeCandidate?.recipeRecord || null;
+  const cookbookTarget = findSelectedCookbookTarget(memoryContext, parsedRecentRecipe?.title || '');
+  if (parsedRecentRecipe) {
     if (cookbookTarget) {
       return {
         recentConversation,
         latestAssistantText,
         cookbookTarget,
-        baseRecord: buildExplicitCookbookReplacement(cookbookTarget, parsedAssistantRecipe),
+        baseRecord: buildExplicitCookbookReplacement(cookbookTarget, parsedRecentRecipe),
       };
     }
     return {
       recentConversation,
       latestAssistantText,
       cookbookTarget: null,
-      baseRecord: buildCookbookRecordForStorage(parsedAssistantRecipe),
+      baseRecord: buildCookbookRecordForStorage(parsedRecentRecipe),
     };
   }
   if (cookbookTarget) {

@@ -20,6 +20,43 @@ function normalizeNameKey(name) {
   return safeTrim(name).toLowerCase().replace(/\s+/g, ' ');
 }
 
+const INVENTORY_PREP_SUFFIX_PATTERN =
+  /\s*,\s*(?:peeled|minced|chopped|diced|roughly chopped|roughly diced|thinly sliced|thinly cut|sliced|halved|quartered|drained|rinsed|softened|melted|seeded|cored|trimmed|crushed|grated|zested|juiced|beaten|room temperature|washed|patted dry)\b.*$/i;
+
+function pluralizeSimple(noun) {
+  const base = safeTrim(noun).toLowerCase();
+  if (!base) return '';
+  if (base.endsWith('s')) return base;
+  return `${base}s`;
+}
+
+export function normalizeInventoryItemName(rawName, { target = 'grocery' } = {}) {
+  let name = safeTrim(rawName)
+    .replace(/^[-*\u2022]+\s*/, '')
+    .replace(/\s+/g, ' ');
+  if (!name) return '';
+
+  name = name
+    .replace(INVENTORY_PREP_SUFFIX_PATTERN, '')
+    .replace(/\s+(?:for serving|to serve|plus more|plus extra|divided|optional)\b.*$/i, '')
+    .replace(/^(?:small|medium|large|extra-large|extra large)\s+/i, '')
+    .replace(/\bgarlic cloves?\b/i, 'garlic')
+    .replace(/\bcelery stalks?\b/i, 'celery')
+    .replace(/\b(white|yellow|red|sweet) onions?\b/i, '$1 onion')
+    .replace(/^onions?$/i, 'onion')
+    .replace(/\s+/g, ' ')
+    .replace(/^[,;:\-]+\s*/, '')
+    .replace(/\s*[,;:\-]+\s*$/, '')
+    .trim();
+
+  const freshCitrusJuiceMatch = name.match(/^(?:fresh|freshly[-\s]+squeezed)\s+(lemon|lime|orange|grapefruit)\s+juice$/i);
+  if (freshCitrusJuiceMatch && target === 'grocery') {
+    return pluralizeSimple(freshCitrusJuiceMatch[1]);
+  }
+
+  return name;
+}
+
 function normalizeBooleanLike(raw) {
   if (raw === true || raw === 1 || raw === '1') return true;
   if (typeof raw === 'string') {
@@ -105,9 +142,26 @@ function inferProbablyPantryFallbackFromName(rawName) {
   return ['spices_herbs', 'oils_vinegars', 'baking', 'sweeteners', 'pasta_grains_dry_goods'].includes(pantrySection);
 }
 
-function inferGrocerySectionFallback(rawName, sourceSection = '', sourceListType = '') {
+function inferGrocerySectionFallback(rawName, sourceSection = '', sourceListType = '', rawAmount = '') {
   const name = normalizeNameKey(rawName);
+  const amount = normalizeNameKey(rawAmount);
   if (!name) return 'other';
+
+  if (
+    /\b(stock|broth|bouillon|base)\b/.test(name) ||
+    (/\b(artichoke hearts?|tomatoes?|beans?|chiles?|chilies)\b/.test(name) && /\b(jars?|cans?|boxes?|cartons?)\b/.test(amount))
+  ) {
+    return 'dry';
+  }
+
+  if (
+    /\b(dried|ground|smoked)\s+(thyme|oregano|rosemary|basil|parsley|sage|cumin|coriander|turmeric|paprika|cardamom|sumac)\b/.test(
+      name
+    ) ||
+    /\b(chili powder|red pepper flakes|garlic powder|onion powder|bay leaves?|bay leaf|spice blend|spices)\b/.test(name)
+  ) {
+    return 'dry';
+  }
 
   if (
     /\b(chicken|thighs|breast|drumstick|turkey|beef|steak|ground beef|ground turkey|pork|chop|bacon|sausage|lamb|fish|salmon|cod|shrimp|tuna)\b/.test(
@@ -127,7 +181,7 @@ function inferGrocerySectionFallback(rawName, sourceSection = '', sourceListType
     return 'frozen';
   }
   if (
-    /\b(apple|apples|spinach|lettuce|greens|broccoli|asparagus|parsley|thyme|cilantro|lemon|lemons|lime|limes|garlic|onion|onions|potato|potatoes|carrot|carrots|pepper|peppers|tomato|tomatoes|cucumber|zucchini|mushroom|mushrooms|herb|herbs)\b/.test(
+    /\b(apple|apples|spinach|lettuce|greens|broccoli|asparagus|celery|parsley|thyme|cilantro|lemon|lemons|lime|limes|garlic|onion|onions|potato|potatoes|carrot|carrots|pepper|peppers|tomato|tomatoes|cucumber|zucchini|mushroom|mushrooms|herb|herbs)\b/.test(
       name
     )
   ) {
@@ -148,9 +202,9 @@ function inferGrocerySectionFallback(rawName, sourceSection = '', sourceListType
   return 'other';
 }
 
-function inferInventorySectionFallback({ target, name, sourceSection = '', sourceListType = '' }) {
+function inferInventorySectionFallback({ target, name, amount = '', sourceSection = '', sourceListType = '' }) {
   if (target === 'pantry') return inferPantrySectionFallback(name);
-  return inferGrocerySectionFallback(name, sourceSection, sourceListType);
+  return inferGrocerySectionFallback(name, sourceSection, sourceListType, amount);
 }
 
 function allowedSectionKeys(target) {
@@ -265,7 +319,7 @@ export async function resolveInventoryItems({
   const cleaned = [];
   for (const raw of rows) {
     if (!raw || typeof raw !== 'object') continue;
-    const name = safeTrim(raw.name);
+    const name = normalizeInventoryItemName(raw.name, { target: normalizedTarget });
     if (!name) continue;
     const amount = safeTrim(raw.amount);
     const sourceSection = safeTrim(raw.sourceSection || raw.section);
@@ -303,6 +357,7 @@ export async function resolveInventoryItems({
       inferInventorySectionFallback({
         target: normalizedTarget,
         name: item.name,
+        amount: item.amount,
         sourceSection: item.sourceSection,
         sourceListType: item.sourceListType,
       });

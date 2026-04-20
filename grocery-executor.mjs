@@ -4,6 +4,7 @@ import {
 } from './db.mjs';
 import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
+import { findLatestExplicitRecipeCandidate } from './cookbook-store.mjs';
 import { resolveInventoryItems } from './inventory-classification.mjs';
 import { buildKbContextSystemText } from './kb-prompt-context.mjs';
 import { buildClarifyActionState } from './kb-next-action.mjs';
@@ -126,6 +127,73 @@ function buildMealSetContextForPrompt(mealSet = null) {
   if (constraints.length > 0) parts.push(`Constraints: ${constraints.join('; ')}`);
   if (groceryFocus.length > 0) parts.push(`Grocery focus: ${groceryFocus.join('; ')}`);
   return parts.join('\n');
+}
+
+function looksLikeRecipeSectionHeader(line = '') {
+  const text = safeTrim(line).replace(/^[-*\u2022]+\s*/, '');
+  if (!text || !text.endsWith(':')) return false;
+  return text.split(/\s+/).filter(Boolean).length <= 5;
+}
+
+function parseRecipeIngredientLine(line = '') {
+  const cleaned = safeTrim(line)
+    .replace(/^[-*\u2022]+\s*/, '')
+    .replace(/\s+/g, ' ');
+  if (!cleaned || looksLikeRecipeSectionHeader(cleaned)) return null;
+  const match = cleaned.match(
+    /^((?:about\s+)?(?:\d+\s+\d\/\d|\d+(?:[\/.]\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|a|an|pinch|dash|few|several))\b\s*(.*)$/i
+  );
+  let amount = safeTrim(match?.[1]);
+  let name = safeTrim(match?.[2] || cleaned);
+  let parentheticalAmount = '';
+  const parentheticalMatch = name.match(/^\(([^)]+)\)\s*(.+)$/);
+  if (parentheticalMatch?.[2]) {
+    parentheticalAmount = safeTrim(parentheticalMatch[1]);
+    name = safeTrim(parentheticalMatch[2]);
+  }
+  const unitMatch = name.match(
+    /^(cups?|tablespoons?|tbsp|teaspoons?|tsp|ounces?|oz|pounds?|lbs?|cloves?|heads?|stalks?|jars?|cans?|packages?|sticks?|bunch(?:es)?|sprigs?|slices?|pieces?|inch(?:es)?|qt|quarts?)\b\s*(.*)$/i
+  );
+  if (unitMatch?.[1]) {
+    amount = safeTrim([amount, parentheticalAmount, unitMatch[1]].filter(Boolean).join(' '));
+    name = safeTrim(unitMatch[2]);
+  } else if (parentheticalAmount) {
+    amount = safeTrim([amount, parentheticalAmount].filter(Boolean).join(' '));
+  }
+  name = name
+    .replace(/^[,;:\-]+\s*/, '')
+    .replace(/\s+/g, ' ');
+  if (!name) return null;
+  return {
+    section: '',
+    name,
+    amount: amount || '',
+  };
+}
+
+function buildRecipeItemsFromCandidate(recipeCandidate = null) {
+  const ingredientLines = Array.isArray(recipeCandidate?.recipeRecord?.ingredients)
+    ? recipeCandidate.recipeRecord.ingredients
+    : [];
+  const items = [];
+  const seen = new Set();
+  for (const line of ingredientLines) {
+    const parsed = parseRecipeIngredientLine(line);
+    const key = safeTrim(parsed?.name).toLowerCase();
+    if (!parsed || !key || seen.has(key)) continue;
+    seen.add(key);
+    items.push(parsed);
+  }
+  return items;
+}
+
+function promptLooksLikeRecipeDerivedGroceryWrite(promptRaw = '') {
+  const text = safeTrim(promptRaw).toLowerCase();
+  if (!text) return false;
+  const mentionsGroceries = /\b(grocery list|groceries|shopping list|shopping)\b/.test(text);
+  const referential = /\b(this|that|it|them|those|these|all of that|all of them)\b/.test(text);
+  const recipeish = /\b(recipe|ingredients?|dish|meal|soup|salad|pasta|stew|chili|cake|cookies?)\b/.test(text);
+  return mentionsGroceries && (referential || recipeish);
 }
 
 function hasUsableWorkingContext(memoryContext) {
@@ -351,6 +419,10 @@ async function generateGroceryDraft(runtimeAction, context) {
     runtimeAction?.input?.sourceGroceryProposal && typeof runtimeAction.input.sourceGroceryProposal === 'object' && !Array.isArray(runtimeAction.input.sourceGroceryProposal)
       ? runtimeAction.input.sourceGroceryProposal
       : null;
+  const sourceRecipe =
+    runtimeAction?.input?.sourceRecipe && typeof runtimeAction.input.sourceRecipe === 'object' && !Array.isArray(runtimeAction.input.sourceRecipe)
+      ? runtimeAction.input.sourceRecipe
+      : null;
   const directOfferedItems = Array.isArray(runtimeAction?.input?.items)
     ? runtimeAction.input.items
         .map((item) => ({
@@ -374,6 +446,7 @@ async function generateGroceryDraft(runtimeAction, context) {
     (m) => m.role !== 'user' || !String(m.content || '').trim().startsWith('!')
   );
   const recentConversation = conversationForContext.length > 40 ? conversationForContext.slice(-40) : conversationForContext;
+  const recentRecipeCandidate = sourceRecipe || findLatestExplicitRecipeCandidate(recentConversation);
 
   const existingGroceryItems = await getGroceryItems(req.householdId);
   const objectContextCompact = buildMealSetContextForPrompt(sourceMealSet);
@@ -502,6 +575,57 @@ Where:
             callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
           });
     const priorKeys = new Set(existingGroceryItems.map((item) => deps.normalizeInventoryNameKey(item?.name)).filter(Boolean));
+    const runKeys = new Set(normalizedItems.map((i) => deps.normalizeInventoryNameKey(i.name)).filter(Boolean));
+    const likelyRemovedKeys = new Set([...priorKeys].filter((k) => !runKeys.has(k)));
+    const likelyAddedKeys = new Set([...runKeys].filter((k) => !priorKeys.has(k)));
+    return {
+      recentConversation,
+      existingGroceryItems,
+      pantryItems: Array.isArray(memoryContext?.pantryItems) ? memoryContext.pantryItems : [],
+      pantryContextStatus: safeTrim(memoryContext?.pantryContextStatus) || 'unavailable',
+      pantryContextAvailable: !!memoryContext?.pantryContextAvailable,
+      pantryItemCount: Number.isFinite(Number(memoryContext?.pantryItemCount)) ? Number(memoryContext.pantryItemCount) : 0,
+      conversationContextCompact,
+      normalizedItems,
+      systemPrompt,
+      groceryReconciliationSystemPrompt,
+      priorKeys,
+      runKeys,
+      likelyRemovedKeys,
+      likelyAddedKeys,
+      draftChatOfferCommit: false,
+    };
+  }
+
+  const recipeDerivedItems = buildRecipeItemsFromCandidate(recentRecipeCandidate);
+  const shouldUseRecipeSource =
+    recipeDerivedItems.length > 0 &&
+    (safeTrim(requestedSource).toLowerCase() === 'chat_recipe' ||
+      !!sourceRecipe ||
+      promptLooksLikeRecipeDerivedGroceryWrite(context?.prompt));
+  if (shouldUseRecipeSource) {
+    const normalizedItems =
+      typeof deps.normalizeGroceryItemsForPost === 'function'
+        ? await deps.normalizeGroceryItemsForPost(recipeDerivedItems, {
+            householdId: req.householdId,
+            chatId,
+            runtimeEnabled: !!kbModeEnabled,
+            callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
+          })
+        : await resolveInventoryItems({
+            target: 'grocery',
+            items: recipeDerivedItems,
+            anthropic: anthropic || null,
+            householdId: req.householdId,
+            chatId,
+            runtimeEnabled: !!kbModeEnabled,
+            callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
+          });
+    const priorKeys = new Set(
+      existingGroceryItems
+        .map((item) => deps.normalizeInventoryNameKey(item?.name))
+        .filter(Boolean)
+    );
     const runKeys = new Set(normalizedItems.map((i) => deps.normalizeInventoryNameKey(i.name)).filter(Boolean));
     const likelyRemovedKeys = new Set([...priorKeys].filter((k) => !runKeys.has(k)));
     const likelyAddedKeys = new Set([...runKeys].filter((k) => !priorKeys.has(k)));

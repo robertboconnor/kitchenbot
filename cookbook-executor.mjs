@@ -13,6 +13,7 @@ import {
   extractCookbookRecordFromFetchedPage,
   extractManualCookbookRecipePayload,
   extractFirstUrl,
+  findLatestExplicitRecipeCandidate,
   extractPreferredCookbookLabel,
   findCookbookMatches,
   inferCookbookRecord,
@@ -46,13 +47,11 @@ function extractExplicitCookbookUpdateName(request = '') {
 }
 
 function findLatestAssistantRecipeText(messages = []) {
+  const recentRecipe = findLatestExplicitRecipeCandidate(messages);
+  if (recentRecipe?.role === 'assistant') return safeTrim(recentRecipe.recipeText);
   const assistantMessages = [...(Array.isArray(messages) ? messages : [])]
     .filter((message) => message.role === 'assistant')
     .reverse();
-  for (const message of assistantMessages) {
-    const text = safeTrim(message?.content);
-    if (looksLikeRecipeText(text)) return text;
-  }
   return safeTrim(assistantMessages[0]?.content || '');
 }
 
@@ -345,8 +344,9 @@ export async function executeCookbookSave(runtimeAction, context) {
   const recovery = buildRecoveryMetadata(runtimeAction, workingContext);
   const linkedUrl = recovery.sourceUrl || extractFirstUrl(requestedSave);
   const manualPayload = extractManualCookbookRecipePayload(requestedSave, { sourceUrl: linkedUrl });
-  const explicitRequestedTitle =
-    !explicitTargetRecipe || requestExplicitlyNamesCookbookTitle(requestedSave) ? manualPayload.requestedCookbookTitle : '';
+  const explicitRequestedTitle = requestExplicitlyNamesCookbookTitle(requestedSave)
+    ? manualPayload.requestedCookbookTitle
+    : '';
   const preferredTitleRaw =
     recovery.preferredTitle ||
     explicitRequestedTitle ||
@@ -360,6 +360,7 @@ export async function executeCookbookSave(runtimeAction, context) {
     !!req?.kbCapabilities?.webSearchEnabled;
   const conversation = await getMessages(chatId, req.householdId);
   const recentConversation = conversation.slice(-14);
+  const recentRecipeCandidate = findLatestExplicitRecipeCandidate(recentConversation);
   const latestAssistantText = findLatestAssistantRecipeText(recentConversation);
 
   let inferred = null;
@@ -369,7 +370,7 @@ export async function executeCookbookSave(runtimeAction, context) {
   if (explicitTargetRecipe?.recipeRecord && typeof explicitTargetRecipe.recipeRecord === 'object' && !Array.isArray(explicitTargetRecipe.recipeRecord)) {
     inferred = {
       ...explicitTargetRecipe.recipeRecord,
-      title: safeTrim(preferredTitle) || safeTrim(explicitTargetRecipe.recipeRecord.title || explicitTargetRecipe.title || explicitTargetRecipe.label),
+      title: safeTrim(explicitRequestedTitle) || safeTrim(explicitTargetRecipe.recipeRecord.title || explicitTargetRecipe.title || explicitTargetRecipe.label),
       sourceTitle: safeTrim(explicitTargetRecipe.recipeRecord.sourceTitle || recovery.sourceTitle),
       sourceUrl: safeTrim(explicitTargetRecipe.recipeRecord.sourceUrl || linkedUrl),
       sourceKind: safeTrim(explicitTargetRecipe.recipeRecord.sourceKind || 'kb_generated') || 'kb_action',
@@ -377,7 +378,7 @@ export async function executeCookbookSave(runtimeAction, context) {
     sourceKind = safeTrim(inferred.sourceKind || 'kb_action') || 'kb_action';
   } else if (safeTrim(explicitTargetRecipe?.recipeText)) {
     inferred = parseCookbookRecipeText(explicitTargetRecipe.recipeText, {
-      preferredTitle: safeTrim(preferredTitle || explicitTargetRecipe.title || explicitTargetRecipe.label),
+      preferredTitle: safeTrim(explicitRequestedTitle || explicitTargetRecipe.title || explicitTargetRecipe.label || preferredTitle),
       sourceUrl: linkedUrl,
       sourceTitle: recovery.sourceTitle,
     });
@@ -557,19 +558,21 @@ export async function executeCookbookSave(runtimeAction, context) {
     }
   } else {
     if (manualPayload.requestedCookbookTitle && !safeTrim(manualPayload.recipeBodyText)) {
-      return {
-        capability: 'cookbook.save',
-        urlBacked: false,
-        sourceUrl: '',
-        sourceTitle: '',
-        fetchPerformed: false,
-        fetchedExactUrl: false,
-        extractionSucceeded: false,
-        sourceKind: 'manual',
-        failureReason: 'The save request did not include enough recipe text to parse ingredients and instructions.',
-        workingContext,
-        ...buildManualCookbookClarify({ preferredTitle }),
-      };
+      if (!recentRecipeCandidate?.recipeRecord) {
+        return {
+          capability: 'cookbook.save',
+          urlBacked: false,
+          sourceUrl: '',
+          sourceTitle: '',
+          fetchPerformed: false,
+          fetchedExactUrl: false,
+          extractionSucceeded: false,
+          sourceKind: 'manual',
+          failureReason: 'The save request did not include enough recipe text to parse ingredients and instructions.',
+          workingContext,
+          ...buildManualCookbookClarify({ preferredTitle }),
+        };
+      }
     }
     const parsedManualRecipe = parseCookbookRecipeText(manualPayload.recipeBodyText || requestedSave, {
       preferredTitle,
@@ -579,17 +582,26 @@ export async function executeCookbookSave(runtimeAction, context) {
     if (parsedManualRecipe) {
       inferred = parsedManualRecipe;
       sourceKind = 'manual';
+    } else if (recentRecipeCandidate?.recipeRecord) {
+      inferred = {
+        ...recentRecipeCandidate.recipeRecord,
+        title: safeTrim(explicitRequestedTitle) || safeTrim(recentRecipeCandidate.recipeRecord.title || recentRecipeCandidate.title),
+        sourceTitle: safeTrim(recentRecipeCandidate.recipeRecord.sourceTitle || recovery.sourceTitle),
+        sourceUrl: safeTrim(recentRecipeCandidate.recipeRecord.sourceUrl || linkedUrl),
+        sourceKind: safeTrim(recentRecipeCandidate.sourceKind || recentRecipeCandidate.recipeRecord.sourceKind || 'manual') || 'manual',
+      };
+      sourceKind = safeTrim(inferred.sourceKind || 'manual') || 'manual';
     } else {
-    inferred = await inferCookbookRecord({
-      anthropic,
-      householdId: req.householdId,
-      chatId,
-      prompt: manualPayload.recipeBodyText || requestedSave,
-      workingContext,
-      memoryContext,
-      recentConversation,
-      latestAssistantText,
-    });
+      inferred = await inferCookbookRecord({
+        anthropic,
+        householdId: req.householdId,
+        chatId,
+        prompt: manualPayload.recipeBodyText || requestedSave,
+        workingContext,
+        memoryContext,
+        recentConversation,
+        latestAssistantText,
+      });
     }
   }
   const record = await shapeCookbookRecordForStorage({
@@ -605,10 +617,17 @@ export async function executeCookbookSave(runtimeAction, context) {
     preserveTitle: !!preferredTitle,
   });
   if (!record) {
+    if (recentRecipeCandidate?.recipeRecord == null && !linkedUrl) {
+      return {
+        capability: 'cookbook.save',
+        status: 'invalid',
+        error: 'I need the actual recipe ingredients and directions before I can save that to the cookbook.',
+      };
+    }
     return {
       capability: 'cookbook.save',
       status: 'invalid',
-      error: 'I could not turn that into a reusable cookbook entry yet.',
+      error: 'I still could not extract a clean recipe with ingredients and directions from that.',
     };
   }
 

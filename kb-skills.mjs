@@ -126,6 +126,10 @@ function normalizeGroceryWriteActionInput(input, context = {}) {
     out.sourceGroceryProposal = raw.sourceGroceryProposal;
     out.source = out.source || 'grocery_proposal';
   }
+  if (raw.sourceRecipe && typeof raw.sourceRecipe === 'object' && !Array.isArray(raw.sourceRecipe)) {
+    out.sourceRecipe = raw.sourceRecipe;
+    out.source = out.source || 'chat_recipe';
+  }
   if (Array.isArray(raw.items)) {
     const items = raw.items
       .map((item) => ({
@@ -140,7 +144,8 @@ function normalizeGroceryWriteActionInput(input, context = {}) {
     !!out.sourceMealSet ||
     !!out.sourceMealSetSelection ||
     !!out.sourceGroceryProposal ||
-    ['meal_set', 'meal_set_selection', 'grocery_proposal'].includes(groundedCurrentObjectType);
+    !!out.sourceRecipe ||
+    ['meal_set', 'meal_set_selection', 'grocery_proposal', 'chat_recipe'].includes(groundedCurrentObjectType);
   if ((!Array.isArray(out.items) || out.items.length === 0) && !hasStructuredSource) {
     const inferredItems = inferExplicitGroceryItemsFromPrompt(context.originalPrompt);
     if (inferredItems.length > 0) {
@@ -911,6 +916,16 @@ function applyGroundedSkillInput(capability, input, context = {}) {
     if (targetList) out.targetList = 'household_grocery_list';
   }
   if (capability === 'grocery.write') {
+    if (!out.sourceRecipe && currentObject?.objectType === 'chat_recipe') {
+      out.sourceRecipe = {
+        type: 'chat_recipe',
+        title: safeTrim(currentObject.title),
+        label: safeTrim(currentObject.title || currentObject.versionSummary),
+        recipeText: safeTrim(currentObject.recipeText),
+        recipeRecord: currentObject.recipeRecord,
+      };
+      out.source = safeTrim(out.source || 'chat_recipe');
+    }
     if (!out.sourceMealSet && currentObject?.objectType === 'meal_set') {
       out.sourceMealSet = currentObject;
       out.source = safeTrim(out.source || 'meal_set');

@@ -94,6 +94,31 @@ Use extra lime juice if it needs more brightness.`, {});
   assert.deepEqual(parsed.tags, ['mexican', 'street', 'corn', 'pasta']);
 });
 
+test('parseCookbookRecipeText handles decorated headers with serving notes in the section title', async () => {
+  const module = await import(new URL(`../cookbook-store.mjs?recipe-parse-decorated=${Date.now()}`, import.meta.url).href);
+  const parsed = module.parseCookbookRecipeText(`Cheat Wonton Soup with Frozen Pot Stickers & Bok Choy
+
+**Ingredients (serves 2):**
+- 6 cups chicken or vegetable broth
+- 2 cloves garlic, minced
+- 1-inch piece fresh ginger, sliced thin
+- 12-16 frozen pot stickers
+- 2-3 heads baby bok choy
+
+**Instructions:**
+1. Bring the broth to a boil.
+2. Add garlic and ginger and simmer for 5 minutes.
+3. Add the pot stickers and cook through.
+4. Add the bok choy during the last few minutes.
+5. Serve hot.`, {});
+
+  assert.equal(parsed.title, 'Cheat Wonton Soup with Frozen Pot Stickers & Bok Choy');
+  assert.ok(parsed.ingredients.includes('6 cups chicken or vegetable broth'));
+  assert.ok(parsed.ingredients.includes('12-16 frozen pot stickers'));
+  assert.ok(parsed.instructions.some((line) => /pot stickers/i.test(line)));
+  assert.equal(parsed.category, 'soups');
+});
+
 test('parseCookbookRecipeText understands KB markdown recipe replies with intro text and strips app offers', async () => {
   const module = await import(new URL(`../cookbook-store.mjs?recipe-parse-markdown-intro=${Date.now()}`, import.meta.url).href);
   const parsed = module.parseCookbookRecipeText(`Here's an elotes-style pasta salad recipe that brings those Mexican street corn flavors to pasta:
@@ -202,7 +227,7 @@ test('cookbook provenance labels distinguish source recipes, KB-generated recipe
       sourceUrl: 'https://www.seriouseats.com/all-american-beef-stew-recipe',
       sourceKind: 'manual',
     }),
-    'Source recipe'
+    'Sourced recipe'
   );
 
   assert.equal(
@@ -690,6 +715,131 @@ test('executeCookbookSave can save directly from a grounded chat_recipe object',
   assert.equal(parsed.entries.length, 1);
   assert.equal(parsed.entries[0].title, 'Easy Thai Coconut Soup');
   assert.deepEqual(parsed.entries[0].ingredients, ['1 can coconut milk', '2 cups chicken broth', '8 oz chicken breast']);
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('executeCookbookSave can save the latest assistant-generated recipe from recent conversation', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-save-recent-assistant-'));
+  const dbPath = path.join(tempDir, 'cookbook-save-recent-assistant.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const executor = await import(new URL('./cookbook-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Cookbook save recent assistant');
+    await db.addMessage(created.householdId, chatId, 'user', 'Rob', 'Can you give me the dumpling soup recipe again?');
+    await db.addMessage(created.householdId, chatId, 'assistant', 'KitchenBot', \`Cheat Wonton Soup with Frozen Pot Stickers & Bok Choy
+
+Ingredients (serves 2)
+6 cups chicken or vegetable broth
+2 cloves garlic, minced
+1-inch piece fresh ginger, sliced thin
+12-16 frozen pot stickers
+2-3 heads baby bok choy
+
+Instructions
+1. Bring the broth to a boil.
+2. Add garlic and ginger and simmer for 5 minutes.
+3. Add the pot stickers and cook through.
+4. Add the bok choy during the last few minutes.
+5. Serve hot.\`);
+
+    const outcome = await executor.executeCookbookSave(
+      { capability: 'cookbook.save', input: { request: 'Add this to our cookbook please' } },
+      {
+        req: { householdId: created.householdId },
+        chatId,
+        prompt: 'Add this to our cookbook please',
+        anthropic: null,
+        memoryContext: { capabilities: { webSearchEnabled: false } },
+        workingContext: null,
+      }
+    );
+
+    const entries = await db.listCookbookEntries(created.householdId);
+    process.stdout.write(JSON.stringify({ outcome, entries }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath },
+  });
+  const parsed = JSON.parse(stdout.trim());
+
+  assert.equal(parsed.outcome.status, 'saved');
+  assert.equal(parsed.entries.length, 1);
+  assert.equal(parsed.entries[0].title, 'Cheat Wonton Soup with Frozen Pot Stickers & Bok Choy');
+  assert.ok(parsed.entries[0].ingredients.some((line) => /pot stickers/i.test(line)));
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('executeCookbookSave can save the latest user-pasted recipe from recent conversation', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-save-recent-user-'));
+  const dbPath = path.join(tempDir, 'cookbook-save-recent-user.db');
+
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const executor = await import(new URL('./cookbook-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({
+      householdName: 'Home',
+      householdKey: 'home',
+      ownerDisplayName: 'Rob',
+      pin: '1234',
+    });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Cookbook save recent user');
+    await db.addMessage(created.householdId, chatId, 'user', 'Elle', \`Lemony Artichoke Soup
+
+Ingredients
+1/4 cup butter
+1 small white onion, diced
+1 celery stalk, diced
+3 garlic cloves, minced
+6 cups chicken or vegetable stock
+3 (14-ounce) jars artichoke hearts, drained
+1/4 cup freshly-squeezed lemon juice
+
+Instructions
+1. Melt the butter and sauté the onion and celery.
+2. Add the garlic and cook until fragrant.
+3. Add the stock and artichokes and simmer.
+4. Blend until smooth.
+5. Stir in the lemon juice and serve.\`);
+
+    const outcome = await executor.executeCookbookSave(
+      { capability: 'cookbook.save', input: { request: 'Save that to our cookbook' } },
+      {
+        req: { householdId: created.householdId },
+        chatId,
+        prompt: 'Save that to our cookbook',
+        anthropic: null,
+        memoryContext: { capabilities: { webSearchEnabled: false } },
+        workingContext: null,
+      }
+    );
+
+    const entries = await db.listCookbookEntries(created.householdId);
+    process.stdout.write(JSON.stringify({ outcome, entries }));
+  `;
+
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath },
+  });
+  const parsed = JSON.parse(stdout.trim());
+
+  assert.equal(parsed.outcome.status, 'saved');
+  assert.equal(parsed.entries.length, 1);
+  assert.equal(parsed.entries[0].title, 'Lemony Artichoke Soup');
+  assert.ok(parsed.entries[0].ingredients.some((line) => /artichoke hearts/i.test(line)));
 
   await fs.rm(tempDir, { recursive: true, force: true });
 });
