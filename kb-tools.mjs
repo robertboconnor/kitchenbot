@@ -113,15 +113,22 @@ const INPUT_SCHEMAS = {
     properties: {
       items: {
         type: 'array',
-        description: 'Explicit items to add. Omit to derive items from the meals/plan under discussion.',
+        description:
+          'The exact grocery items to add — YOU decide them. When building a list from meals/recipes, ' +
+          'enumerate every ingredient yourself (scaled to portions), exclude anything pantry.list shows is ' +
+          'already on hand, and pass them here. Set each item\'s section and quantity when you know them.',
         items: {
           type: 'object',
-          properties: { name: { type: 'string' }, quantity: { type: 'string' } },
+          properties: {
+            name: { type: 'string' },
+            quantity: { type: 'string', description: 'Human-readable amount, e.g. "2 lbs", "1 carton".' },
+            section: { type: 'string', enum: GROCERY_SECTIONS, description: 'Which grocery section it belongs in.' },
+          },
           required: ['name'],
         },
       },
       mode: { type: 'string', enum: ['add', 'replace'], description: '"add" (default) appends; "replace" wipes the list then writes.' },
-      source: { type: 'string', description: 'Optional provenance hint, e.g. "explicit_items".' },
+      source: { type: 'string', description: 'Set to "explicit_items" when you pass items (the normal case).' },
     },
   },
   'grocery.preview': NO_INPUT,

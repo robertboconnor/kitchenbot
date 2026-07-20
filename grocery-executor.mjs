@@ -648,60 +648,15 @@ Where:
     };
   }
 
-  const usePrimary = shouldUsePrimaryGroceryModel(runtimeAction, context);
-  let groceryResponse = await requestGroceryDraft({
-    anthropic,
-    callPurpose: usePrimary ? 'grocery_draft_generation_primary' : 'grocery_draft_generation_fallback',
-    req,
-    chatId,
-    kbModeEnabled,
-    runtimeManagedResponse,
-    claudeMessages,
-    systemPrompt,
-    conversationContextCompact,
-  });
-
-  let normalizedItems = await parseGroceryDraftItems({
-    groceryResponse,
-    anthropic,
-    householdId: req.householdId,
-    chatId,
-    kbModeEnabled,
-    runtimeManagedResponse,
-    deps,
-  });
-  if (usePrimary && (Array.isArray(normalizedItems) ? normalizedItems.length : 0) < minimumExpectedItemsForSourceMealSet(sourceMealSet, memoryContext)) {
-    groceryResponse = await requestGroceryDraft({
-      anthropic,
-      callPurpose: 'grocery_draft_generation_fallback',
-      req,
-      chatId,
-      kbModeEnabled,
-      runtimeManagedResponse,
-      claudeMessages,
-      systemPrompt,
-      conversationContextCompact,
-    });
-    normalizedItems = await parseGroceryDraftItems({
-      groceryResponse,
-      anthropic,
-      householdId: req.householdId,
-      chatId,
-      kbModeEnabled,
-      runtimeManagedResponse,
-      deps,
-    });
-  }
+  // ONE BRAIN (KITCHENBOT_BRAIN_CONTRACT.md — "Smart Brain, Dumb Executors"): the brain
+  // enumerates the grocery items itself (scaled to portions, minus what pantry.list shows
+  // is on hand) and passes them explicitly with source:'explicit_items'. There is no
+  // side-model that re-reads the chat and derives a shopping list. Reaching here means no
+  // items were provided and none were derived deterministically — return an empty draft
+  // flagged so the write/preview path asks the brain to decide and pass them.
   const priorKeys = new Set(
-    existingGroceryItems
-      .map((item) => deps.normalizeInventoryNameKey(item?.name))
-      .filter(Boolean)
+    existingGroceryItems.map((item) => deps.normalizeInventoryNameKey(item?.name)).filter(Boolean)
   );
-  const runKeys = new Set(normalizedItems.map((i) => deps.normalizeInventoryNameKey(i.name)).filter(Boolean));
-  const likelyRemovedKeys = new Set([...priorKeys].filter((k) => !runKeys.has(k)));
-  const likelyAddedKeys = new Set([...runKeys].filter((k) => !priorKeys.has(k)));
-  const draftChatOfferCommit = requestedSource === 'draft_chat_offer';
-
   return {
     recentConversation,
     existingGroceryItems,
@@ -710,14 +665,15 @@ Where:
     pantryContextAvailable: !!memoryContext?.pantryContextAvailable,
     pantryItemCount: Number.isFinite(Number(memoryContext?.pantryItemCount)) ? Number(memoryContext.pantryItemCount) : 0,
     conversationContextCompact,
-    normalizedItems,
+    normalizedItems: [],
+    noItemsProvided: true,
     systemPrompt,
     groceryReconciliationSystemPrompt,
     priorKeys,
-    runKeys,
-    likelyRemovedKeys,
-    likelyAddedKeys,
-    draftChatOfferCommit,
+    runKeys: new Set(),
+    likelyRemovedKeys: new Set(),
+    likelyAddedKeys: new Set(),
+    draftChatOfferCommit: false,
   };
 }
 
@@ -771,6 +727,19 @@ export async function writeGroceryListFromConversation(runtimeAction, context) {
 
   const requestedGroceryMode = runtimeAction?.input?.mode || null;
   const draft = await generateGroceryDraft(runtimeAction, context);
+  if (draft.noItemsProvided) {
+    return {
+      capability: 'grocery.write',
+      status: 'no_items',
+      changed: false,
+      addedItems: [],
+      alreadyOnList: [],
+      note:
+        'No items were provided to add. Decide the grocery items yourself — enumerate them ' +
+        '(with a section and quantity each, minus anything pantry.list shows is already on hand) — ' +
+        'and call grocery.write again with an explicit items array.',
+    };
+  }
   const {
     existingGroceryItems,
     pantryItems,
@@ -823,45 +792,9 @@ export async function writeGroceryListFromConversation(runtimeAction, context) {
   const usedPantryContext = !!pantryContextAvailable;
   const pantryClarificationNeeded = !pantryContextAvailable;
 
-  if (anthropic && initialNormalizedItems.length > 0 && pantryItems.length > 0) {
-    await deps.emitKbProgress?.({
-      chatId,
-      householdId: req.householdId,
-      turnId: req.kbTurnId || null,
-      text: 'Checking pantry…',
-      phase: 'grocery.write.pantry_reconcile',
-      senderRes: context.res,
-    });
-    try {
-      const reconciliationResponse = await requestPantryAwareReconciliation({
-        anthropic,
-        req,
-        chatId,
-        kbModeEnabled,
-        runtimeManagedResponse,
-        systemPrompt: groceryReconciliationSystemPrompt,
-        conversationContextCompact,
-        pantryItems,
-        draftItems: initialNormalizedItems,
-      });
-      const reconciledItems = await parseGroceryDraftItems({
-        groceryResponse: reconciliationResponse,
-        anthropic,
-        householdId: req.householdId,
-        chatId,
-        kbModeEnabled,
-        runtimeManagedResponse,
-        deps,
-      });
-      if (Array.isArray(reconciledItems) && reconciledItems.length > 0) {
-        finalNormalizedItems = reconciledItems;
-        reconciledWithPantry = true;
-        pantryAdjustedItemCount = Math.max(0, initialNormalizedItems.length - reconciledItems.length);
-      }
-    } catch (error) {
-      console.error('Grocery pantry reconciliation failed:', error?.message || error);
-    }
-  }
+  // ONE BRAIN: deciding which drafted items are "already on hand" (and excluding them) is
+  // the brain's job — it has the pantry.list read-tool and omits on-hand staples before it
+  // ever calls grocery.write. No side-model reconciliation here; we commit what the brain sent.
 
   const finalRunKeys = new Set(finalNormalizedItems.map((i) => deps.normalizeInventoryNameKey(i.name)).filter(Boolean));
   const beforeGroceryCount = existingGroceryItems.length;

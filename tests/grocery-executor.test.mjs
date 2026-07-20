@@ -8,443 +8,6 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-test('grocery.write re-reasons over current pantry state before commit', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-pantry-rereason-'));
-  const dbPath = path.join(tempDir, 'grocery-pantry-rereason.db');
-
-  const script = `
-    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const grocery = await import(new URL('./grocery-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const memory = await import(new URL('./kb-memory-store.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const inventory = await import(new URL('./inventory-service.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    await db.runMigrations();
-    const created = await db.createHouseholdWithInitialOwner({
-      householdName: 'Home',
-      householdKey: 'home',
-      ownerDisplayName: 'Rob',
-      pin: '1234',
-    });
-    const chatId = await db.createChat(created.householdId, 'Rob', 'Grocery pantry rerun');
-    await db.addMessage(created.householdId, chatId, 'user', 'Rob', 'Plan dinners for this week.');
-    await db.addMessage(created.householdId, chatId, 'assistant', 'KitchenBot', 'Let\\'s do lemon pasta and roast chicken tacos.');
-    await db.addMessage(created.householdId, chatId, 'user', 'Rob', 'Make me a grocery list for those.');
-    await db.addMessage(created.householdId, chatId, 'assistant', 'KitchenBot', 'If you want, I can add these items to your Grocery List tab.');
-
-    const anthropic = {
-      messages: {
-        create: async () => {
-          anthropic.callCount = (anthropic.callCount || 0) + 1;
-          if (anthropic.callCount === 1) {
-            return {
-              model: 'claude-sonnet-4-5',
-              usage: { input_tokens: 20, output_tokens: 40 },
-              content: [{ type: 'text', text: 'dry | pasta | 1 box\\ndry | olive oil | 1 bottle\\nproduce | lemons | 2' }],
-            };
-          }
-          return {
-            model: 'claude-sonnet-4-5',
-            usage: { input_tokens: 15, output_tokens: 30 },
-            content: [{ type: 'text', text: 'dry | pasta | 1 box\\nproduce | lemons | 2' }],
-          };
-        },
-      },
-    };
-
-    await db.addPantryItems(created.householdId, [{ name: 'olive oil', section: 'oils_vinegars', amount: '1 bottle' }]);
-
-    const memoryContext = await memory.buildKbContextPacket(created.householdId, 'yes', {
-      includeDefaults: true,
-      includeCookbook: true,
-      includePantry: true,
-      includeGrocery: true,
-      activeSpeakerName: 'Rob',
-      capabilities: { webSearchEnabled: false },
-    });
-
-    const outcome = await grocery.writeGroceryListFromConversation(
-      { capability: 'grocery.write', input: { source: 'draft_chat_offer', mode: 'append' } },
-      {
-        req: { householdId: created.householdId },
-        name: 'Rob',
-        chatId,
-        prompt: 'yes',
-        anthropic,
-        memoryContext,
-        kbModeEnabled: true,
-        runtimeManagedResponse: true,
-        userMessageAlreadyPersisted: true,
-        deps: {
-          addMessage: db.addMessage,
-          stripStoredMessageContentForDisplay: (text) => text,
-          incrementUserMessageCountForSender: async () => {},
-          broadcastToChat: () => {},
-          getGroceryItems: db.getGroceryItems,
-          updateGroceryItemAmount: db.updateGroceryItemAmount,
-          backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-          addGroceryItems: db.addGroceryItems,
-          clearGroceryItems: db.clearGroceryItems,
-          mergeGroceryItemsFromAi: (householdId, parsedItems, sourceChatId) =>
-            inventory.mergeGroceryItemsFromAi({
-              householdId,
-              parsedItems,
-              sourceChatId,
-              getGroceryItems: db.getGroceryItems,
-              updateGroceryItemAmount: db.updateGroceryItemAmount,
-              backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-              addGroceryItems: db.addGroceryItems,
-            }),
-          normalizeGroceryItemsForPost: (items, opts) =>
-            inventory.normalizeGroceryItemsForPost(items, {
-              ...opts,
-              getAnthropicClient: async () => {
-                throw new Error('no anthropic');
-              },
-            }),
-          normalizeInventoryNameKey: inventory.normalizeInventoryNameKey,
-        },
-      }
-    );
-
-    const groceryItems = await db.getGroceryItems(created.householdId);
-    process.stdout.write(JSON.stringify({
-      outcome,
-      groceryItems,
-      anthropicCallCount: anthropic.callCount,
-    }));
-  `;
-
-  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
-    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
-    env: { ...process.env, DB_PATH: dbPath },
-  });
-  const parsed = JSON.parse(stdout.trim());
-
-  assert.equal(parsed.outcome.status, 'committed');
-  assert.equal(parsed.outcome.usedPantryContext, true);
-  assert.equal(parsed.outcome.pantryClarificationNeeded, false);
-  assert.equal(parsed.outcome.pantryContextStatus, 'available');
-  assert.equal(parsed.outcome.pantryItemCount, 1);
-  assert.equal(parsed.outcome.reconciledWithPantry, true);
-  assert.equal(parsed.outcome.initialParsedItemCount, 3);
-  assert.equal(parsed.outcome.finalParsedItemCount, 2);
-  assert.equal(parsed.outcome.pantryAdjustedItemCount, 1);
-  assert.deepEqual(parsed.outcome.missingFromPantry, ['pasta', 'lemons']);
-  assert.equal(parsed.anthropicCallCount, 2);
-  assert.deepEqual(parsed.groceryItems.map((item) => item.name), ['pasta', 'lemons']);
-
-  await fs.rm(tempDir, { recursive: true, force: true });
-});
-
-test('grocery.write can build groceries directly from a grounded revised meal_set', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-from-meal-set-'));
-  const dbPath = path.join(tempDir, 'grocery-from-meal-set.db');
-
-  const script = `
-    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const grocery = await import(new URL('./grocery-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const inventory = await import(new URL('./inventory-service.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    await db.runMigrations();
-    const created = await db.createHouseholdWithInitialOwner({
-      householdName: 'Home',
-      householdKey: 'home',
-      ownerDisplayName: 'Rob',
-      pin: '1234',
-    });
-    const chatId = await db.createChat(created.householdId, 'Rob', 'Grocery from meal set');
-
-    const anthropic = {
-      messages: {
-        create: async () => ({
-          model: 'claude-sonnet-4-5',
-          usage: { input_tokens: 12, output_tokens: 36 },
-          content: [{ type: 'text', text: 'dry | orzo | 1 box\\nmeat | cod fillets | 1 lb\\nproduce | cabbage | 1 head\\ndry | tortilla soup base | 1 jar' }],
-        }),
-      },
-    };
-
-    const outcome = await grocery.writeGroceryListFromConversation(
-      {
-        capability: 'grocery.write',
-        input: {
-          source: 'meal_set',
-          sourceMealSet: {
-            objectType: 'meal_set',
-            versionSummary: 'Weeknight dinner plan',
-            mealIdeas: ['lemon orzo skillet', 'cod bowls', 'chicken tortilla soup'],
-            subjectItems: ['lemon orzo skillet', 'cod bowls', 'chicken tortilla soup'],
-            activeConstraints: ['salmon swapped to cod'],
-            groceryFocus: ['lemon orzo skillet', 'cod bowls', 'chicken tortilla soup'],
-          },
-        },
-      },
-      {
-        req: { householdId: created.householdId },
-        name: 'Rob',
-        chatId,
-        prompt: 'add all of that to the grocery list',
-        anthropic,
-        memoryContext: {
-          pantryItems: [],
-          pantryContextStatus: 'available',
-          pantryContextAvailable: true,
-          pantryItemCount: 0,
-        },
-        kbModeEnabled: true,
-        runtimeManagedResponse: true,
-        userMessageAlreadyPersisted: true,
-        deps: {
-          addMessage: db.addMessage,
-          stripStoredMessageContentForDisplay: (text) => text,
-          incrementUserMessageCountForSender: async () => {},
-          broadcastToChat: () => {},
-          getGroceryItems: db.getGroceryItems,
-          updateGroceryItemAmount: db.updateGroceryItemAmount,
-          backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-          addGroceryItems: db.addGroceryItems,
-          clearGroceryItems: db.clearGroceryItems,
-          mergeGroceryItemsFromAi: (householdId, parsedItems, sourceChatId) =>
-            inventory.mergeGroceryItemsFromAi({
-              householdId,
-              parsedItems,
-              sourceChatId,
-              getGroceryItems: db.getGroceryItems,
-              updateGroceryItemAmount: db.updateGroceryItemAmount,
-              backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-              addGroceryItems: db.addGroceryItems,
-            }),
-          normalizeGroceryItemsForPost: (items, opts) =>
-            inventory.normalizeGroceryItemsForPost(items, {
-              ...opts,
-              getAnthropicClient: async () => {
-                throw new Error('no anthropic');
-              },
-            }),
-          normalizeInventoryNameKey: inventory.normalizeInventoryNameKey,
-        },
-      }
-    );
-
-    const groceryItems = await db.getGroceryItems(created.householdId);
-    process.stdout.write(JSON.stringify({ outcome, groceryItems }));
-  `;
-
-  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
-    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
-    env: { ...process.env, DB_PATH: dbPath },
-  });
-
-  const parsed = JSON.parse(stdout.trim());
-  assert.equal(parsed.outcome.status, 'committed');
-  assert.deepEqual(
-    parsed.groceryItems.map((item) => item.name).sort(),
-    ['orzo', 'cod fillets', 'cabbage', 'tortilla soup base'].sort()
-  );
-  assert.equal(parsed.groceryItems.some((item) => /salmon/i.test(item.name)), false);
-
-  await fs.rm(tempDir, { recursive: true, force: true });
-});
-
-test('grocery.write can build groceries directly from a grounded meal_set_selection', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-from-meal-set-selection-'));
-  const dbPath = path.join(tempDir, 'grocery-from-meal-set-selection.db');
-
-  const script = `
-    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const grocery = await import(new URL('./grocery-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const inventory = await import(new URL('./inventory-service.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    await db.runMigrations();
-    const created = await db.createHouseholdWithInitialOwner({
-      householdName: 'Home',
-      householdKey: 'home',
-      ownerDisplayName: 'Rob',
-      pin: '1234',
-    });
-    const chatId = await db.createChat(created.householdId, 'Rob', 'Grocery from meal set selection');
-
-    const anthropic = {
-      messages: {
-        create: async () => ({
-          model: 'claude-sonnet-4-5',
-          usage: { input_tokens: 12, output_tokens: 36 },
-          content: [{ type: 'text', text: 'dry | spaghetti | 1 box\\nproduce | lemons | 2\\ndry | white beans | 2 cans\\ndairy | parmesan | 1 wedge' }],
-        }),
-      },
-    };
-
-    const outcome = await grocery.writeGroceryListFromConversation(
-      {
-        capability: 'grocery.write',
-        input: {
-          source: 'meal_set_selection',
-          sourceMealSetSelection: {
-            objectType: 'meal_set_selection',
-            versionSummary: 'Selected meals from the current meal set',
-            mealIdeas: ['lemon pasta', 'white bean soup'],
-            subjectItems: ['lemon pasta', 'white bean soup'],
-            selectionScope: 'Selected meals from the current meal set',
-          },
-        },
-      },
-      {
-        req: { householdId: created.householdId },
-        name: 'Rob',
-        chatId,
-        prompt: 'just add the pasta and soup to the grocery list',
-        anthropic,
-        memoryContext: {
-          pantryItems: [],
-          pantryContextStatus: 'available',
-          pantryContextAvailable: true,
-          pantryItemCount: 0,
-        },
-        kbModeEnabled: true,
-        runtimeManagedResponse: true,
-        userMessageAlreadyPersisted: true,
-        deps: {
-          addMessage: db.addMessage,
-          stripStoredMessageContentForDisplay: (text) => text,
-          incrementUserMessageCountForSender: async () => {},
-          broadcastToChat: () => {},
-          getGroceryItems: db.getGroceryItems,
-          updateGroceryItemAmount: db.updateGroceryItemAmount,
-          backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-          addGroceryItems: db.addGroceryItems,
-          clearGroceryItems: db.clearGroceryItems,
-          mergeGroceryItemsFromAi: (householdId, parsedItems, sourceChatId) =>
-            inventory.mergeGroceryItemsFromAi({
-              householdId,
-              parsedItems,
-              sourceChatId,
-              getGroceryItems: db.getGroceryItems,
-              updateGroceryItemAmount: db.updateGroceryItemAmount,
-              backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-              addGroceryItems: db.addGroceryItems,
-            }),
-          normalizeGroceryItemsForPost: (items, opts) =>
-            inventory.normalizeGroceryItemsForPost(items, {
-              ...opts,
-              getAnthropicClient: async () => {
-                throw new Error('no anthropic');
-              },
-            }),
-          normalizeInventoryNameKey: inventory.normalizeInventoryNameKey,
-          emitKbProgress: async () => {},
-        },
-      }
-    );
-
-    const groceryItems = await db.getGroceryItems(created.householdId);
-    process.stdout.write(JSON.stringify({ outcome, groceryItems }));
-  `;
-
-  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
-    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
-    env: { ...process.env, DB_PATH: dbPath },
-  });
-  const parsed = JSON.parse(stdout.trim());
-
-  assert.equal(parsed.outcome.status, 'committed');
-  assert.deepEqual(parsed.groceryItems.map((item) => item.name).sort(), ['lemons', 'parmesan', 'spaghetti', 'white beans']);
-
-  await fs.rm(tempDir, { recursive: true, force: true });
-});
-
-test('grocery.write marks pantry as unavailable when that context was not loaded', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-pantry-unavailable-'));
-  const dbPath = path.join(tempDir, 'grocery-pantry-unavailable.db');
-
-  const script = `
-    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const grocery = await import(new URL('./grocery-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const inventory = await import(new URL('./inventory-service.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    await db.runMigrations();
-    const created = await db.createHouseholdWithInitialOwner({
-      householdName: 'Home',
-      householdKey: 'home',
-      ownerDisplayName: 'Rob',
-      pin: '1234',
-    });
-    const chatId = await db.createChat(created.householdId, 'Rob', 'Grocery pantry unavailable');
-    await db.addMessage(created.householdId, chatId, 'user', 'Rob', 'Add the cake ingredients to our grocery list.');
-
-    const anthropic = {
-      messages: {
-        create: async () => ({
-          model: 'claude-sonnet-4-5',
-          usage: { input_tokens: 12, output_tokens: 24 },
-          content: [{ type: 'text', text: 'dry | flour | 1 bag\\ndairy | eggs | 12' }],
-        }),
-      },
-    };
-
-    const outcome = await grocery.writeGroceryListFromConversation(
-      { capability: 'grocery.write', input: { mode: 'append' } },
-      {
-        req: { householdId: created.householdId },
-        name: 'Rob',
-        chatId,
-        prompt: 'Add the cake ingredients to our grocery list.',
-        anthropic,
-        memoryContext: {
-          pantryItems: [],
-          pantryContextStatus: 'unavailable',
-          pantryContextAvailable: false,
-          pantryItemCount: 0,
-        },
-        kbModeEnabled: true,
-        runtimeManagedResponse: true,
-        userMessageAlreadyPersisted: true,
-        deps: {
-          addMessage: db.addMessage,
-          stripStoredMessageContentForDisplay: (text) => text,
-          incrementUserMessageCountForSender: async () => {},
-          broadcastToChat: () => {},
-          getGroceryItems: db.getGroceryItems,
-          updateGroceryItemAmount: db.updateGroceryItemAmount,
-          backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-          addGroceryItems: db.addGroceryItems,
-          clearGroceryItems: db.clearGroceryItems,
-          mergeGroceryItemsFromAi: (householdId, parsedItems, sourceChatId) =>
-            inventory.mergeGroceryItemsFromAi({
-              householdId,
-              parsedItems,
-              sourceChatId,
-              getGroceryItems: db.getGroceryItems,
-              updateGroceryItemAmount: db.updateGroceryItemAmount,
-              backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-              addGroceryItems: db.addGroceryItems,
-            }),
-          normalizeGroceryItemsForPost: (items, opts) =>
-            inventory.normalizeGroceryItemsForPost(items, {
-              ...opts,
-              getAnthropicClient: async () => {
-                throw new Error('no anthropic');
-              },
-            }),
-          normalizeInventoryNameKey: inventory.normalizeInventoryNameKey,
-        },
-      }
-    );
-
-    process.stdout.write(JSON.stringify({ outcome }));
-  `;
-
-  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
-    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
-    env: { ...process.env, DB_PATH: dbPath },
-  });
-  const parsed = JSON.parse(stdout.trim());
-
-  assert.equal(parsed.outcome.status, 'committed');
-  assert.equal(parsed.outcome.usedPantryContext, false);
-  assert.equal(parsed.outcome.pantryClarificationNeeded, true);
-  assert.equal(parsed.outcome.pantryContextStatus, 'unavailable');
-  assert.equal(parsed.outcome.pantryItemCount, 0);
-  assert.deepEqual(parsed.outcome.missingFromPantry, ['flour', 'eggs']);
-
-  await fs.rm(tempDir, { recursive: true, force: true });
-});
-
 test('grocery.write checks the live grocery list before claiming an explicit item is already there', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-direct-add-present-'));
   const dbPath = path.join(tempDir, 'grocery-direct-add-present.db');
@@ -606,97 +169,6 @@ test('grocery.write appends a direct explicit item when it is missing', async ()
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('grocery.write defaults to append when the list already exists', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-default-append-'));
-  const dbPath = path.join(tempDir, 'grocery-default-append.db');
-
-  const script = `
-    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const grocery = await import(new URL('./grocery-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const inventory = await import(new URL('./inventory-service.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    await db.runMigrations();
-    const created = await db.createHouseholdWithInitialOwner({
-      householdName: 'Home',
-      householdKey: 'home',
-      ownerDisplayName: 'Rob',
-      pin: '1234',
-    });
-    const chatId = await db.createChat(created.householdId, 'Rob', 'Grocery default append');
-    await db.addGroceryItems(created.householdId, [{ name: 'olive oil', section: 'dry', amount: '1 bottle' }]);
-    await db.addMessage(created.householdId, chatId, 'user', 'Rob', 'Add the cake ingredients to our grocery list.');
-
-    const anthropic = {
-      messages: {
-        create: async () => ({
-          model: 'claude-sonnet-4-5',
-          usage: { input_tokens: 12, output_tokens: 24 },
-          content: [{ type: 'text', text: 'dry | flour | 1 bag\\ndairy | eggs | 12' }],
-        }),
-      },
-    };
-
-    const outcome = await grocery.writeGroceryListFromConversation(
-      { capability: 'grocery.write', input: {} },
-      {
-        req: { householdId: created.householdId },
-        name: 'Rob',
-        chatId,
-        prompt: 'Add the cake ingredients to our grocery list.',
-        anthropic,
-        memoryContext: {
-          pantryItems: [],
-          pantryContextStatus: 'available',
-          pantryContextAvailable: true,
-          pantryItemCount: 0,
-        },
-        kbModeEnabled: true,
-        runtimeManagedResponse: true,
-        userMessageAlreadyPersisted: true,
-        deps: {
-          addMessage: db.addMessage,
-          stripStoredMessageContentForDisplay: (text) => text,
-          incrementUserMessageCountForSender: async () => {},
-          broadcastToChat: () => {},
-          getGroceryItems: db.getGroceryItems,
-          updateGroceryItemAmount: db.updateGroceryItemAmount,
-          updateGroceryItemProbablyPantry: db.updateGroceryItemProbablyPantry,
-          backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-          addGroceryItems: db.addGroceryItems,
-          clearGroceryItems: db.clearGroceryItems,
-          mergeGroceryItemsFromAi: (householdId, parsedItems, sourceChatId) =>
-            inventory.mergeGroceryItemsFromAi({
-              householdId,
-              parsedItems,
-              sourceChatId,
-              getGroceryItems: db.getGroceryItems,
-              updateGroceryItemAmount: db.updateGroceryItemAmount,
-              updateGroceryItemProbablyPantry: db.updateGroceryItemProbablyPantry,
-              backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe,
-              addGroceryItems: db.addGroceryItems,
-            }),
-          normalizeInventoryNameKey: inventory.normalizeInventoryNameKey,
-        },
-      }
-    );
-
-    const groceryItems = await db.getGroceryItems(created.householdId);
-    process.stdout.write(JSON.stringify({ outcome, groceryItems }));
-  `;
-
-  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
-    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
-    env: { ...process.env, DB_PATH: dbPath },
-  });
-  const parsed = JSON.parse(stdout.trim());
-
-  assert.equal(parsed.outcome.status, 'committed');
-  assert.equal(parsed.outcome.mode, 'append');
-  assert.equal(parsed.groceryItems.length, 3);
-  assert.deepEqual(parsed.groceryItems.map((item) => item.name), ['eggs', 'flour', 'olive oil']);
-
-  await fs.rm(tempDir, { recursive: true, force: true });
-});
-
 test('grocery.write prefers the freshest explicit recipe in recent conversation over inferred soup vibes', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-recent-recipe-'));
   const dbPath = path.join(tempDir, 'grocery-recent-recipe.db');
@@ -830,5 +302,77 @@ Instructions
   assert.equal(parsed.groceryItems.some((item) => item.name === 'chicken or vegetable stock' && item.section === 'dry'), true);
   assert.equal(parsed.groceryItems.some((item) => item.name === 'artichoke hearts' && item.section === 'dry'), true);
 
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('ONE BRAIN: grocery.write commits explicit brain items with NO side-model call', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-explicit-'));
+  const dbPath = path.join(tempDir, 'grocery-explicit.db');
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const grocery = await import(new URL('./grocery-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const inventory = await import(new URL('./inventory-service.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({ householdName: 'Home', householdKey: 'home', ownerDisplayName: 'Rob', pin: '1234' });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Explicit');
+    const anthropic = { messages: { create: async () => { anthropic.callCount = (anthropic.callCount||0)+1; return { content: [] }; } } };
+    const outcome = await grocery.writeGroceryListFromConversation(
+      { capability: 'grocery.write', input: { source: 'explicit_items', items: [ { name: 'flour', section: 'dry', amount: '1 bag' }, { name: 'eggs', section: 'dairy', amount: '12' } ] } },
+      { req: { householdId: created.householdId }, name: 'Rob', chatId, prompt: 'add flour and eggs', anthropic,
+        memoryContext: { pantryItems: [], pantryContextStatus: 'available', pantryContextAvailable: true, pantryItemCount: 0 },
+        kbModeEnabled: true, runtimeManagedResponse: true, userMessageAlreadyPersisted: true,
+        deps: {
+          addMessage: db.addMessage, stripStoredMessageContentForDisplay: (t)=>t, incrementUserMessageCountForSender: async()=>{}, broadcastToChat: ()=>{},
+          getGroceryItems: db.getGroceryItems, updateGroceryItemAmount: db.updateGroceryItemAmount, updateGroceryItemProbablyPantry: db.updateGroceryItemProbablyPantry,
+          backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe, addGroceryItems: db.addGroceryItems, clearGroceryItems: db.clearGroceryItems,
+          mergeGroceryItemsFromAi: (h,p,s)=>inventory.mergeGroceryItemsFromAi({ householdId:h, parsedItems:p, sourceChatId:s, getGroceryItems: db.getGroceryItems, updateGroceryItemAmount: db.updateGroceryItemAmount, updateGroceryItemProbablyPantry: db.updateGroceryItemProbablyPantry, backfillGroceryItemSourceChatIfSafe: db.backfillGroceryItemSourceChatIfSafe, addGroceryItems: db.addGroceryItems }),
+          normalizeGroceryItemsForPost: (items, opts)=>inventory.normalizeGroceryItemsForPost(items, { ...opts, getAnthropicClient: async()=>({ client: anthropic }) }),
+          normalizeInventoryNameKey: inventory.normalizeInventoryNameKey,
+        } }
+    );
+    const groceryItems = await db.getGroceryItems(created.householdId);
+    process.stdout.write(JSON.stringify({ outcome, names: groceryItems.map(i=>i.name).sort(), callCount: anthropic.callCount||0 }));
+  `;
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'), env: { ...process.env, DB_PATH: dbPath },
+  });
+  const parsed = JSON.parse(stdout.trim());
+  assert.deepEqual(parsed.names, ['eggs', 'flour']);
+  assert.deepEqual(parsed.outcome.addedItems.map(s=>s.toLowerCase()).sort(), ['eggs', 'flour']);
+  assert.equal(parsed.callCount, 0, 'no side-model may be called to commit explicit items');
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('ONE BRAIN: grocery.write with no items returns no_items and calls no model', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-noitems-'));
+  const dbPath = path.join(tempDir, 'grocery-noitems.db');
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const grocery = await import(new URL('./grocery-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const inventory = await import(new URL('./inventory-service.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({ householdName: 'Home', householdKey: 'home', ownerDisplayName: 'Rob', pin: '1234' });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'NoItems');
+    await db.addMessage(created.householdId, chatId, 'user', 'Rob', 'make me a grocery list for the week');
+    const anthropic = { messages: { create: async () => { anthropic.callCount = (anthropic.callCount||0)+1; return { content: [{ type:'text', text:'dry | flour | 1 bag' }] }; } } };
+    const outcome = await grocery.writeGroceryListFromConversation(
+      { capability: 'grocery.write', input: {} },
+      { req: { householdId: created.householdId }, name: 'Rob', chatId, prompt: 'make me a grocery list', anthropic,
+        memoryContext: { pantryItems: [], pantryContextStatus: 'available', pantryContextAvailable: true, pantryItemCount: 0 },
+        kbModeEnabled: true, runtimeManagedResponse: true, userMessageAlreadyPersisted: true,
+        deps: { addMessage: db.addMessage, stripStoredMessageContentForDisplay: (t)=>t, incrementUserMessageCountForSender: async()=>{}, broadcastToChat: ()=>{},
+          getGroceryItems: db.getGroceryItems, addGroceryItems: db.addGroceryItems, clearGroceryItems: db.clearGroceryItems,
+          normalizeInventoryNameKey: inventory.normalizeInventoryNameKey } }
+    );
+    const groceryItems = await db.getGroceryItems(created.householdId);
+    process.stdout.write(JSON.stringify({ status: outcome.status, itemCount: groceryItems.length, callCount: anthropic.callCount||0 }));
+  `;
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'), env: { ...process.env, DB_PATH: dbPath },
+  });
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.status, 'no_items');
+  assert.equal(parsed.itemCount, 0);
+  assert.equal(parsed.callCount, 0, 'no side-model may be called when the brain provided no items');
   await fs.rm(tempDir, { recursive: true, force: true });
 });
