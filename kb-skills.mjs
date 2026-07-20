@@ -13,7 +13,6 @@ import {
 import { previewGroceryListFromConversation, writeGroceryListFromConversation } from './grocery-executor.mjs';
 import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, executeGroceryUncheck, executeGroceryUpdateItem } from './grocery-action-executor.mjs';
 import { executeHouseholdDefaultsUpdate } from './household-defaults-executor.mjs';
-import { executeMealRefine } from './meal-refine-executor.mjs';
 import { executeGroceryMoveToPantry, executePantryAdd, executePantryMoveToGrocery, executePantryRecategorize, executePantryRemove } from './pantry-executor.mjs';
 import { executeWebSearch } from './web-search-executor.mjs';
 import { executeChatRename, normalizeChatRenameActionInput } from './chat-executor.mjs';
@@ -64,8 +63,6 @@ function progressTextForNarrationType(narrationType) {
     case 'pantry.move_to_grocery':
     case 'grocery.move_to_pantry':
       return 'Updating pantry and grocery list…';
-    case 'meal.refine':
-      return 'Plotting something delicious…';
     case 'web.search':
       return 'Searching the web…';
     default:
@@ -209,17 +206,6 @@ function inferExplicitGroceryItemsFromPrompt(promptRaw) {
 
 function normalizeEmptyActionInput() {
   return {};
-}
-
-function normalizeMealRefineActionInput(input, context = {}) {
-  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-  const request = safeTrim(raw.request || raw.payload || raw.text || raw.change || raw.refinement || context.originalPrompt);
-  if (!request) return null;
-  const normalized = { request };
-  if (raw.targetMealSet && typeof raw.targetMealSet === 'object' && !Array.isArray(raw.targetMealSet)) {
-    normalized.targetMealSet = raw.targetMealSet;
-  }
-  return normalized;
 }
 
 function normalizeRecipeReviseActionInput(input, context = {}) {
@@ -820,24 +806,6 @@ export const KB_SKILLS = {
     normalizeActionInput: normalizeNameOnlyActionInput,
     execute: executeGroceryMoveToPantry,
   },
-  'meal.refine': {
-    id: 'meal.refine',
-    description: 'Revise the current meal ideas or dinner thread for this chat.',
-    narrationType: 'meal.refine',
-    contextProfile: {
-      includeDefaults: true,
-      includeCookbook: true,
-      includeWorkingContext: true,
-    },
-    interpreterDescription:
-      'Revise the current meal ideas in this chat when the user swaps, narrows, confirms, or tweaks one of the meals under discussion. This includes natural selections like choosing the roast chicken, picking the fish one, making the handheld one tacos, or asking to make one slot spicier or lighter.',
-    exampleAction: {
-      capability: 'meal.refine',
-      input: { request: 'make the roast chicken' },
-    },
-    normalizeActionInput: normalizeMealRefineActionInput,
-    execute: executeMealRefine,
-  },
   'web.search': {
     id: 'web.search',
     description: 'Search the live web for outside or current information when household web search is enabled.',
@@ -1060,10 +1028,6 @@ function applyGroundedSkillInput(capability, input, context = {}) {
   if (capability === 'chat.rename' && !Number.isFinite(Number(out.targetChatId))) {
     const chatThread = findGroundedObject(groundedTurn, (object) => object?.type === 'chat_thread');
     if (chatThread && Number.isFinite(Number(chatThread.id))) out.targetChatId = Number(chatThread.id);
-  }
-
-  if (capability === 'meal.refine' && !out.targetMealSet && currentObject?.objectType === 'meal_set') {
-    out.targetMealSet = currentObject;
   }
 
   return out;

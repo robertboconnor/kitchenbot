@@ -187,11 +187,6 @@ const INPUT_SCHEMAS = {
   'pantry.remove': NAME_ONLY,
   'pantry.move_to_grocery': NAME_ONLY,
   'grocery.move_to_pantry': NAME_ONLY,
-  'meal.refine': {
-    type: 'object',
-    properties: { request: { type: 'string', description: 'The tweak or selection for the current meal ideas in this chat.' } },
-    required: ['request'],
-  },
   'web.search': {
     type: 'object',
     properties: { query: { type: 'string', description: 'The web search query.' } },
