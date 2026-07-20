@@ -14,6 +14,7 @@ import { previewGroceryListFromConversation, writeGroceryListFromConversation } 
 import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, executeGroceryUncheck, executeGroceryUpdateItem } from './grocery-action-executor.mjs';
 import { executeHouseholdDefaultsUpdate } from './household-defaults-executor.mjs';
 import { executeGroceryMoveToPantry, executePantryAdd, executePantryMoveToGrocery, executePantryRecategorize, executePantryRemove } from './pantry-executor.mjs';
+import { executePlanAdd, executePlanUpdate, executePlanRemove } from './mealplan-executor.mjs';
 import { executeWebSearch } from './web-search-executor.mjs';
 import { executeChatRename, normalizeChatRenameActionInput } from './chat-executor.mjs';
 import {
@@ -22,7 +23,7 @@ import {
 } from './kb-memory-policy.mjs';
 import { normalizeWorkingContext } from './kb-working-context.mjs';
 import { executeRecipeRevise } from './recipe-executor.mjs';
-import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet, executeInventorySections } from './kb-read-executors.mjs';
+import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet, executeInventorySections, executePlanList, executeThreadSearch } from './kb-read-executors.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -326,6 +327,51 @@ function normalizeNameOnlyActionInput(input, context = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const name = safeTrim(raw.name || raw.item || raw.product || raw.payload || raw.text || context.originalPrompt);
   return name ? { name } : null;
+}
+
+function normalizePlanAddActionInput(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const source = Array.isArray(raw.meals)
+    ? raw.meals
+    : Array.isArray(raw.items)
+      ? raw.items
+      : raw.meal || raw.name
+        ? [raw.meal || raw.name]
+        : [];
+  const meals = [];
+  for (const entry of source) {
+    const obj = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : { name: entry };
+    const name = safeTrim(obj.name || obj.meal || obj.title);
+    if (!name) continue;
+    meals.push({ name, ...(safeTrim(obj.note) ? { note: safeTrim(obj.note) } : {}) });
+  }
+  return meals.length > 0 ? { meals } : null;
+}
+
+function normalizePlanUpdateActionInput(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const meal = safeTrim(raw.meal || raw.name || raw.title);
+  if (!meal) return null;
+  const out = { meal };
+  const status = safeTrim(raw.status).toLowerCase();
+  if (status === 'cooked' || status === 'done' || raw.cooked === true) out.status = 'cooked';
+  else if (status === 'planned' || raw.cooked === false) out.status = 'planned';
+  const newName = safeTrim(raw.newName || raw.rename);
+  if (newName) out.newName = newName;
+  if (raw.note != null) out.note = safeTrim(raw.note);
+  return out;
+}
+
+function normalizePlanRemoveActionInput(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const meal = safeTrim(raw.meal || raw.name || raw.title);
+  return meal ? { meal } : null;
+}
+
+function normalizeThreadSearchActionInput(input, context = {}) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const query = safeTrim(raw.query || raw.q || raw.text || context.originalPrompt);
+  return query ? { query } : null;
 }
 
 function normalizeGroceryUpdateItemActionInput(input) {
@@ -865,6 +911,63 @@ export const KB_SKILLS = {
     exampleAction: { capability: 'inventory.sections', input: {} },
     normalizeActionInput: normalizeEmptyActionInput,
     execute: executeInventorySections,
+  },
+  'plan.list': {
+    id: 'plan.list',
+    description: "Read this week's meal plan (the meals recorded for this chat).",
+    narrationType: 'plan.list',
+    contextProfile: {},
+    interpreterDescription:
+      "Read THIS week's meal plan — the meals recorded for this chat and each one's status (planned/cooked). Use this to recall what the household is cooking this week or which meal the user means, especially deep in a long thread where the plan was set much earlier.",
+    exampleAction: { capability: 'plan.list', input: {} },
+    normalizeActionInput: normalizeEmptyActionInput,
+    execute: executePlanList,
+  },
+  'plan.add': {
+    id: 'plan.add',
+    description: "Record meals into this week's plan (shown in the This Week panel).",
+    narrationType: 'plan.add',
+    contextProfile: {},
+    interpreterDescription:
+      "Record the meals you and the user settled on into THIS week's plan so the household sees them in the This Week panel and you can recall them later in a long thread. YOU decide the meals and pass them.",
+    exampleAction: {
+      capability: 'plan.add',
+      input: { meals: [{ name: 'Cod with corn & lima bean succotash' }, { name: 'Chicken piccata' }] },
+    },
+    normalizeActionInput: normalizePlanAddActionInput,
+    execute: executePlanAdd,
+  },
+  'plan.update': {
+    id: 'plan.update',
+    description: "Update a meal on this week's plan — mark it cooked, rename it, or note it.",
+    narrationType: 'plan.update',
+    contextProfile: {},
+    interpreterDescription:
+      "Update a meal already on this week's plan: mark it cooked once the household makes it, rename it, or add a short note. Identify the meal by name.",
+    exampleAction: { capability: 'plan.update', input: { meal: 'cod succotash', status: 'cooked' } },
+    normalizeActionInput: normalizePlanUpdateActionInput,
+    execute: executePlanUpdate,
+  },
+  'plan.remove': {
+    id: 'plan.remove',
+    description: "Remove a meal from this week's plan.",
+    narrationType: 'plan.remove',
+    contextProfile: {},
+    interpreterDescription: "Remove a meal from this week's plan when the household drops it.",
+    exampleAction: { capability: 'plan.remove', input: { meal: 'chicken piccata' } },
+    normalizeActionInput: normalizePlanRemoveActionInput,
+    execute: executePlanRemove,
+  },
+  'thread.search': {
+    id: 'thread.search',
+    description: 'Search earlier messages in THIS chat for something no longer in your recent context.',
+    narrationType: 'thread.search',
+    contextProfile: {},
+    interpreterDescription:
+      'Search earlier messages in THIS chat when the user refers to something from much earlier in a long thread that is no longer in your recent context — an amount, a fix, a decision made many messages ago. Give a focused query; you get the most relevant snippets back. Tell the user what you found.',
+    exampleAction: { capability: 'thread.search', input: { query: 'lemon juice amount' } },
+    normalizeActionInput: normalizeThreadSearchActionInput,
+    execute: executeThreadSearch,
   },
 };
 

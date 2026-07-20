@@ -55,6 +55,8 @@ const READ_ONLY_CAPABILITIES = new Set([
   'inventory.sections',
   'grocery.preview',
   'web.search',
+  'plan.list',
+  'thread.search',
 ]);
 
 export function isWriteCapability(capability) {
@@ -211,6 +213,50 @@ const INPUT_SCHEMAS = {
     properties: { query: { type: 'string', description: 'The web search query.' } },
     required: ['query'],
   },
+  'plan.list': NO_INPUT,
+  'plan.add': {
+    type: 'object',
+    properties: {
+      meals: {
+        type: 'array',
+        description: "The meals for THIS week's plan — YOU decide them (the ones you and the user settled on). They show up in the household's This Week panel.",
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'The meal, e.g. "Cod with corn & lima bean succotash".' },
+            note: { type: 'string', description: 'Optional short note about this meal.' },
+          },
+          required: ['name'],
+        },
+      },
+    },
+    required: ['meals'],
+  },
+  'plan.update': {
+    type: 'object',
+    properties: {
+      meal: { type: 'string', description: "Which meal on this week's plan to change (its name, or enough of it to identify it)." },
+      status: { type: 'string', enum: ['planned', 'cooked'], description: 'Mark it cooked (done) or back to planned.' },
+      newName: { type: 'string', description: 'Rename the meal.' },
+      note: { type: 'string', description: 'Set or replace a short note.' },
+    },
+    required: ['meal'],
+  },
+  'plan.remove': {
+    type: 'object',
+    properties: { meal: { type: 'string', description: "Which meal to remove from this week's plan." } },
+    required: ['meal'],
+  },
+  'thread.search': {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'What to find earlier in THIS chat that is no longer in your recent context, e.g. "toum broke fix" or "lemon juice amount".',
+      },
+    },
+    required: ['query'],
+  },
 };
 
 function inputSchemaForCapability(capability) {
@@ -332,6 +378,19 @@ const OUTCOME_PASSTHROUGH_KEYS = [
   'results',
   'sources',
   'query',
+  // This Week's Plan + thread search
+  'meals',
+  'addedMeals',
+  'alreadyOnPlan',
+  'plannedCount',
+  'cookedCount',
+  'mealName',
+  'previousName',
+  'newStatus',
+  'changed',
+  'requestedName',
+  'matches',
+  'totalMessages',
 ];
 
 export function summarizeOutcomeForModel(capability, outcome) {

@@ -33,6 +33,11 @@ export const WHIMSY_BY_CAPABILITY = {
   'household.defaults.get': 'Checking your house rules…',
   'household.defaults.update': 'Updating your house rules…',
   'chat.rename': 'Renaming this chat…',
+  'plan.list': "Checking this week's plan…",
+  'plan.add': 'Pinning that to this week…',
+  'plan.update': "Updating this week's plan…",
+  'plan.remove': 'Taking that off this week…',
+  'thread.search': 'Looking back through this chat…',
 };
 
 // Non-tool beats.

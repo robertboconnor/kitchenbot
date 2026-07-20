@@ -337,6 +337,24 @@ async function initializeSchema() {
 
     CREATE INDEX IF NOT EXISTS idx_recipe_import_drafts_household_user_created
       ON recipe_import_drafts(household_id, user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS meal_plan_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+      chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL,
+      cookbook_entry_id INTEGER NULL REFERENCES cookbook_entries(id) ON DELETE SET NULL,
+      note TEXT,
+      status TEXT NOT NULL DEFAULT 'planned',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(household_id, chat_id, normalized_name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_meal_plan_items_household_chat
+      ON meal_plan_items(household_id, chat_id, position ASC, id ASC);
   `);
 
   const chatColumns = await all(`PRAGMA table_info(chats)`);
@@ -1520,6 +1538,120 @@ export async function findPantryItemById(householdId, id) {
     [householdId, id]
   );
   return row ? mapPantryItemRow(row) : null;
+}
+
+// ── This Week's meal plan (per-chat = per-week thread) ──────────────────────────
+// A first-class, user-visible object the brain writes and reads via tools — the
+// durable spine of a long week-long thread so day-1 meals stay reference-able.
+function mapMealPlanItemRow(row) {
+  return {
+    id: row.id,
+    householdId: row.household_id,
+    chatId: row.chat_id,
+    name: row.name,
+    normalizedName: row.normalized_name,
+    cookbookEntryId: row.cookbook_entry_id == null ? null : Number(row.cookbook_entry_id),
+    cookbookTitle: row.cookbook_title == null ? '' : String(row.cookbook_title),
+    note: row.note == null ? '' : String(row.note),
+    status: row.status || 'planned',
+    position: Number(row.position) || 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getMealPlanItems(householdId, chatId) {
+  const rows = await all(
+    `SELECT m.id, m.household_id, m.chat_id, m.name, m.normalized_name, m.cookbook_entry_id,
+            c.title AS cookbook_title, m.note, m.status, m.position, m.created_at, m.updated_at
+     FROM meal_plan_items m
+     LEFT JOIN cookbook_entries c ON c.id = m.cookbook_entry_id AND c.household_id = m.household_id
+     WHERE m.household_id = ? AND m.chat_id = ?
+     ORDER BY m.position ASC, m.id ASC`,
+    [householdId, chatId]
+  );
+  return rows.map(mapMealPlanItemRow);
+}
+
+export async function addMealPlanItems(householdId, chatId, items) {
+  const rows = Array.isArray(items) ? items : [];
+  const maxRow = await get(
+    `SELECT COALESCE(MAX(position), -1) AS maxPos FROM meal_plan_items WHERE household_id = ? AND chat_id = ?`,
+    [householdId, chatId]
+  );
+  let position = (Number(maxRow?.maxPos) || -1) + 1;
+  let inserted = 0;
+  for (const item of rows) {
+    const name = String(item?.name ?? '').trim();
+    if (!name) continue;
+    const normalizedName = normalizeInventoryNameKey(name);
+    if (!normalizedName) continue;
+    const note = item?.note == null ? '' : String(item.note).trim();
+    const cookbookEntryId =
+      Number.isFinite(Number(item?.cookbookEntryId)) && Number(item.cookbookEntryId) > 0 ? Number(item.cookbookEntryId) : null;
+    const status = String(item?.status ?? 'planned').trim().toLowerCase() === 'cooked' ? 'cooked' : 'planned';
+    const result = await run(
+      `INSERT OR IGNORE INTO meal_plan_items (household_id, chat_id, name, normalized_name, cookbook_entry_id, note, status, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [householdId, chatId, name, normalizedName, cookbookEntryId, note, status, position]
+    );
+    if ((Number(result.changes) || 0) > 0) {
+      inserted += 1;
+      position += 1;
+    }
+  }
+  return inserted;
+}
+
+export async function findMealPlanItemByName(householdId, chatId, name) {
+  const normalizedName = normalizeInventoryNameKey(String(name ?? ''));
+  if (!normalizedName) return null;
+  const rows = await getMealPlanItems(householdId, chatId);
+  return rows.find((item) => item.normalizedName === normalizedName) || null;
+}
+
+export async function updateMealPlanItem(householdId, chatId, id, fields = {}) {
+  const sets = [];
+  const params = [];
+  if (typeof fields.name === 'string' && fields.name.trim()) {
+    sets.push('name = ?', 'normalized_name = ?');
+    params.push(fields.name.trim(), normalizeInventoryNameKey(fields.name));
+  }
+  if (typeof fields.status === 'string' && fields.status.trim()) {
+    sets.push('status = ?');
+    params.push(fields.status.trim().toLowerCase() === 'cooked' ? 'cooked' : 'planned');
+  }
+  if (fields.note != null) {
+    sets.push('note = ?');
+    params.push(String(fields.note).trim());
+  }
+  if (fields.cookbookEntryId !== undefined) {
+    sets.push('cookbook_entry_id = ?');
+    params.push(
+      Number.isFinite(Number(fields.cookbookEntryId)) && Number(fields.cookbookEntryId) > 0 ? Number(fields.cookbookEntryId) : null
+    );
+  }
+  if (sets.length === 0) return 0;
+  sets.push('updated_at = CURRENT_TIMESTAMP');
+  const result = await run(
+    `UPDATE meal_plan_items SET ${sets.join(', ')} WHERE household_id = ? AND chat_id = ? AND id = ?`,
+    [...params, householdId, chatId, id]
+  );
+  return Number(result.changes) || 0;
+}
+
+export async function deleteMealPlanItem(householdId, chatId, id) {
+  const result = await run(`DELETE FROM meal_plan_items WHERE household_id = ? AND chat_id = ? AND id = ?`, [
+    householdId,
+    chatId,
+    id,
+  ]);
+  return Number(result.changes) || 0;
+}
+
+export async function clearMealPlan(householdId, chatId) {
+  const result = await run(`DELETE FROM meal_plan_items WHERE household_id = ? AND chat_id = ?`, [householdId, chatId]);
+  return Number(result.changes) || 0;
 }
 
 export async function getChatRuntimeState(chatId, householdId) {
