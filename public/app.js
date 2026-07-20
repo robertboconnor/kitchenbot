@@ -49,6 +49,7 @@
         const grocerySubviewThisweek = document.getElementById('grocery-subview-thisweek');
         const thisweekList = document.getElementById('thisweek-list');
         const thisweekEmpty = document.getElementById('thisweek-empty');
+        const thisweekStrip = document.getElementById('thisweek-strip');
         const cookbookWorkspace = document.getElementById('cookbook-workspace');
         const cookbookResultsArea = document.getElementById('cookbook-results-area');
         const cookbookList = document.getElementById('cookbook-list');
@@ -813,6 +814,8 @@
           if (inputArea) inputArea.style.display = tab === 'chat' ? 'flex' : 'none';
           if (tab === 'groceries') setGroceriesSubview(currentGroceriesSubview);
           if (tab === 'settings') loadSettingsPanel();
+          if (tab === 'chat') renderThisWeekStrip();
+          else if (thisweekStrip) thisweekStrip.style.display = 'none';
         }
 
         function reapplyVisibleAppTab() {
@@ -2262,6 +2265,7 @@
             syncNewMessageIndicatorWithScroll();
           }
           sendTypingViewing();
+          renderThisWeekStrip();
         }
 
         async function loadGroceries() {
@@ -3344,6 +3348,7 @@
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.checked = item.status === 'cooked';
+            checkbox.style.accentColor = 'var(--accent-strong)';
             checkbox.title = item.status === 'cooked' ? 'Mark as still to cook' : 'Mark as cooked';
             checkbox.addEventListener('change', async () => {
               await fetch('/plan/' + item.id, {
@@ -3362,11 +3367,18 @@
             nameText.textContent = item.name;
             if (item.status === 'cooked') nameText.style.textDecoration = 'line-through';
             nameWrap.appendChild(nameText);
-            if (item.recipeTitle) {
-              const tag = document.createElement('span');
-              tag.textContent = ' • recipe saved';
-              tag.style.color = 'var(--text-soft)';
-              tag.style.fontSize = '12px';
+            if (item.cookbookEntryId) {
+              const tag = document.createElement('button');
+              tag.type = 'button';
+              tag.textContent = '🍳 recipe';
+              tag.title = 'Open ' + (item.cookbookTitle || 'the saved recipe');
+              tag.style.cssText =
+                'margin-left:8px;background:none;border:none;color:var(--accent-strong);font-size:12px;cursor:pointer;padding:0;text-decoration:underline;';
+              tag.addEventListener('click', (e) => {
+                e.stopPropagation();
+                setGroceriesSubview('cookbook');
+                if (typeof openCookbookDetail === 'function') openCookbookDetail(item.cookbookEntryId);
+              });
               nameWrap.appendChild(tag);
             }
             if (item.note) {
@@ -3394,6 +3406,60 @@
 
             thisweekList.appendChild(li);
           }
+        }
+
+        // Compact, glanceable "This Week" strip pinned above the chat messages — the plan
+        // right where you're cooking. Reads the same /plan data; refreshed by loadHistory
+        // (chat open/switch, after a turn, co-viewer updates) and by setActiveTab('chat').
+        async function renderThisWeekStrip() {
+          if (!thisweekStrip) return;
+          const onChatTab = chat && chat.style.display !== 'none';
+          if (!onChatTab || currentChatId == null) {
+            thisweekStrip.style.display = 'none';
+            return;
+          }
+          let items = [];
+          try {
+            const res = await fetch('/plan?chatId=' + encodeURIComponent(currentChatId), { credentials: 'same-origin' });
+            if (res.ok) items = (await res.json()).items || [];
+          } catch (err) {
+            /* leave empty */
+          }
+          if (items.length === 0) {
+            thisweekStrip.innerHTML = '';
+            thisweekStrip.style.display = 'none';
+            return;
+          }
+          thisweekStrip.innerHTML = '';
+          thisweekStrip.style.cssText =
+            'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;margin:0 0 6px;background:var(--accent-soft);border-radius:12px;';
+          const label = document.createElement('span');
+          label.textContent = 'This week';
+          label.style.cssText =
+            'font-size:12px;font-weight:700;color:var(--accent-strong);text-transform:uppercase;letter-spacing:.04em;flex:none;';
+          thisweekStrip.appendChild(label);
+          for (const item of items) {
+            const cooked = item.status === 'cooked';
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.style.cssText =
+              'display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;border:1px solid var(--border-subtle);background:#fff;font-size:13px;cursor:pointer;' +
+              (cooked ? 'opacity:.6;text-decoration:line-through;' : '');
+            chip.textContent = (cooked ? '✓ ' : '') + item.name + (item.cookbookEntryId ? ' 🍳' : '');
+            chip.title =
+              item.name + (cooked ? ' — cooked' : ' — planned') + (item.cookbookEntryId ? ' · has a saved recipe' : '');
+            chip.addEventListener('click', () => {
+              setActiveTab('groceries');
+              if (item.cookbookEntryId) {
+                setGroceriesSubview('cookbook');
+                if (typeof openCookbookDetail === 'function') openCookbookDetail(item.cookbookEntryId);
+              } else {
+                setGroceriesSubview('thisweek');
+              }
+            });
+            thisweekStrip.appendChild(chip);
+          }
+          thisweekStrip.style.display = 'flex';
         }
 
         function renderChats() {

@@ -93,6 +93,22 @@ test('ONE BRAIN: plan.add with no meals returns invalid and records nothing', as
   assert.equal(parsed.count, 0);
 });
 
+test('auto-link: a planned meal links to a saved cookbook recipe by title (confident single match only)', async () => {
+  const parsed = await runScript(`
+    const cb = await import(new URL('./cookbook-store.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const rec = cb.buildCookbookRecordForStorage({ title: 'Simple Chicken Piccata', summary: 'A lemony, briny chicken piccata.', ingredients: ['chicken', 'lemon', 'capers'], instructions: ['dredge', 'sear', 'sauce'] });
+    await db.saveCookbookEntry(householdId, rec, { sourceKind: 'manual', sourceChatId: chatId });
+    await plan.executePlanAdd({ capability: 'plan.add', input: { meals: [{ name: 'Chicken piccata' }, { name: 'Tofu stir-fry' }] } }, ctx);
+    const listed = await reads.executePlanList({}, ctx);
+    process.stdout.write(JSON.stringify({ meals: listed.meals }));
+  `);
+  const piccata = parsed.meals.find((m) => /piccata/i.test(m.name));
+  const tofu = parsed.meals.find((m) => /tofu/i.test(m.name));
+  assert.equal(piccata.hasRecipe, true, 'piccata auto-links to the saved recipe by title');
+  assert.match(piccata.recipeTitle, /Simple Chicken Piccata/);
+  assert.equal(!!tofu.hasRecipe, false, 'tofu has no matching saved recipe, so it stays unlinked');
+});
+
 test('thread.search retrieves an older message past the recent window, deterministically (no side-model)', async () => {
   const parsed = await runScript(`
     await db.addMessage(householdId, chatId, 'user', 'Rob', 'the toum broke and split into oil');

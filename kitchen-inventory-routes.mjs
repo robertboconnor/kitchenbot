@@ -1,3 +1,5 @@
+import { enrichMealsWithRecipeLinks } from './mealplan-executor.mjs';
+
 export function registerKitchenInventoryRoutes(app, deps) {
   const {
     middleware,
@@ -48,7 +50,8 @@ export function registerKitchenInventoryRoutes(app, deps) {
       if (!Number.isFinite(chatId)) {
         return res.json({ items: [] });
       }
-      const items = await getMealPlanItems(req.householdId, chatId);
+      const rawItems = await getMealPlanItems(req.householdId, chatId);
+      const items = await enrichMealsWithRecipeLinks(req.householdId, rawItems);
       res.json({ items });
     } catch (error) {
       console.error(error);

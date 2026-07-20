@@ -4609,6 +4609,7 @@ app.get('/', (req, res) => {
             Exit God Mode
           </button>
         </div>
+        <div id="thisweek-strip" class="thisweek-strip" style="display:none;"></div>
         <div id="chat" class="panel panel-active"></div>
 
         <div id="typing-indicator" aria-live="polite"></div>

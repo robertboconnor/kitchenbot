@@ -6,6 +6,7 @@
 import { getGroceryItems, getPantryItems, getHouseholdDefaults, getMealPlanItems, getMessages } from './db.mjs';
 import { GROCERY_SECTION_KEYS, PANTRY_SECTION_KEYS } from './inventory-classification.mjs';
 import { COOKBOOK_CATEGORY_OPTIONS } from './cookbook-store.mjs';
+import { enrichMealsWithRecipeLinks } from './mealplan-executor.mjs';
 
 function s(v) {
   return String(v ?? '').trim();
@@ -69,7 +70,8 @@ export async function executePlanList(_action, context = {}) {
   const householdId = context?.req?.householdId;
   const chatId = context?.chatId;
   const rows = await getMealPlanItems(householdId, chatId);
-  const meals = (Array.isArray(rows) ? rows : []).map((r) => ({
+  const enriched = await enrichMealsWithRecipeLinks(householdId, rows);
+  const meals = (Array.isArray(enriched) ? enriched : []).map((r) => ({
     name: s(r.name),
     status: r.status === 'cooked' ? 'cooked' : 'planned',
     note: s(r.note) || undefined,

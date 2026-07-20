@@ -3,8 +3,33 @@ import {
   addMealPlanItems,
   updateMealPlanItem,
   deleteMealPlanItem,
+  listCookbookEntries,
 } from './db.mjs';
 import { resolveInventoryItemMatch } from './inventory-item-resolver.mjs';
+import { findCookbookMatches } from './cookbook-store.mjs';
+
+// Auto-link a planned meal to a saved cookbook recipe by title (fuzzy, confident single
+// match only). Resolved on read so a meal links itself as soon as its recipe is saved with
+// a matching name — no persisted pointer needed (an explicit cookbook_entry_id still wins).
+export async function enrichMealsWithRecipeLinks(householdId, meals) {
+  const list = Array.isArray(meals) ? meals : [];
+  if (list.length === 0) return list;
+  let entries = [];
+  try {
+    entries = await listCookbookEntries(householdId);
+  } catch {
+    entries = [];
+  }
+  if (!Array.isArray(entries) || entries.length === 0) return list;
+  return list.map((meal) => {
+    if (meal.cookbookEntryId) return meal;
+    const matches = findCookbookMatches(entries, meal.name);
+    if (matches.length === 1) {
+      return { ...meal, cookbookEntryId: matches[0].id, cookbookTitle: matches[0].title, autoLinkedRecipe: true };
+    }
+    return meal;
+  });
+}
 
 // ── This Week's Plan executors ──────────────────────────────────────────────────
 // ONE BRAIN (KITCHENBOT_BRAIN_CONTRACT.md — "Smart Brain, Dumb Executors"): the brain
