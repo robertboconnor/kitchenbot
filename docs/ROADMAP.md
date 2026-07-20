@@ -96,11 +96,14 @@ tests added).
   pattern as grocery/pantry. Plus a `thread.search` read-tool: deterministic ranked retrieval over THIS
   chat's messages so the brain recalls an old detail (the toum fix, a lemon amount) without carrying the
   whole thread. One-brain throughout (brain decides + passes; executors mechanical; no side-model).
-  Commits `de18f56` (backend + tools) and `dfa350c` (UI + tests). 136 tests green; verified live in the
-  browser. **Follow-ups:** (a) each meal can point at its saved cookbook recipe (`cookbook_entry_id`
-  column exists; auto-link by title not yet wired); (b) a chat-embedded "This Week" strip (currently the
-  panel lives in the Kitchen tab, scoped to the current chat) would be even more visible-while-chatting;
-  (c) style the cooked checkbox to the palette accent (currently the default blue).
+  Commits `de18f56` (backend + tools), `dfa350c` (UI + tests), and `279a2f2` (round 2). 137 tests green;
+  verified live in the browser. **Round 2 (done, `279a2f2`):** (a) meals auto-link to a saved cookbook
+  recipe by title (`enrichMealsWithRecipeLinks`, confident single match, resolved on read) — clickable
+  "recipe" link in the panel + strip, and the brain sees `hasRecipe`; (b) a chat-embedded "This Week"
+  strip pinned above the messages (chips, refreshed by loadHistory) — the plan right where you cook;
+  (c) the cooked checkbox now uses the palette accent (`--accent-strong`), not browser blue.
+  **Remaining polish:** a persisted meal→recipe pointer when the brain saves a recipe for a planned
+  meal (today it's title-resolved on read, which is usually enough).
 - **Phase 3 — Recipe robustness.** Real **SSRF** in the chat fetch path (`recipe-url-ingestion.mjs`
   `fetchRecipePage` — no private-IP guard); no input caps / timeouts; two divergent import pipelines
   to unify. ~S–M each.
