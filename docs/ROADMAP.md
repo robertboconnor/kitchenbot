@@ -48,13 +48,15 @@ transcript-derivation in the recipe/cookbook path. Status of each finding:
 - ✅ **`cookbook.save`**: `inferCookbookRecord` (side-model that synthesized a whole entry from the chat)
   deleted; the transcript-scan that picked "which recipe" removed; the brain now passes the recipe in a
   structured `recipe` field. Verified live (commit `1d602d2`).
-- ⬜ **`recipe.revise`** (`recipe-executor.mjs resolveRecipeBase`) still scans the transcript
-  (`findLatestExplicitRecipeCandidate` / `findLatestAssistantRecipeText`) to pick the base recipe when the
-  brain passed no target — same violation as cookbook.save. **Open design question first:** with cookbook.save
-  now recipe-aware, the brain can revise conversationally and re-save, which may make `recipe.revise`'s model
-  call redundant — decide whether to give it a `recipe` field or remove the tool. (Roadmap task.)
+- ✅ **`recipe.revise` — REMOVED** (2026-07-20, Rob chose option B; commits `6067569` + `870af0a`). The brain
+  revises a recipe conversationally (it rewrites it) and re-saves: `cookbook.save` for a new/chat recipe,
+  `cookbook.update` for a saved one. `cookbook.update` now takes the brain's full revised `recipe` (like
+  cookbook.save) — one clean call instead of the old 7-call `reviseStructuredRecipe` thrash — plus a
+  single-saved-recipe resolution fallback. `reviseStructuredRecipe` stays only as a bare-`request` fallback
+  (an allowed transform). Removed the executor's transcript-scanning base resolver (−550 lines).
 - ⬜ Milder (`B4`, low): `kb-skills` prompt-regex fallbacks that pull a write payload from the current prompt
   when the brain sent none (grocery items / household defaults / pantry adds). Guarded, prompt-only, deterministic.
+  The last remaining (low-priority) one-brain item.
 (Legit parse/shape, left as-is: recipe OCR/URL structuring, additive-edit extraction, cookbook category tagging,
 chat titles, web-search execution.)
 
