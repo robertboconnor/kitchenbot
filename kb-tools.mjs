@@ -13,6 +13,10 @@ import {
   getKbSkill,
   normalizeKbSkillAction,
 } from './kb-skills.mjs';
+import { GROCERY_SECTION_KEYS, PANTRY_SECTION_KEYS } from './inventory-classification.mjs';
+
+const GROCERY_SECTIONS = [...GROCERY_SECTION_KEYS];
+const PANTRY_SECTIONS = [...PANTRY_SECTION_KEYS];
 
 // ---------------------------------------------------------------------------
 // Capability <-> Anthropic tool-name mapping.
@@ -48,6 +52,7 @@ const READ_ONLY_CAPABILITIES = new Set([
   'grocery.list',
   'pantry.list',
   'household.defaults.get',
+  'inventory.sections',
   'grocery.preview',
   'web.search',
 ]);
@@ -132,6 +137,7 @@ const INPUT_SCHEMAS = {
       name: { type: 'string', description: 'Name of the item already on the list to update.' },
       amount: { type: 'string', description: 'The new quantity/amount, e.g. "12" or "2 dozen". Omit to leave the amount unchanged.' },
       checked: { type: 'boolean', description: 'Set false to put a bought item back on the active list, true to mark it bought. Omit to leave unchanged.' },
+      section: { type: 'string', enum: GROCERY_SECTIONS, description: 'Re-file the item under a different grocery section. Omit to leave it where it is.' },
     },
     required: ['name'],
   },
@@ -148,12 +154,29 @@ const INPUT_SCHEMAS = {
     properties: {
       items: {
         type: 'array',
-        description: 'Staples/on-hand items to add to the Pantry.',
-        items: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+        description: 'Staples/on-hand items to add to the Pantry. Set each item\'s section yourself when you know it (you know pantry items well) so it lands in the right place; leave it off only if unsure.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            section: { type: 'string', enum: PANTRY_SECTIONS, description: 'Which pantry section this belongs in.' },
+            amount: { type: 'string', description: 'Optional quantity, e.g. "2 bags".' },
+          },
+          required: ['name'],
+        },
       },
     },
     required: ['items'],
   },
+  'pantry.recategorize': {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Name of the pantry item to re-file.' },
+      section: { type: 'string', enum: PANTRY_SECTIONS, description: 'The pantry section to move it into.' },
+    },
+    required: ['name', 'section'],
+  },
+  'inventory.sections': NO_INPUT,
   'pantry.remove': NAME_ONLY,
   'pantry.move_to_grocery': NAME_ONLY,
   'grocery.move_to_pantry': NAME_ONLY,
@@ -263,6 +286,14 @@ const OUTCOME_PASSTHROUGH_KEYS = [
   'previousAmount',
   'amountChanged',
   'checkedChanged',
+  'section',
+  'previousSection',
+  'sectionChanged',
+  'requestedSection',
+  'validSections',
+  'grocerySections',
+  'pantrySections',
+  'cookbookCategories',
   'missingName',
   'question',
   'title',

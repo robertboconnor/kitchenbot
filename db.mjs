@@ -864,6 +864,16 @@ export async function setGroceryItemAmount(householdId, id, amount) {
   return Number(result.changes) || 0;
 }
 
+// Re-file a grocery item into a different section (explicit, brain-directed).
+// Caller validates the section against GROCERY_SECTION_KEYS before calling.
+export async function updateGroceryItemSection(householdId, id, section) {
+  const result = await run(
+    `UPDATE grocery_items SET section = ? WHERE household_id = ? AND id = ?`,
+    [String(section ?? '').trim().toLowerCase(), householdId, id]
+  );
+  return Number(result.changes) || 0;
+}
+
 export async function updateGroceryItemProbablyPantry(householdId, id, probablyPantryItem) {
   const result = await run(
     `UPDATE grocery_items SET probably_pantry_item = ? WHERE household_id = ? AND id = ? AND checked = 0`,
@@ -1488,6 +1498,16 @@ export async function addPantryItems(householdId, items) {
 
 export async function deletePantryItem(householdId, id) {
   const result = await run(`DELETE FROM pantry_items WHERE household_id = ? AND id = ?`, [householdId, id]);
+  return Number(result.changes) || 0;
+}
+
+// Re-file a pantry item into a different section (explicit, user/brain-directed —
+// no auto-classifier involved). normalizePantrySection keeps it to a valid section.
+export async function updatePantryItemSection(householdId, id, section, name = '') {
+  const result = await run(
+    `UPDATE pantry_items SET section = ? WHERE household_id = ? AND id = ?`,
+    [normalizePantrySection(section, name), householdId, id]
+  );
   return Number(result.changes) || 0;
 }
 

@@ -74,3 +74,30 @@ test('grocery.update_item normalizes name + amount + checked (and aliases)', () 
   );
   assert.equal(noName, null);
 });
+
+test('pantry.recategorize + inventory.sections are wired (re-file items + see the taxonomy)', () => {
+  assert.equal(getKbSkill('pantry.recategorize')?.id, 'pantry.recategorize');
+  assert.equal(getKbSkill('inventory.sections')?.id, 'inventory.sections');
+
+  const tools = buildKbToolDefinitions({ webSearchEnabled: false });
+
+  const recat = tools.find((t) => t.name === 'pantry__recategorize');
+  assert.ok(recat, 'pantry__recategorize tool is built');
+  assert.deepEqual(recat.input_schema.required, ['name', 'section']);
+  assert.ok(Array.isArray(recat.input_schema.properties.section.enum), 'section is an enum (brain sees valid sections)');
+  assert.ok(recat.input_schema.properties.section.enum.includes('pasta_grains_dry_goods'));
+  assert.equal(isWriteCapability('pantry.recategorize'), true);
+
+  // inventory.sections is a READ tool (no side effects).
+  assert.equal(isWriteCapability('inventory.sections'), false);
+
+  // grocery.update_item can now also re-file a grocery item's section.
+  const gUpdate = tools.find((t) => t.name === 'grocery__update_item');
+  assert.ok(Array.isArray(gUpdate.input_schema.properties.section.enum), 'grocery.update_item exposes a section enum');
+
+  // normalize keeps name + section; drops when either is missing.
+  const ok = normalizeKbSkillAction({ capability: 'pantry.recategorize', input: { name: 'garlic', section: 'other_pantry' } }, {});
+  assert.deepEqual(ok.input, { name: 'garlic', section: 'other_pantry' });
+  const noSection = normalizeKbSkillAction({ capability: 'pantry.recategorize', input: { name: 'garlic' } }, {});
+  assert.equal(noSection, null);
+});

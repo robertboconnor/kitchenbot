@@ -14,7 +14,7 @@ import { previewGroceryListFromConversation, writeGroceryListFromConversation } 
 import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, executeGroceryUncheck, executeGroceryUpdateItem } from './grocery-action-executor.mjs';
 import { executeHouseholdDefaultsUpdate } from './household-defaults-executor.mjs';
 import { executeMealRefine } from './meal-refine-executor.mjs';
-import { executeGroceryMoveToPantry, executePantryAdd, executePantryMoveToGrocery, executePantryRemove } from './pantry-executor.mjs';
+import { executeGroceryMoveToPantry, executePantryAdd, executePantryMoveToGrocery, executePantryRecategorize, executePantryRemove } from './pantry-executor.mjs';
 import { executeWebSearch } from './web-search-executor.mjs';
 import { executeChatRename, normalizeChatRenameActionInput } from './chat-executor.mjs';
 import {
@@ -24,7 +24,7 @@ import {
 } from './kb-memory-policy.mjs';
 import { normalizeWorkingContext } from './kb-working-context.mjs';
 import { executeRecipeRevise } from './recipe-executor.mjs';
-import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet } from './kb-read-executors.mjs';
+import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet, executeInventorySections } from './kb-read-executors.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -361,7 +361,17 @@ function normalizeGroceryUpdateItemActionInput(input) {
   if (amount) out.amount = amount;
   if (typeof raw.checked === 'boolean') out.checked = raw.checked;
   else if (typeof raw.bought === 'boolean') out.checked = raw.bought;
+  const section = safeTrim(raw.section || raw.category);
+  if (section) out.section = section;
   return out;
+}
+
+function normalizePantryRecategorizeActionInput(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const name = safeTrim(raw.name || raw.item || raw.product);
+  const section = safeTrim(raw.section || raw.category);
+  if (!name || !section) return null;
+  return { name, section };
 }
 
 function normalizeWebSearchActionInput(input, context = {}) {
@@ -760,6 +770,22 @@ export const KB_SKILLS = {
     normalizeActionInput: normalizeNameOnlyActionInput,
     execute: executePantryRemove,
   },
+  'pantry.recategorize': {
+    id: 'pantry.recategorize',
+    description: 'Re-file a Pantry item into a different section/category.',
+    narrationType: 'pantry.recategorize',
+    contextProfile: {
+      includePantry: true,
+    },
+    interpreterDescription:
+      'Move a Pantry item into a different section (recategorize it) — e.g. file "flour tortillas" under pasta_grains_dry_goods instead of baking. Use this to reorganize or clean up how pantry items are sorted; it changes an existing item\'s section directly (no need to remove and re-add). Valid pantry sections: spices_herbs, oils_vinegars, baking, sweeteners, condiments_sauces, pasta_grains_dry_goods, other_pantry.',
+    exampleAction: {
+      capability: 'pantry.recategorize',
+      input: { name: 'flour tortillas', section: 'pasta_grains_dry_goods' },
+    },
+    normalizeActionInput: normalizePantryRecategorizeActionInput,
+    execute: executePantryRecategorize,
+  },
   'pantry.move_to_grocery': {
     id: 'pantry.move_to_grocery',
     description: 'Move an item from the Pantry to the Grocery List tab.',
@@ -863,6 +889,17 @@ export const KB_SKILLS = {
     exampleAction: { capability: 'household.defaults.get', input: {} },
     normalizeActionInput: normalizeEmptyActionInput,
     execute: executeHouseholdDefaultsGet,
+  },
+  'inventory.sections': {
+    id: 'inventory.sections',
+    description: 'Read the canonical list of valid grocery sections, pantry sections, and cookbook categories.',
+    narrationType: 'inventory.sections',
+    contextProfile: {},
+    interpreterDescription:
+      'Read the fixed master list of valid grocery sections, pantry sections, and cookbook categories. Use this when asked what categories exist, or before recategorizing/placing an item, so you use a real valid section — not just the ones currently in use.',
+    exampleAction: { capability: 'inventory.sections', input: {} },
+    normalizeActionInput: normalizeEmptyActionInput,
+    execute: executeInventorySections,
   },
 };
 
