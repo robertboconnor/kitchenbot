@@ -2,8 +2,6 @@ import {
   getGroceryItems,
   getMessages,
 } from './db.mjs';
-import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
-import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
 import { findLatestExplicitRecipeCandidate } from './cookbook-store.mjs';
 import { resolveInventoryItems } from './inventory-classification.mjs';
 import { buildKbContextSystemText } from './kb-prompt-context.mjs';
@@ -11,29 +9,6 @@ import { buildClarifyActionState } from './kb-next-action.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
-}
-
-function formatInventoryLines(items = [], limit = 80) {
-  return (Array.isArray(items) ? items : [])
-    .filter((item) => safeTrim(item?.name))
-    .slice(0, limit)
-    .map((item) => {
-      const section = safeTrim(item?.section).toLowerCase() || 'other';
-      const name = safeTrim(item?.name);
-      const amount = safeTrim(item?.amount);
-      return amount ? `${section} | ${name} | ${amount}` : `${section} | ${name}`;
-    })
-    .join('\n');
-}
-
-function formatPantryContextForPrompt(pantryItems = []) {
-  const lines = formatInventoryLines(pantryItems, 120);
-  if (!lines) return 'Already on hand now:\n(none)';
-  return [
-    'Already on hand now:',
-    lines,
-    'Do not include these pantry items in the final grocery list unless the meals clearly require buying more.',
-  ].join('\n');
 }
 
 function buildGroceryAddNextStep({ question, visibleReplySummary = '', input = {} }) {
@@ -196,70 +171,6 @@ function promptLooksLikeRecipeDerivedGroceryWrite(promptRaw = '') {
   return mentionsGroceries && (referential || recipeish);
 }
 
-function hasUsableWorkingContext(memoryContext) {
-  const workingContext = memoryContext?.workingContext;
-  return !!(
-    workingContext &&
-    typeof workingContext === 'object' &&
-    !Array.isArray(workingContext) &&
-    (((Array.isArray(workingContext.mealIdeas) ? workingContext.mealIdeas.length : 0) > 0) ||
-      safeTrim(workingContext.topicSummary))
-  );
-}
-
-function isReferentialPrompt(prompt) {
-  const text = safeTrim(prompt).toLowerCase();
-  if (!text) return false;
-  return /\b(this|that|those|these|it|them)\b/.test(text) || /\bone of those\b/.test(text);
-}
-
-function countActiveRelevantPeople(memoryContext) {
-  const entityContext = memoryContext?.entityContext || {};
-  const active = new Set();
-  const speaker = safeTrim(entityContext.activeSpeakerLabel || entityContext.activeSpeakerName).toLowerCase();
-  if (speaker) active.add(speaker);
-  for (const label of Array.isArray(entityContext.mentionedPersonLabels) ? entityContext.mentionedPersonLabels : []) {
-    const text = safeTrim(label).toLowerCase();
-    if (text) active.add(text);
-  }
-  return active.size;
-}
-
-function hasComplexDefaultsOrMemory(memoryContext) {
-  const pantryCount = Array.isArray(memoryContext?.pantryItems) ? memoryContext.pantryItems.length : 0;
-  const selectedMemoryCount = Array.isArray(memoryContext?.selectedItems) ? memoryContext.selectedItems.length : 0;
-  return pantryCount > 20 || selectedMemoryCount > 5;
-}
-
-function shouldUsePrimaryGroceryModel(runtimeAction, context) {
-  const promptText = safeTrim(context?.prompt).toLowerCase();
-  const memoryContext = context?.memoryContext || null;
-  if (!hasUsableWorkingContext(memoryContext)) return false;
-  if (isReferentialPrompt(promptText)) return false;
-  if (/\b(swap|replace one|redo|revise|change one|make one)\b/.test(promptText)) return false;
-  if (countActiveRelevantPeople(memoryContext) > 2) return false;
-  if (hasComplexDefaultsOrMemory(memoryContext)) return false;
-  const source = safeTrim(runtimeAction?.input?.source).toLowerCase();
-  if (source && source !== 'draft_chat_offer') return false;
-  return true;
-}
-
-function minimumExpectedItems(memoryContext) {
-  const mealIdeas = Array.isArray(memoryContext?.workingContext?.mealIdeas) ? memoryContext.workingContext.mealIdeas.length : 0;
-  if (mealIdeas >= 3) return 8;
-  if (mealIdeas === 2) return 6;
-  if (mealIdeas === 1) return 4;
-  return 1;
-}
-
-function minimumExpectedItemsForSourceMealSet(sourceMealSet = null, memoryContext = null) {
-  const explicitMealCount = Array.isArray(sourceMealSet?.mealIdeas) ? sourceMealSet.mealIdeas.filter(Boolean).length : 0;
-  if (explicitMealCount >= 3) return 8;
-  if (explicitMealCount === 2) return 6;
-  if (explicitMealCount === 1) return 4;
-  return minimumExpectedItems(memoryContext);
-}
-
 function resolveSourceMealSetForDraft(runtimeAction = null) {
   const sourceMealSetSelection =
     runtimeAction?.input?.sourceMealSetSelection &&
@@ -271,135 +182,6 @@ function resolveSourceMealSetForDraft(runtimeAction = null) {
   return runtimeAction?.input?.sourceMealSet && typeof runtimeAction.input.sourceMealSet === 'object' && !Array.isArray(runtimeAction.input.sourceMealSet)
     ? runtimeAction.input.sourceMealSet
     : null;
-}
-
-function shouldEscalatePrimaryGroceryDraft(normalizedItems, memoryContext) {
-  const count = Array.isArray(normalizedItems) ? normalizedItems.length : 0;
-  if (count === 0) return true;
-  return count < minimumExpectedItems(memoryContext);
-}
-
-async function requestGroceryDraft({
-  anthropic,
-  callPurpose,
-  req,
-  chatId,
-  kbModeEnabled,
-  runtimeManagedResponse,
-  claudeMessages,
-  systemPrompt,
-  conversationContextCompact,
-}) {
-  return await createLoggedAnthropicMessage(anthropic, {
-    model: resolveAnthropicModelForCallPurpose(callPurpose),
-    max_tokens: 400,
-    system: systemPrompt,
-    messages: [
-      ...claudeMessages,
-      {
-        role: 'user',
-        content:
-          'Based on the cooking and meal discussion we have had, build a complete grocery list using the format "section | product | amount", one item per line. Do not include any commentary, headers, or bullet points—only raw lines in that format.\n\nConversation context:\n' +
-          conversationContextCompact,
-      },
-    ],
-  }, {
-    householdId: req.householdId,
-    chatId,
-    runtimeEnabled: !!kbModeEnabled,
-    callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
-    callPurpose,
-    webSearchEnabledAtCall: false,
-    usedWebSearchTool: false,
-  });
-}
-
-async function requestPantryAwareReconciliation({
-  anthropic,
-  req,
-  chatId,
-  kbModeEnabled,
-  runtimeManagedResponse,
-  systemPrompt,
-  conversationContextCompact,
-  pantryItems = [],
-  draftItems = [],
-}) {
-  return await createLoggedAnthropicMessage(anthropic, {
-    model: resolveAnthropicModelForCallPurpose('grocery_draft_reconciliation'),
-    max_tokens: 350,
-    system: systemPrompt,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          'Revise this grocery draft using the current pantry state.',
-          '',
-          formatPantryContextForPrompt(pantryItems),
-          '',
-          'Current grocery draft:',
-          formatInventoryLines(draftItems, 120) || '(none)',
-          '',
-          'Return ONLY the final grocery list using the format "section | product | amount", one item per line.',
-          'Remove items that should be treated as already on hand. Keep items that still need to be bought.',
-          '',
-          `Conversation context:\n${conversationContextCompact}`,
-        ].join('\n'),
-      },
-    ],
-  }, {
-    householdId: req.householdId,
-    chatId,
-    runtimeEnabled: !!kbModeEnabled,
-    callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
-    callPurpose: 'grocery_draft_reconciliation',
-    webSearchEnabledAtCall: false,
-    usedWebSearchTool: false,
-  });
-}
-
-async function parseGroceryDraftItems({
-  groceryResponse,
-  anthropic,
-  householdId,
-  chatId,
-  kbModeEnabled = false,
-  runtimeManagedResponse = false,
-  deps = {},
-}) {
-  const textBlocks = groceryResponse.content.filter((block) => block.type === 'text');
-  const fullText = textBlocks.map((b) => b.text).join('\n');
-  const lines = fullText.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
-  const items = [];
-  for (const line of lines) {
-    const parts = line.split('|').map((p) => p.trim());
-    if (parts.length < 2) continue;
-    const [sectionRaw, nameRaw, amountRaw] = parts;
-    const nameTrim = String(nameRaw).trim();
-    if (!sectionRaw || !nameTrim) continue;
-    items.push({
-      section: sectionRaw,
-      name: nameTrim,
-      amount: amountRaw != null ? String(amountRaw).trim() : '',
-    });
-  }
-  if (typeof deps.normalizeGroceryItemsForPost === 'function') {
-    return await deps.normalizeGroceryItemsForPost(items, {
-      householdId,
-      chatId,
-      runtimeEnabled: !!kbModeEnabled,
-      callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
-    });
-  }
-  return await resolveInventoryItems({
-    target: 'grocery',
-    items,
-    anthropic: anthropic || null,
-    householdId,
-    chatId,
-    runtimeEnabled: !!kbModeEnabled,
-    callSurface: runtimeManagedResponse ? 'kb_action' : 'chat',
-  });
 }
 
 async function generateGroceryDraft(runtimeAction, context) {
@@ -494,23 +276,6 @@ Where:
 - product is a short item name
 - amount is a human-readable quantity (like "2 lbs", "3", "1 carton")`;
 
-  const groceryReconciliationSystemPrompt = `You revise household grocery drafts using current pantry state.
-
-${buildKbContextSystemText(memoryContext)}
-
-Rules:
-- Pantry items listed as already on hand should not appear in the final grocery list unless more is clearly needed.
-- If Pantry context status is available or empty, trust it directly and do not ask the user to confirm Pantry contents.
-- Keep the list grounded in the same meals and conversation context.
-- Remove pantry duplicates and keep true buy-now items.
-- Return ONLY plain text lines in the format:
-section | product | amount
-
-Where:
-- section is one of: produce, meat, dairy, frozen, dry, other
-- product is a short item name
-- amount is a human-readable quantity`;
-
   if ((requestedSource === 'offered_items' || requestedSource === 'explicit_items') && directOfferedItems.length > 0) {
     const normalizedItems =
       typeof deps.normalizeGroceryItemsForPost === 'function'
@@ -547,7 +312,6 @@ Where:
       conversationContextCompact,
       normalizedItems,
       systemPrompt,
-      groceryReconciliationSystemPrompt,
       priorKeys,
       runKeys,
       likelyRemovedKeys,
@@ -588,7 +352,6 @@ Where:
       conversationContextCompact,
       normalizedItems,
       systemPrompt,
-      groceryReconciliationSystemPrompt,
       priorKeys,
       runKeys,
       likelyRemovedKeys,
@@ -639,7 +402,6 @@ Where:
       conversationContextCompact,
       normalizedItems,
       systemPrompt,
-      groceryReconciliationSystemPrompt,
       priorKeys,
       runKeys,
       likelyRemovedKeys,
@@ -668,7 +430,6 @@ Where:
     normalizedItems: [],
     noItemsProvided: true,
     systemPrompt,
-    groceryReconciliationSystemPrompt,
     priorKeys,
     runKeys: new Set(),
     likelyRemovedKeys: new Set(),
@@ -748,7 +509,6 @@ export async function writeGroceryListFromConversation(runtimeAction, context) {
     pantryItemCount,
     conversationContextCompact,
     normalizedItems,
-    groceryReconciliationSystemPrompt,
     runKeys,
     } = draft;
   const effectiveGroceryMode = requestedGroceryMode || 'append';

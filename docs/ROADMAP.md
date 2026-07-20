@@ -1,7 +1,7 @@
 # KitchenBot — Roadmap & Working State
 
 The living "where we are / what's next" doc. Read this first when picking up on a new device or a
-fresh session. **Update it at the end of a work session.** Last updated: **2026-07-19**.
+fresh session. **Update it at the end of a work session.** Last updated: **2026-07-20**.
 
 ## The goal
 
@@ -18,6 +18,42 @@ single-action pipeline into ONE native Anthropic tool-use loop (`kb-agent-loop.m
 decides which tools to call. Red-teamed hard (truthfulness, injection, gaslighting all held).
 Model = `claude-sonnet-5`. This is the real architectural leap.
 
+**"Smart brain, dumb executors" — completed 2026-07-20 (overnight one-brain rearchitecture).** After
+finding a prod bug where a *haiku side-model*, not the brain, was choosing pantry categories, we swept
+the whole loop for the same anti-pattern and pulled out every side-model that was making a *decision*:
+- **Section classification** (haiku decided grocery/pantry categories) → brain names the section on the
+  tool call; deterministic regex is the only fallback (`inventory-classification.mjs`).
+- **Grocery-list generation** (a draft-model + a pantry-reconciliation model built the list) → the brain
+  enumerates every item itself (scaled to portions, minus what `pantry.list` shows on-hand) and passes an
+  explicit `items` array to `grocery.write`.
+- **`meal.refine`** (a sub-brain re-detected intent to refine a plan) → deleted; refinement is just the
+  brain continuing the conversation.
+- **Memory scope** (haiku decided person-vs-household + reconciled notes) → the brain passes `scope`/
+  `person`; storage is a deterministic append. Also fixed the old **person-save-without-`key` silent
+  no-op** here.
+- **Working-context** (a haiku call summarized the chat into a "what we're doing" blob) → removed from the
+  live path.
+The contract now permits side-model calls **only** for mechanical parse/shape helpers that never decide:
+chat-title naming + recipe import structuring (OCR / URL → structured recipe). Codified in
+`KITCHENBOT_BRAIN_CONTRACT.md` ("Smart Brain, Dumb Executors") and `anthropic-model-policy.mjs`.
+Dead-code sweep removed ~690 lines of now-orphaned sub-brain scaffolding. These flows verified live
+(memory person/household scope, grocery-from-meals, pantry add + recategorize, grocery quantity update)
+with **zero side-model calls in any tool trace**. **On `dev`, not yet merged to prod** (Rob's call).
+
+**Re-hunt (2026-07-20) — the refactored subsystems are clean; the recipe/cookbook path is the remaining
+one-brain debt.** A full audit of every side-model call site confirmed the brain + two shape helpers are
+the only model calls in memory/grocery/section/working-context. It also surfaced that the **recipe &
+cookbook executors still reconstruct intent from the transcript** — the next fixes (tracked below):
+- `cookbook-store.mjs inferCookbookRecord` — a side-model that *synthesizes an entire cookbook entry from
+  the chat* when `cookbook.save` gets no explicit recipe. Brain should pass the record.
+- Shared "scan the transcript to pick *which* recipe the user means" engine (`findLatestExplicitRecipeCandidate`
+  / `findLatestAssistantRecipeText`) used by both `cookbook.save` and `recipe.revise` when the brain passed no
+  explicit target. Brain owns what "this recipe" refers to.
+- `grocery-executor` residual "derive groceries from a transcript recipe" branch (contradicts the file's own
+  one-brain comment) + a dead grocery-generation system-prompt still built into every draft (a re-wiring hazard).
+- Milder: `kb-skills` prompt-regex fallbacks that pull a write payload from text when the brain sent none.
+(Legit parse/shape, left as-is: recipe OCR/URL structuring, additive-edit extraction, cookbook category tagging.)
+
 **Latency UX — done.** True token streaming to both household members + whimsical per-tool progress
 ("Plotting something delicious…"), broadcast over WebSocket to co-viewers.
 
@@ -31,7 +67,8 @@ Model = `claude-sonnet-5`. This is the real architectural leap.
 
 **Truthful writes + a real capability gap closed:** `grocery.update_item` lets the brain change the
 quantity of an item already on the list (or a bought item) — it *asks* on the ambiguous bought-item
-case. 136 tests green.
+case. **131 tests green** (net −5 vs. 136: sub-brain tests deleted with their code, mechanical-contract
+tests added).
 
 ## Roadmap (phased) — what's left
 
@@ -44,7 +81,8 @@ case. 136 tests green.
   any household member who isn't the person typing**, so "plan our family's dinners" loses Elle and
   Bizzy. Fixes: always-include the household's people in context; add a `memory.list`/`search`
   read-tool; add a `household_members` table so the non-login 4yo is a first-class member with
-  structured preferences; fix a real bug where a person-save without a `key` silently no-ops. ~Medium.
+  structured preferences. ~Medium. *(The person-save-without-`key` silent no-op and brain-owned memory
+  scope were fixed in the 2026-07-20 one-brain pass.)*
 - **Phase 3 — Recipe robustness.** Real **SSRF** in the chat fetch path (`recipe-url-ingestion.mjs`
   `fetchRecipePage` — no private-IP guard); no input caps / timeouts; two divergent import pipelines
   to unify. ~S–M each.

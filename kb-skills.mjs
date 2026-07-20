@@ -17,7 +17,6 @@ import { executeGroceryMoveToPantry, executePantryAdd, executePantryMoveToGrocer
 import { executeWebSearch } from './web-search-executor.mjs';
 import { executeChatRename, normalizeChatRenameActionInput } from './chat-executor.mjs';
 import {
-  inferMemoryKeyAndValue,
   normalizeMemoryKey,
   normalizeMemoryValue,
 } from './kb-memory-policy.mjs';
