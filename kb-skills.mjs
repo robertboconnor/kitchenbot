@@ -496,7 +496,8 @@ export const KB_SKILLS = {
   },
   'cookbook.save': {
     id: 'cookbook.save',
-    description: 'Save the current recipe, meal idea, or web-inspired dish to the household cookbook.',
+    description:
+      'Save a recipe to the household cookbook. Pass the recipe itself in `recipe` {title, ingredients[], instructions[]} — the one you just wrote or the user gave you. For a recipe URL or pasted recipe text, put that in `request` and I will fetch/parse it. Do not expect me to re-read the chat to reconstruct the recipe.',
     narrationType: 'cookbook.save',
     contextProfile: {
       includeDefaults: true,
@@ -504,10 +505,16 @@ export const KB_SKILLS = {
       includeWorkingContext: true,
     },
     interpreterDescription:
-      'Save the current recipe, meal idea, or recent web-inspired dish into the household cookbook when the user clearly asks to save it.',
+      'Save a recipe into the household cookbook when the user clearly asks to save it. Provide the recipe in `recipe`; use `request` for a URL or pasted text.',
     exampleAction: {
       capability: 'cookbook.save',
-      input: { request: 'save this recipe to our cookbook' },
+      input: {
+        recipe: {
+          title: 'Garlic Butter Shrimp Pasta',
+          ingredients: ['12 oz linguine', '1 lb shrimp', '4 tbsp butter', '4 cloves garlic'],
+          instructions: ['Boil the linguine.', 'Sauté garlic in butter, add shrimp.', 'Toss with pasta and serve.'],
+        },
+      },
     },
     normalizeActionInput: normalizeCookbookSaveInput,
     interpretFollowUp: interpretCookbookSaveFollowUp,

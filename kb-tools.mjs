@@ -92,7 +92,26 @@ const INPUT_SCHEMAS = {
   },
   'cookbook.save': {
     type: 'object',
-    properties: { request: { type: 'string', description: 'What to save and any framing, e.g. "save this recipe to our cookbook".' } },
+    properties: {
+      recipe: {
+        type: 'object',
+        description:
+          'The recipe to save — YOU provide it (the one you just wrote or the user gave you). Do NOT expect me to re-read the chat to reconstruct it. Omit only when saving from a URL or pasted text (put those in request).',
+        properties: {
+          title: { type: 'string', description: 'A clean recipe title (no assistant framing).' },
+          ingredients: { type: 'array', items: { type: 'string' }, description: 'Every ingredient line.' },
+          instructions: { type: 'array', items: { type: 'string' }, description: 'The steps, in order.' },
+          summary: { type: 'string', description: 'One or two lines: what it is and what it is good for.' },
+          sourceUrl: { type: 'string' },
+          sourceTitle: { type: 'string' },
+        },
+        required: ['title', 'ingredients', 'instructions'],
+      },
+      request: {
+        type: 'string',
+        description: 'Framing, a recipe URL to fetch, or pasted recipe text. e.g. "save this to our cookbook".',
+      },
+    },
   },
   'cookbook.update': {
     type: 'object',

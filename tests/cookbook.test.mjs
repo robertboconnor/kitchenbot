@@ -473,7 +473,7 @@ test('cookbook entries persist and become selectable context for cookbook prompt
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('executeCookbookSave shapes and stores a reusable cookbook entry from chat context', async () => {
+test('ONE BRAIN: executeCookbookSave stores exactly the recipe the brain passes in input.recipe', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-save-'));
   const dbPath = path.join(tempDir, 'cookbook-save.db');
 
@@ -518,7 +518,17 @@ test('executeCookbookSave shapes and stores a reusable cookbook entry from chat 
       },
     };
     const outcome = await executor.executeCookbookSave(
-      { capability: 'cookbook.save', input: { request: 'save that recipe' } },
+      {
+        capability: 'cookbook.save',
+        input: {
+          request: 'save that recipe',
+          recipe: {
+            title: 'Lemony Chicken Orzo Skillet',
+            ingredients: ['chicken thighs', 'orzo', 'lemon', 'spinach'],
+            instructions: ['Brown the chicken', 'Simmer the orzo', 'Finish with lemon and spinach'],
+          },
+        },
+      },
       {
         req: { householdId: created.householdId },
         chatId,
@@ -549,7 +559,7 @@ test('executeCookbookSave shapes and stores a reusable cookbook entry from chat 
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('executeCookbookSave saves the most recently expanded recipe instead of stale meal-plan context', async () => {
+test('ONE BRAIN: executeCookbookSave saves exactly the recipe the brain passes, no model call, ignoring the transcript', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-expanded-recipe-'));
   const dbPath = path.join(tempDir, 'cookbook-expanded-recipe.db');
 
@@ -599,7 +609,30 @@ Notes
 The olive salad is the soul of the sandwich, so do not skimp on it.\`
     );
     const outcome = await executor.executeCookbookSave(
-      { capability: 'cookbook.save', input: { request: 'add this recipe to our cookbook' } },
+      {
+        capability: 'cookbook.save',
+        input: {
+          request: 'add this recipe to our cookbook',
+          recipe: {
+            title: 'Muffaletta',
+            ingredients: [
+              '1 round loaf sesame bread',
+              '1 cup chopped green olives',
+              '1 cup chopped roasted red peppers',
+              '1/2 cup sliced pepperoncini',
+              '8 ounces salami',
+              '8 ounces mortadella',
+              '8 ounces provolone',
+            ],
+            instructions: [
+              'Mix the olives, peppers, and pepperoncini into a chunky olive salad.',
+              'Slice the bread and spread the olive salad on both halves.',
+              'Layer the salami, mortadella, and provolone, then close the sandwich.',
+              'Wrap and press for at least 30 minutes before slicing and serving.',
+            ],
+          },
+        },
+      },
       {
         req: { householdId: created.householdId },
         chatId,
@@ -705,7 +738,7 @@ test('executeCookbookSave can save directly from a grounded chat_recipe object',
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('executeCookbookSave can save the latest assistant-generated recipe from recent conversation', async () => {
+test('ONE BRAIN: executeCookbookSave with no recipe passed returns invalid and does not scan the transcript', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-save-recent-assistant-'));
   const dbPath = path.join(tempDir, 'cookbook-save-recent-assistant.db');
 
@@ -737,13 +770,14 @@ Instructions
 4. Add the bok choy during the last few minutes.
 5. Serve hot.\`);
 
+    const anthropic = { messages: { create: async () => { throw new Error('side-model must not be called'); } } };
     const outcome = await executor.executeCookbookSave(
       { capability: 'cookbook.save', input: { request: 'Add this to our cookbook please' } },
       {
         req: { householdId: created.householdId },
         chatId,
         prompt: 'Add this to our cookbook please',
-        anthropic: null,
+        anthropic,
         memoryContext: { capabilities: { webSearchEnabled: false } },
         workingContext: null,
       }
@@ -759,15 +793,16 @@ Instructions
   });
   const parsed = JSON.parse(stdout.trim());
 
-  assert.equal(parsed.outcome.status, 'saved');
-  assert.equal(parsed.entries.length, 1);
-  assert.equal(parsed.entries[0].title, 'Cheat Wonton Soup with Frozen Pot Stickers & Bok Choy');
-  assert.ok(parsed.entries[0].ingredients.some((line) => /pot stickers/i.test(line)));
+  // ONE BRAIN: a recipe sitting in the transcript is NOT saved when the brain passes no recipe.
+  // The executor does not scan the chat or consult a side-model — it returns invalid so the brain
+  // hands over the recipe explicitly in input.recipe.
+  assert.equal(parsed.outcome.status, 'invalid');
+  assert.equal(parsed.entries.length, 0);
 
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('executeCookbookSave can save the latest user-pasted recipe from recent conversation', async () => {
+test('ONE BRAIN: executeCookbookSave saves a recipe the brain passes explicitly, preserving its ingredients', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-save-recent-user-'));
   const dbPath = path.join(tempDir, 'cookbook-save-recent-user.db');
 
@@ -801,7 +836,31 @@ Instructions
 5. Stir in the lemon juice and serve.\`);
 
     const outcome = await executor.executeCookbookSave(
-      { capability: 'cookbook.save', input: { request: 'Save that to our cookbook' } },
+      {
+        capability: 'cookbook.save',
+        input: {
+          request: 'Save that to our cookbook',
+          recipe: {
+            title: 'Lemony Artichoke Soup',
+            ingredients: [
+              '1/4 cup butter',
+              '1 small white onion, diced',
+              '1 celery stalk, diced',
+              '3 garlic cloves, minced',
+              '6 cups chicken or vegetable stock',
+              '3 (14-ounce) jars artichoke hearts, drained',
+              '1/4 cup freshly-squeezed lemon juice',
+            ],
+            instructions: [
+              'Melt the butter and sauté the onion and celery.',
+              'Add the garlic and cook until fragrant.',
+              'Add the stock and artichokes and simmer.',
+              'Blend until smooth.',
+              'Stir in the lemon juice and serve.',
+            ],
+          },
+        },
+      },
       {
         req: { householdId: created.householdId },
         chatId,
@@ -894,7 +953,7 @@ test('executeCookbookSave does not let generic save prompt wording override the 
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('executeCookbookSave saves the last expanded recipe cleanly after a cookbook clarification follow-up', async () => {
+test('ONE BRAIN: executeCookbookSave stores the full brain-passed recipe (fields, notes, tags) verbatim', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-clarify-save-'));
   const dbPath = path.join(tempDir, 'cookbook-clarify-save.db');
 
@@ -960,11 +1019,43 @@ Use extra lime juice if it needs more brightness.\`
     );
 
     const outcome = await executor.executeCookbookSave(
-      { capability: 'cookbook.save', input: { request: 'street corn pasta', preferredTitle: 'street corn pasta' } },
+      {
+        capability: 'cookbook.save',
+        input: {
+          request: 'add the street corn pasta to our cookbook',
+          recipe: {
+            title: 'Mexican Street Corn Pasta',
+            summary:
+              'A creamy Mexican street corn pasta with chorizo, poblanos, cotija, and lime. Especially good for a fun weeknight dinner.',
+            ingredients: [
+              '1 lb pasta (rigatoni, penne, or shells work great)',
+              '8 oz Mexican chorizo, casings removed',
+              '2 poblano peppers',
+              '3 cups corn kernels (fresh or frozen)',
+              '4 cloves garlic, minced',
+              '1/2 cup Mexican crema',
+              '3/4 cup crumbled cotija cheese',
+              '2 limes (zest and juice)',
+              '1/4 cup fresh cilantro, chopped',
+            ],
+            instructions: [
+              'Roast the poblanos until blackened, then peel, seed, and dice.',
+              'Boil the pasta in salted water until al dente.',
+              'Brown the chorizo in a skillet and set aside.',
+              'Char the corn, then add garlic and smoked paprika.',
+              'Toss in the poblanos, chorizo, pasta, crema, cotija, and lime.',
+              'Finish with cilantro and adjust seasoning.',
+              'Serve with extra cotija and Tajin.',
+            ],
+            notes: ['Use extra lime juice if it needs more brightness.'],
+            tags: ['mexican', 'street', 'corn', 'pasta'],
+          },
+        },
+      },
       {
         req: { householdId: created.householdId },
         chatId,
-        prompt: 'street corn pasta',
+        prompt: 'add the street corn pasta to our cookbook',
         anthropic: null,
         memoryContext: { capabilities: { webSearchEnabled: false } },
         workingContext: {
