@@ -25,6 +25,9 @@ const HOUSEHOLD_KEY_PATTERN = /^[a-z0-9-]+$/;
 
 export const CHAT_COLOR_KEYS = new Set(['pink', 'blue', 'mint', 'lavender', 'peach']);
 export const DEFAULT_CHAT_COLOR = 'blue';
+// Per-user UI palette (mirrors chat_color). Keys must match the CSS [data-palette] blocks.
+export const PALETTE_KEYS = new Set(['cotton-candy', 'sweetwater', 'sous-chef']);
+export const DEFAULT_PALETTE = 'sweetwater';
 export const RESOLVED_DB_PATH = dbPath;
 
 function run(sql, params = []) {
@@ -72,6 +75,11 @@ function hashPin(pin) {
 export function normalizeChatColor(raw) {
   const k = String(raw ?? '').trim().toLowerCase();
   return CHAT_COLOR_KEYS.has(k) ? k : DEFAULT_CHAT_COLOR;
+}
+
+export function normalizePalette(raw) {
+  const k = String(raw ?? '').trim().toLowerCase();
+  return PALETTE_KEYS.has(k) ? k : DEFAULT_PALETTE;
 }
 
 export function normalizeHouseholdKey(key) {
@@ -175,6 +183,7 @@ async function initializeSchema() {
       role TEXT NOT NULL,
       pin_hash TEXT,
       chat_color TEXT NOT NULL DEFAULT 'blue',
+      palette TEXT NOT NULL DEFAULT 'sweetwater',
       session_version INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(household_id, display_name)
@@ -388,6 +397,14 @@ async function initializeSchema() {
     await run(`ALTER TABLE household_defaults ADD COLUMN assistant_tone TEXT NOT NULL DEFAULT '${DEFAULT_ASSISTANT_TONE}'`);
   }
 
+  // Per-user UI palette preference (mirrors chat_color; shipped after the initial schema,
+  // so existing populated DBs need this ALTER).
+  const householdUserColumns = await all(`PRAGMA table_info(household_users)`);
+  const householdUserColumnNames = new Set(householdUserColumns.map((row) => String(row?.name || '').trim()));
+  if (!householdUserColumnNames.has('palette')) {
+    await run(`ALTER TABLE household_users ADD COLUMN palette TEXT NOT NULL DEFAULT 'sweetwater'`);
+  }
+
   const cookbookColumns = await all(`PRAGMA table_info(cookbook_entries)`);
   const cookbookColumnNames = new Set(cookbookColumns.map((row) => String(row?.name || '').trim()));
   if (!cookbookColumnNames.has('category')) {
@@ -533,7 +550,7 @@ export async function setHouseholdWebSearchEnabled(householdId, enabled) {
 
 export async function listHouseholdUsers(householdId) {
   return await all(
-    `SELECT id, household_id, display_name, role, pin_hash, chat_color, session_version, created_at
+    `SELECT id, household_id, display_name, role, pin_hash, chat_color, palette, session_version, created_at
      FROM household_users
      WHERE household_id = ?
      ORDER BY created_at ASC, id ASC`,
@@ -612,7 +629,7 @@ function mapHouseholdRow(row) {
 
 export async function getUserByHouseholdAndDisplayName(householdId, displayName) {
   return await get(
-    `SELECT id, household_id, display_name, role, pin_hash, chat_color, session_version, created_at
+    `SELECT id, household_id, display_name, role, pin_hash, chat_color, palette, session_version, created_at
      FROM household_users
      WHERE household_id = ? AND lower(display_name) = lower(?)
      LIMIT 1`,
@@ -622,7 +639,7 @@ export async function getUserByHouseholdAndDisplayName(householdId, displayName)
 
 export async function getHouseholdUserById(householdId, userId) {
   return await get(
-    `SELECT id, household_id, display_name, role, pin_hash, chat_color, session_version, created_at
+    `SELECT id, household_id, display_name, role, pin_hash, chat_color, palette, session_version, created_at
      FROM household_users
      WHERE household_id = ? AND id = ?
      LIMIT 1`,
@@ -656,6 +673,15 @@ export async function updateHouseholdUserChatColor(householdId, userId, chatColo
   const result = await run(
     `UPDATE household_users SET chat_color = ? WHERE household_id = ? AND id = ?`,
     [normalizeChatColor(chatColor), householdId, userId]
+  );
+  if (!Number(result.changes)) throw new Error('User not found');
+  return true;
+}
+
+export async function updateHouseholdUserPalette(householdId, userId, palette) {
+  const result = await run(
+    `UPDATE household_users SET palette = ? WHERE household_id = ? AND id = ?`,
+    [normalizePalette(palette), householdId, userId]
   );
   if (!Number(result.changes)) throw new Error('User not found');
   return true;
@@ -820,6 +846,19 @@ export async function updateGroceryItem(householdId, id, { checked }) {
 export async function updateGroceryItemAmount(householdId, id, amount) {
   const result = await run(
     `UPDATE grocery_items SET amount = ? WHERE household_id = ? AND id = ? AND checked = 0`,
+    [String(amount ?? '').trim(), householdId, id]
+  );
+  return Number(result.changes) || 0;
+}
+
+// Like updateGroceryItemAmount but WITHOUT the `checked = 0` guard. The guard on
+// updateGroceryItemAmount protects the fuzzy AI-merge path from clobbering the
+// amount of already-bought items during a bulk add. This variant is for an
+// EXPLICIT, user-directed update (grocery.update_item) where the user is
+// intentionally targeting one item, so a bought item's amount may be changed too.
+export async function setGroceryItemAmount(householdId, id, amount) {
+  const result = await run(
+    `UPDATE grocery_items SET amount = ? WHERE household_id = ? AND id = ?`,
     [String(amount ?? '').trim(), householdId, id]
   );
   return Number(result.changes) || 0;

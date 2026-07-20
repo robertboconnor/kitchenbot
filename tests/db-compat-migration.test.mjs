@@ -4,6 +4,7 @@ import sqlite3 from 'sqlite3';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { ANTHROPIC_MAIN_REASONING_MODEL } from '../anthropic-model-policy.mjs';
 
 function openDb(filename) {
   return new Promise((resolve, reject) => {
@@ -164,7 +165,7 @@ test('runMigrations patches old Render-era runtime and usage columns compatibly'
      LIMIT 1`
   );
   assert.equal(migratedLegacyUsageRow.chat_id, null);
-  assert.equal(migratedLegacyUsageRow.model, 'claude-sonnet-4-5');
+  assert.equal(migratedLegacyUsageRow.model, ANTHROPIC_MAIN_REASONING_MODEL);
 
   const defaultsColumns = await all(checkDb, `PRAGMA table_info(household_defaults)`);
   const defaultsNames = new Set(defaultsColumns.map((row) => row.name));
@@ -174,6 +175,10 @@ test('runMigrations patches old Render-era runtime and usage columns compatibly'
   const groceryColumns = await all(checkDb, `PRAGMA table_info(grocery_items)`);
   const groceryNames = new Set(groceryColumns.map((row) => row.name));
   assert.equal(groceryNames.has('probably_pantry_item'), true);
+
+  const userColumns = await all(checkDb, `PRAGMA table_info(household_users)`);
+  const userNames = new Set(userColumns.map((row) => row.name));
+  assert.equal(userNames.has('palette'), true);
 
   await close(checkDb);
   await fs.rm(tempDir, { recursive: true, force: true });

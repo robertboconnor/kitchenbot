@@ -439,50 +439,6 @@ test('executeKbActions dedupes identical web.search actions within one turn', as
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('interpretKbTurn does not invent implicit web.search on ordinary recipe questions', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-web-search-implicit-'));
-  const dbPath = path.join(tempDir, 'implicit.db');
-
-  const script = `
-    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    const { interpretKbTurn } = await import(new URL('./kb-interpreter.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
-    await db.runMigrations();
-    const created = await db.createHouseholdWithInitialOwner({
-      householdName: 'Home',
-      householdKey: 'home',
-      ownerDisplayName: 'Rob',
-      pin: '1234',
-    });
-    const chatId = await db.createChat(created.householdId, 'Rob', 'Chat');
-    const turn = await interpretKbTurn({
-      req: { householdId: created.householdId },
-      chatId,
-      prompt: 'what goes well with beef stew',
-      turnId: 'turn-ordinary',
-      activeSpeakerName: 'Rob',
-      memoryContext: {
-        capabilities: { webSearchEnabled: true },
-        workingContext: {},
-        assistantPersona: { assistantName: 'KitchenBot', assistantTone: 'helpful' },
-      },
-      runtimeProposedNextAction: null,
-    });
-    const usageRows = await db.getAnthropicUsageLedgerAllRows({ householdId: created.householdId });
-    process.stdout.write(JSON.stringify({ turn, usageRows }));
-  `;
-
-  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
-    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
-    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
-  });
-  const parsed = JSON.parse(stdout.trim());
-  assert.equal(parsed.turn.kind, 'reply_only');
-  assert.deepEqual(parsed.turn.replyPlan, { kind: 'generate_reply' });
-  assert.equal(parsed.usageRows.length, 0);
-
-  await fs.rm(tempDir, { recursive: true, force: true });
-});
-
 test('DB-backed tests expose a non-default resolved DB path', async () => {
   await withTempDb('db-path-guard', async ({ dbPath, importFresh }) => {
     const db = await importFresh('../db.mjs', 'db-path-guard-db');

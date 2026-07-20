@@ -1,4 +1,4 @@
-export const ANTHROPIC_MAIN_REASONING_MODEL = 'claude-sonnet-4-5';
+export const ANTHROPIC_MAIN_REASONING_MODEL = 'claude-sonnet-5';
 export const ANTHROPIC_LIGHTWEIGHT_BACKGROUND_MODEL = 'claude-haiku-4-5-20251001';
 
 const LIGHTWEIGHT_CALL_PURPOSES = new Set([

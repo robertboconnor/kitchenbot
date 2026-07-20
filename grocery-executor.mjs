@@ -804,6 +804,8 @@ export async function writeGroceryListFromConversation(runtimeAction, context) {
         capability: 'grocery.write',
         status: 'already_present',
         changed: false,
+        addedItems: [],
+        alreadyOnList: matched.map((item) => safeTrim(item?.name)).filter(Boolean),
         checkedLiveGroceryList: true,
         mode: effectiveGroceryMode,
         parsedItemCount: initialNormalizedItems.length,
@@ -878,10 +880,29 @@ export async function writeGroceryListFromConversation(runtimeAction, context) {
   const totalDbContentChanges = replaceClearedCount + mergeStats.changedCount;
   const groceryListWasUpdated = totalDbContentChanges > 0;
 
+  // Truthfulness: report which requested items were actually NEW vs already on
+  // the list, so the brain never claims it "added" a duplicate.
+  const beforeKeySet = new Set(
+    (Array.isArray(existingGroceryItems) ? existingGroceryItems : [])
+      .map((i) => deps.normalizeInventoryNameKey?.(i?.name))
+      .filter(Boolean)
+  );
+  const addedItems = [];
+  const alreadyOnList = [];
+  for (const item of finalNormalizedItems) {
+    const nm = safeTrim(item?.name);
+    if (!nm) continue;
+    const key = deps.normalizeInventoryNameKey?.(nm);
+    if (effectiveGroceryMode !== 'replace' && key && beforeKeySet.has(key)) alreadyOnList.push(nm);
+    else addedItems.push(nm);
+  }
+
   const outcome = {
     capability: 'grocery.write',
     status: 'committed',
     changed: groceryListWasUpdated,
+    addedItems,
+    alreadyOnList,
     usedPantryContext,
     pantryClarificationNeeded,
     pantryContextStatus,

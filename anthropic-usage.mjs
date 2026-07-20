@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { insertAnthropicUsageLedgerRow } from './db.mjs';
 
 const MODEL_PRICING_USD_PER_MILLION = {
+  'claude-sonnet-5': { input: 3, output: 15, cacheCreation: 3.75, cacheRead: 0.3 },
   'claude-sonnet-4-5': { input: 3, output: 15, cacheCreation: 3.75, cacheRead: 0.3 },
   'claude-3-7-sonnet-latest': { input: 3, output: 15, cacheCreation: 3.75, cacheRead: 0.3 },
   'claude-3-5-sonnet-latest': { input: 3, output: 15, cacheCreation: 3.75, cacheRead: 0.3 },
@@ -14,6 +15,7 @@ function normalizeAnthropicModelForPricing(rawModel) {
   if (!model) return '';
   if (MODEL_PRICING_USD_PER_MILLION[model]) return model;
 
+  if (/^claude-sonnet-5-\d{8}$/.test(model)) return 'claude-sonnet-5';
   if (/^claude-sonnet-4-5-\d{8}$/.test(model)) return 'claude-sonnet-4-5';
   if (/^claude-3-7-sonnet-\d{8}$/.test(model)) return 'claude-3-7-sonnet-latest';
   if (/^claude-3-5-sonnet-\d{8}$/.test(model)) return 'claude-3-5-sonnet-latest';
