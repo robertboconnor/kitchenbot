@@ -21,10 +21,10 @@ export const WHIMSY_BY_CAPABILITY = {
   'grocery.move_to_pantry': 'Stashing that in the pantry…',
   'pantry.add': 'Stocking the pantry…',
   'pantry.remove': 'Clearing that out of the pantry…',
+  'pantry.recategorize': 'Refiling that in the pantry…',
+  'inventory.sections': 'Checking the category list…',
   'pantry.move_to_grocery': 'Adding that to the shopping run…',
   'memory.save': 'Committing that to memory…',
-  'meal.refine': 'Plotting something delicious…',
-  'recipe.revise': 'Reworking the recipe…',
   'cookbook.save': 'Tucking that into the cookbook…',
   'cookbook.update': 'Updating the cookbook…',
   'cookbook.delete': 'Tearing that page out of the cookbook…',
@@ -32,6 +32,11 @@ export const WHIMSY_BY_CAPABILITY = {
   'household.defaults.get': 'Checking your house rules…',
   'household.defaults.update': 'Updating your house rules…',
   'chat.rename': 'Renaming this chat…',
+  'plan.list': "Checking this week's plan…",
+  'plan.add': 'Pinning that to this week…',
+  'plan.update': "Updating this week's plan…",
+  'plan.remove': 'Taking that off this week…',
+  'thread.search': 'Looking back through this chat…',
 };
 
 // Non-tool beats.

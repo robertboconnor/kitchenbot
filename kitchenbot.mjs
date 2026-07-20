@@ -21,6 +21,9 @@ import {
   deleteGroceryItem,
   deletePantryItem,
   clearGroceryItems,
+  getMealPlanItems,
+  updateMealPlanItem,
+  deleteMealPlanItem,
   listAllHouseholdsSummary,
   updateHouseholdUserChatColor,
   updateHouseholdUserPalette,
@@ -4606,6 +4609,7 @@ app.get('/', (req, res) => {
             Exit God Mode
           </button>
         </div>
+        <div id="thisweek-strip" class="thisweek-strip" style="display:none;"></div>
         <div id="chat" class="panel panel-active"></div>
 
         <div id="typing-indicator" aria-live="polite"></div>
@@ -4626,6 +4630,7 @@ app.get('/', (req, res) => {
                 <button id="grocery-subtab-cookbook" type="button" class="settings-subtab-btn kitchen-section-btn settings-subtab-active">Cookbook</button>
                 <button id="grocery-subtab-list" type="button" class="settings-subtab-btn kitchen-section-btn">Groceries</button>
                 <button id="grocery-subtab-pantry" type="button" class="settings-subtab-btn kitchen-section-btn kitchen-section-btn--secondary">Pantry</button>
+                <button id="grocery-subtab-thisweek" type="button" class="settings-subtab-btn kitchen-section-btn kitchen-section-btn--secondary">This Week</button>
               </div>
               <details class="kitchen-workspace-mobile-about">
                 <summary class="kitchen-mobile-about-summary">About Kitchen</summary>
@@ -4837,6 +4842,17 @@ app.get('/', (req, res) => {
                 <ul class="g-list" id="p-list-other_pantry"></ul>
               </div>
             </div>
+          </div>
+          <div id="grocery-subview-thisweek" class="grocery-subview kitchen-section-panel" style="display:none;">
+            <div class="kitchen-section-header">
+              <div class="kitchen-section-kicker">This Week</div>
+              <div class="kitchen-section-title-row">
+                <h3 class="kitchen-section-title">The plan for this chat</h3>
+              </div>
+              <p class="kitchen-section-copy">The meals you’re planning in the current chat. KitchenBot keeps this in sync as you plan — so it remembers the week even in a very long thread — and you can tick meals off or drop them here.</p>
+            </div>
+            <ul class="g-list" id="thisweek-list"></ul>
+            <p id="thisweek-empty" class="kitchen-section-copy" style="display:none;">No meals planned in this chat yet. Ask KitchenBot to plan the week and they’ll show up here.</p>
           </div>
           </div>
         </div>
@@ -6284,6 +6300,9 @@ registerKitchenInventoryRoutes(app, {
     deletePantryItem,
     clearGroceryItems,
     findPantryItemById,
+    getMealPlanItems,
+    updateMealPlanItem,
+    deleteMealPlanItem,
   },
   inventory: createBoundInventoryServices(),
 });

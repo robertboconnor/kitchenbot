@@ -13,10 +13,8 @@ import {
   extractCookbookRecordFromFetchedPage,
   extractManualCookbookRecipePayload,
   extractFirstUrl,
-  findLatestExplicitRecipeCandidate,
   extractPreferredCookbookLabel,
   findCookbookMatches,
-  inferCookbookRecord,
   looksLikeRecipeText,
   mergeCookbookRecord,
   parseCookbookRecipeText,
@@ -44,15 +42,6 @@ function extractExplicitCookbookUpdateName(request = '') {
     if (match?.[1]) return safeTrim(match[1]).replace(/^["']|["']$/g, '');
   }
   return '';
-}
-
-function findLatestAssistantRecipeText(messages = []) {
-  const recentRecipe = findLatestExplicitRecipeCandidate(messages);
-  if (recentRecipe?.role === 'assistant') return safeTrim(recentRecipe.recipeText);
-  const assistantMessages = [...(Array.isArray(messages) ? messages : [])]
-    .filter((message) => message.role === 'assistant')
-    .reverse();
-  return safeTrim(assistantMessages[0]?.content || '');
 }
 
 function buildCookbookListReply(entries = []) {
@@ -334,6 +323,34 @@ function requestExplicitlyNamesCookbookTitle(request = '') {
   );
 }
 
+// ONE BRAIN (KITCHENBOT_BRAIN_CONTRACT.md — "Smart Brain, Dumb Executors"): turn the recipe the
+// brain passed on the tool call into a storage candidate. The brain owns the recipe content (it
+// just wrote it or the user gave it); this is a mechanical shape of a provided object, not a
+// transcript re-read. Requires a real recipe — title + ingredients + steps — or it returns null
+// so the save path asks the brain to provide one.
+function buildCandidateFromBrainRecipe(recipe, { preferredTitle = '', sourceUrl = '', sourceTitle = '' } = {}) {
+  if (!recipe || typeof recipe !== 'object' || Array.isArray(recipe)) return null;
+  const toList = (value) => (Array.isArray(value) ? value.map((entry) => safeTrim(entry)).filter(Boolean) : []);
+  const ingredients = toList(recipe.ingredients);
+  const instructions = toList(recipe.instructions).length ? toList(recipe.instructions) : toList(recipe.steps);
+  const title = safeTrim(preferredTitle) || safeTrim(recipe.title || recipe.name);
+  if (!title || ingredients.length === 0 || instructions.length === 0) return null;
+  return {
+    title,
+    // A non-empty summary is required to build the storage record; the cookbook_shape helper
+    // then replaces it with a clean one. Fall back to the title if the brain sent no summary.
+    summary: safeTrim(recipe.summary) || `${title}.`,
+    ingredients,
+    instructions,
+    tags: toList(recipe.tags),
+    notes: toList(recipe.notes),
+    recipeType: safeTrim(recipe.recipeType) || 'saved_recipe',
+    sourceTitle: safeTrim(recipe.sourceTitle || sourceTitle),
+    sourceUrl: safeTrim(recipe.sourceUrl || sourceUrl),
+    sourceKind: safeTrim(recipe.sourceKind) || 'kb_generated',
+  };
+}
+
 export async function executeCookbookSave(runtimeAction, context) {
   const { req, chatId, prompt, anthropic, memoryContext = null, workingContext = null } = context;
   const requestedSave = safeTrim(runtimeAction?.input?.request || prompt);
@@ -358,16 +375,21 @@ export async function executeCookbookSave(runtimeAction, context) {
     !!memoryContext?.capabilities?.webSearchEnabled ||
     !!context?.webSearchEnabled ||
     !!req?.kbCapabilities?.webSearchEnabled;
-  const conversation = await getMessages(chatId, req.householdId);
-  const recentConversation = conversation.slice(-14);
-  const recentRecipeCandidate = findLatestExplicitRecipeCandidate(recentConversation);
-  const latestAssistantText = findLatestAssistantRecipeText(recentConversation);
-
   let inferred = null;
   let fetchPerformed = false;
   let sourceKind = 'kb_action';
 
-  if (explicitTargetRecipe?.recipeRecord && typeof explicitTargetRecipe.recipeRecord === 'object' && !Array.isArray(explicitTargetRecipe.recipeRecord)) {
+  // ONE BRAIN: the recipe the brain passed on the tool call is the primary path. No transcript
+  // scan, no side-model reconstructing the recipe from chat.
+  const brainRecipeCandidate = buildCandidateFromBrainRecipe(runtimeAction?.input?.recipe, {
+    preferredTitle: explicitRequestedTitle || preferredTitle,
+    sourceUrl: linkedUrl,
+    sourceTitle: recovery.sourceTitle,
+  });
+  if (brainRecipeCandidate) {
+    inferred = brainRecipeCandidate;
+    sourceKind = safeTrim(brainRecipeCandidate.sourceKind) || 'kb_generated';
+  } else if (explicitTargetRecipe?.recipeRecord && typeof explicitTargetRecipe.recipeRecord === 'object' && !Array.isArray(explicitTargetRecipe.recipeRecord)) {
     inferred = {
       ...explicitTargetRecipe.recipeRecord,
       title: safeTrim(explicitRequestedTitle) || safeTrim(explicitTargetRecipe.recipeRecord.title || explicitTargetRecipe.title || explicitTargetRecipe.label),
@@ -557,23 +579,10 @@ export async function executeCookbookSave(runtimeAction, context) {
       sourceKind = 'server_fetch';
     }
   } else {
-    if (manualPayload.requestedCookbookTitle && !safeTrim(manualPayload.recipeBodyText)) {
-      if (!recentRecipeCandidate?.recipeRecord) {
-        return {
-          capability: 'cookbook.save',
-          urlBacked: false,
-          sourceUrl: '',
-          sourceTitle: '',
-          fetchPerformed: false,
-          fetchedExactUrl: false,
-          extractionSucceeded: false,
-          sourceKind: 'manual',
-          failureReason: 'The save request did not include enough recipe text to parse ingredients and instructions.',
-          workingContext,
-          ...buildManualCookbookClarify({ preferredTitle }),
-        };
-      }
-    }
+    // ONE BRAIN: no explicit recipe, no paste-mode, no URL. Try to parse a recipe the user typed
+    // inline (a mechanical parse of provided text). If there is not one, we do NOT scan the
+    // transcript or synthesize a recipe from vague chat — the brain has the recipe (it just wrote
+    // it or the user gave it) and must pass it in `recipe`.
     const parsedManualRecipe = parseCookbookRecipeText(manualPayload.recipeBodyText || requestedSave, {
       preferredTitle,
       sourceUrl: linkedUrl,
@@ -582,26 +591,24 @@ export async function executeCookbookSave(runtimeAction, context) {
     if (parsedManualRecipe) {
       inferred = parsedManualRecipe;
       sourceKind = 'manual';
-    } else if (recentRecipeCandidate?.recipeRecord) {
-      inferred = {
-        ...recentRecipeCandidate.recipeRecord,
-        title: safeTrim(explicitRequestedTitle) || safeTrim(recentRecipeCandidate.recipeRecord.title || recentRecipeCandidate.title),
-        sourceTitle: safeTrim(recentRecipeCandidate.recipeRecord.sourceTitle || recovery.sourceTitle),
-        sourceUrl: safeTrim(recentRecipeCandidate.recipeRecord.sourceUrl || linkedUrl),
-        sourceKind: safeTrim(recentRecipeCandidate.sourceKind || recentRecipeCandidate.recipeRecord.sourceKind || 'manual') || 'manual',
-      };
-      sourceKind = safeTrim(inferred.sourceKind || 'manual') || 'manual';
     } else {
-      inferred = await inferCookbookRecord({
-        anthropic,
-        householdId: req.householdId,
-        chatId,
-        prompt: manualPayload.recipeBodyText || requestedSave,
+      return {
+        capability: 'cookbook.save',
+        status: 'invalid',
+        urlBacked: false,
+        sourceUrl: '',
+        sourceTitle: '',
+        fetchPerformed: false,
+        extractionSucceeded: false,
+        sourceKind: 'manual',
+        error:
+          'To save a recipe to the cookbook I need its ingredients and steps. Share the recipe (or a link) and I can save it.',
+        note:
+          'No recipe was provided. Pass the recipe you want saved as input.recipe {title, ingredients[], instructions[]} — ' +
+          'the recipe you just wrote or the user gave you. Do not reconstruct it from the chat.',
         workingContext,
-        memoryContext,
-        recentConversation,
-        latestAssistantText,
-      });
+        ...buildManualCookbookClarify({ preferredTitle }),
+      };
     }
   }
   const record = await shapeCookbookRecordForStorage({
@@ -610,14 +617,12 @@ export async function executeCookbookSave(runtimeAction, context) {
     chatId,
     prompt: requestedSave,
     candidateRecord: inferred,
-    recentConversation,
-    latestAssistantText,
     memoryContext,
     sourceKind: sourceKind || inferred?.sourceKind || 'kb_action',
     preserveTitle: !!preferredTitle,
   });
   if (!record) {
-    if (recentRecipeCandidate?.recipeRecord == null && !linkedUrl) {
+    if (!linkedUrl) {
       return {
         capability: 'cookbook.save',
         status: 'invalid',
@@ -837,24 +842,33 @@ export async function executeCookbookUpdate(runtimeAction, context) {
   } else if (requestedName) {
     const entries = await listCookbookEntries(req.householdId);
     const matches = findCookbookMatches(entries, requestedName);
-    if (matches.length === 0) {
+    if (matches.length === 1) {
+      existing = matches[0];
+    } else if (matches.length > 1) {
+      return {
+        capability: 'cookbook.update',
+        requestedName,
+        ...buildCookbookUpdateClarify(matches, requestedName),
+      };
+    } else if (entries.length === 1) {
+      // The name (often a referential phrase like "that saved recipe") didn't match, but
+      // there is exactly one saved recipe — that is unambiguously the target.
+      existing = entries[0];
+    } else {
       return {
         capability: 'cookbook.update',
         status: 'missing',
         requestedName,
       };
     }
-    if (matches.length > 1) {
-      return {
-        capability: 'cookbook.update',
-        requestedName,
-        ...buildCookbookUpdateClarify(matches, requestedName),
-      };
-    }
-    existing = matches[0];
   } else {
     const selected = Array.isArray(memoryContext?.selectedCookbookEntries) ? memoryContext.selectedCookbookEntries.filter(Boolean) : [];
-    if (selected.length === 1) existing = selected[0];
+    if (selected.length === 1) {
+      existing = selected[0];
+    } else {
+      const entries = await listCookbookEntries(req.householdId);
+      if (entries.length === 1) existing = entries[0];
+    }
   }
 
   if (!existing) {
@@ -866,6 +880,18 @@ export async function executeCookbookUpdate(runtimeAction, context) {
   }
 
   let replacementRecord = normalizeUpdatedCookbookInputRecord(input.revisedRecord, existing);
+
+  // ONE BRAIN: the normal path — the brain rewrote the recipe and passes the FULL revised
+  // version in `recipe`. Build the replacement from it directly; no side-model re-derives the
+  // edit. (The reviseStructuredRecipe fallback below only handles a bare `request`.)
+  if (!replacementRecord && input.recipe) {
+    const brainRecipe = buildCandidateFromBrainRecipe(input.recipe, {
+      preferredTitle: existing.title,
+      sourceUrl: existing.sourceUrl,
+      sourceTitle: existing.sourceTitle,
+    });
+    if (brainRecipe) replacementRecord = normalizeUpdatedCookbookInputRecord(brainRecipe, existing);
+  }
 
   if (!replacementRecord && input.targetRecipe && typeof input.targetRecipe === 'object' && !Array.isArray(input.targetRecipe)) {
     const explicitTargetRecipe = input.targetRecipe;
@@ -957,6 +983,11 @@ export function normalizeCookbookSaveInput(input, context = {}) {
     sourceUrl: safeTrim(raw.sourceUrl),
     sourceTitle: safeTrim(raw.sourceTitle),
     recoveryMode: safeTrim(raw.recoveryMode),
+    // ONE BRAIN: the brain passes the recipe it wants saved (it wrote or received it). We keep
+    // that structured payload verbatim; the executor never re-reads the chat to reconstruct it.
+    ...(raw.recipe && typeof raw.recipe === 'object' && !Array.isArray(raw.recipe)
+      ? { recipe: raw.recipe }
+      : {}),
     ...(raw.targetRecipe && typeof raw.targetRecipe === 'object' && !Array.isArray(raw.targetRecipe)
       ? { targetRecipe: raw.targetRecipe }
       : {}),
@@ -969,13 +1000,17 @@ export function normalizeCookbookUpdateInput(input, context = {}) {
     raw.revisedRecord && typeof raw.revisedRecord === 'object' && !Array.isArray(raw.revisedRecord)
       ? raw.revisedRecord
       : null;
+  const recipe = raw.recipe && typeof raw.recipe === 'object' && !Array.isArray(raw.recipe) ? raw.recipe : null;
   const request = safeTrim(raw.request || raw.payload || raw.text || context.originalPrompt);
-  const explicitName = safeTrim(raw.name || raw.title || raw.recipe) || extractExplicitCookbookUpdateName(request);
+  const explicitName =
+    safeTrim(raw.name || raw.title || (typeof raw.recipe === 'string' ? raw.recipe : '')) ||
+    extractExplicitCookbookUpdateName(request);
   const normalized = {
     ...(Number.isFinite(Number(raw.id)) ? { id: Number(raw.id) } : {}),
     ...(explicitName ? { name: explicitName } : {}),
     ...(request ? { request } : {}),
     ...(revisedRecord ? { revisedRecord } : {}),
+    ...(recipe ? { recipe } : {}),
     ...(raw.targetRecipe && typeof raw.targetRecipe === 'object' && !Array.isArray(raw.targetRecipe)
       ? { targetRecipe: raw.targetRecipe }
       : {}),

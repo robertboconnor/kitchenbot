@@ -9,10 +9,7 @@ import {
 import { generateChatTitle } from './chat-title.mjs';
 import { getKbAssistantPersona } from './kb-prompt-context.mjs';
 import {
-  formatAppliedWorkingContextText,
-  formatWorkingContextText,
   normalizeWorkingContext,
-  refreshKbWorkingContext,
   selectContinuationWorkingContext,
 } from './kb-working-context.mjs';
 
@@ -297,16 +294,11 @@ export async function respondWithKbReply({
   }
 
   await addMessage(chatId, req.householdId, 'assistant', assistantName, finalReply);
-  const refreshedWorkingContext = await maybeRefreshWorkingContext({
-    anthropic,
-    req,
-    chatId,
-    routePrompt,
-    memoryContext,
-    workingContext,
-    outcomes,
-    deps,
-  }).catch(() => normalizeWorkingContext(workingContext) || normalizeWorkingContext(memoryContext?.workingContext));
+  // ONE BRAIN: no post-reply working-context sub-model. The loop reads the full conversation
+  // each turn and never consumes a maintained working context, so we carry through whatever was
+  // passed rather than paying a haiku call to rebuild it.
+  const refreshedWorkingContext =
+    normalizeWorkingContext(workingContext) || normalizeWorkingContext(memoryContext?.workingContext);
   await persistKbRuntimeState({
     chatId,
     householdId: req.householdId,
@@ -332,35 +324,6 @@ export async function respondWithKbReply({
   return;
 }
 
-async function maybeRefreshWorkingContext({
-  anthropic,
-  req,
-  chatId,
-  routePrompt,
-  memoryContext,
-  workingContext,
-  outcomes = [],
-  deps,
-}) {
-  const resolvedWorkingContext =
-    normalizeWorkingContext(workingContext) ||
-    normalizeWorkingContext(memoryContext?.workingContext);
-  return await refreshKbWorkingContext({
-    anthropic,
-    req,
-    chatId,
-    routePrompt,
-    currentWorkingContext: resolvedWorkingContext,
-    memoryContext: {
-      ...memoryContext,
-      workingContext: resolvedWorkingContext,
-      workingContextText: formatWorkingContextText(resolvedWorkingContext),
-      appliedWorkingContextText: formatAppliedWorkingContextText(resolvedWorkingContext),
-    },
-    outcomes,
-    deps,
-  });
-}
 
 async function persistKbRuntimeState({ chatId, householdId, proposedNextAction, workingContext }) {
   const normalizedWorkingContext = normalizeWorkingContext(workingContext);

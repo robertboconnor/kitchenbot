@@ -83,73 +83,33 @@ test('respondWithKbReply does not persist meal-only working context when there i
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('executeMemorySave reconciles updated person preferences instead of keeping contradictory old notes', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-memory-reconcile-'));
-  const dbPath = path.join(tempDir, 'memory-reconcile.db');
+test('ONE BRAIN: executeMemorySave appends a person note deterministically, no side-model, brain sets scope', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-memory-append-'));
+  const dbPath = path.join(tempDir, 'memory-append.db');
 
   const script = `
     const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
     const { executeMemorySave } = await import(new URL('./memory-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
     await db.runMigrations();
-    const created = await db.createHouseholdWithInitialOwner({
-      householdName: 'Home',
-      householdKey: 'home',
-      ownerDisplayName: 'Rob',
-      pin: '1234',
-    });
-    const chatId = await db.createChat(created.householdId, 'Rob', 'Memory reconcile');
+    const created = await db.createHouseholdWithInitialOwner({ householdName: 'Home', householdKey: 'home', ownerDisplayName: 'Rob', pin: '1234' });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Memory append');
     await db.saveKbMemory(created.householdId, {
-      memoryType: 'person',
-      label: 'Elle',
-      normalizedLabel: 'elle',
+      memoryType: 'person', label: 'Elle', normalizedLabel: 'elle',
       summary: "hates cilantro; doesn't like eggs",
-      attributes: {
-        originalKey: 'elle_preferences',
-        notes: [
-          { text: 'hates cilantro' },
-          { text: "doesn't like eggs" },
-        ],
-      },
+      attributes: { originalKey: 'elle_preferences', notes: [ { text: 'hates cilantro' }, { text: "doesn't like eggs" } ] },
     }, { sourceKind: 'manual' });
 
-    const anthropic = {
-      messages: {
-        create: async () => ({
-          model: 'claude-sonnet-4-5',
-          usage: { input_tokens: 10, output_tokens: 20 },
-          content: [{ type: 'text', text: JSON.stringify({
-            label: 'Elle',
-            notes: [
-              { text: 'hates cilantro' },
-              { text: "doesn't like eggs as a standalone or star ingredient; okay in supporting roles like carbonara" },
-            ],
-          }) }],
-        }),
-      },
-    };
+    const anthropic = { messages: { create: async () => { anthropic.callCount = (anthropic.callCount||0)+1; return { content: [] }; } } };
 
+    // The brain passes scope + person explicitly (the {value, person} shape that used to silently drop).
     const outcome = await executeMemorySave(
-      { capability: 'memory.save', input: {
-        key: 'elle_preferences',
-        value: "doesn't like eggs as a standalone or star ingredient; okay in supporting roles like carbonara",
-      } },
-      {
-        req: { householdId: created.householdId },
-        name: 'Rob',
-        chatId,
-        prompt: 'save that nuance for Elle',
-        memories: await db.listKbMemories(created.householdId),
-        anthropic,
-        skipIncrement: true,
-        userMessageAlreadyPersisted: true,
-        runtimeManagedResponse: true,
-        kbModeEnabled: true,
-        deps: {},
-      }
+      { capability: 'memory.save', input: { scope: 'person', person: 'Elle', value: 'okay with eggs in carbonara' } },
+      { req: { householdId: created.householdId }, name: 'Rob', chatId, prompt: 'note that for Elle',
+        anthropic, skipIncrement: true, userMessageAlreadyPersisted: true, runtimeManagedResponse: true, kbModeEnabled: true, deps: {} }
     );
 
     const rows = await db.listKbMemories(created.householdId);
-    process.stdout.write(JSON.stringify({ outcome, rows }));
+    process.stdout.write(JSON.stringify({ outcome, rows, callCount: anthropic.callCount||0 }));
   `;
 
   const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
@@ -160,12 +120,41 @@ test('executeMemorySave reconciles updated person preferences instead of keeping
   const parsed = JSON.parse(stdout.trim());
   const elle = parsed.rows.find((row) => row.label === 'Elle');
   assert.equal(parsed.outcome.status, 'updated');
-  assert.match(elle.summary, /supporting roles like carbonara/);
-  assert.doesNotMatch(elle.summary, /doesn't like eggs; /);
-  assert.deepEqual(
-    (elle.attributes?.notes || []).map((note) => note.text),
-    ['hates cilantro', "doesn't like eggs as a standalone or star ingredient; okay in supporting roles like carbonara"]
-  );
+  assert.equal(parsed.outcome.memoryType, 'person');
+  // Deterministic append: the new note is added, and prior notes are KEPT (truthful, no reconciliation).
+  assert.match(elle.summary, /carbonara/);
+  assert.match(elle.summary, /hates cilantro/);
+  assert.equal((elle.attributes?.notes || []).length, 3);
+  assert.equal(parsed.callCount, 0, 'saving a memory must not consult a side-model');
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('ONE BRAIN: executeMemorySave saves {value, person} without a key (the old silent-drop bug)', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-memory-noKey-'));
+  const dbPath = path.join(tempDir, 'memory-noKey.db');
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const { executeMemorySave } = await import(new URL('./memory-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const skills = await import(new URL('./kb-skills.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({ householdName: 'Home', householdKey: 'home', ownerDisplayName: 'Rob', pin: '1234' });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Memory noKey');
+    // Route through the real normalizer, as the loop does — {value, person}, NO key.
+    const action = skills.normalizeKbSkillAction({ capability: 'memory.save', input: { value: 'has the cilantro-soap gene', person: 'Elle' } }, {});
+    const outcome = await executeMemorySave(action, { req: { householdId: created.householdId }, name: 'Rob', chatId, prompt: 'remember', skipIncrement: true, userMessageAlreadyPersisted: true, runtimeManagedResponse: true, kbModeEnabled: true, deps: {} });
+    const rows = await db.listKbMemories(created.householdId);
+    process.stdout.write(JSON.stringify({ actionInput: action && action.input, status: outcome.status, rows }));
+  `;
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.status, 'saved');
+  const elle = parsed.rows.find((row) => row.label === 'Elle');
+  assert.ok(elle, 'Elle person memory was created from {value, person} with no key');
+  assert.match(elle.summary, /cilantro-soap/);
 
   await fs.rm(tempDir, { recursive: true, force: true });
 });

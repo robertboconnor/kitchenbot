@@ -1,6 +1,4 @@
 import { getMessages } from './db.mjs';
-import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
-import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -163,36 +161,6 @@ export function selectContinuationWorkingContext(workingContext, proposedNextAct
   });
 }
 
-function parseJsonObject(raw) {
-  let text = safeTrim(raw);
-  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)```$/im);
-  if (fenced) text = safeTrim(fenced[1]);
-  try {
-    return JSON.parse(text);
-  } catch {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    try {
-      return JSON.parse(match[0]);
-    } catch {
-      return null;
-    }
-  }
-}
-
-function formatRecentConversation(messages, deps) {
-  return (Array.isArray(messages) ? messages : [])
-    .filter((message) => message.role === 'user' || message.role === 'assistant')
-    .slice(-10)
-    .map((message) =>
-      message.role === 'user'
-        ? `${message.name}: ${safeTrim(message.content)}`
-        : `KitchenBot: ${safeTrim(deps.stripStoredMessageContentForDisplay?.(message.content) ?? message.content)}`
-    )
-    .filter(Boolean)
-    .join('\n\n');
-}
-
 export function formatWorkingContextText(workingContext) {
   const context = normalizeWorkingContext(workingContext);
   if (!context) return '(none)';
@@ -291,106 +259,3 @@ export function isMealGroceryRelevantTurn({ prompt = '', outcomes = [], workingC
   return false;
 }
 
-export async function refreshKbWorkingContext({
-  anthropic,
-  req,
-  chatId,
-  routePrompt,
-  currentWorkingContext = null,
-  memoryContext = null,
-  outcomes = [],
-  deps = {},
-}) {
-  const existingContext = normalizeWorkingContext(currentWorkingContext);
-  const shouldRefresh = isMealGroceryRelevantTurn({
-    prompt: routePrompt,
-    outcomes,
-    workingContext: existingContext,
-  });
-  if (!shouldRefresh) return existingContext;
-  if (!anthropic) return existingContext;
-
-  const conversation = await getMessages(chatId, req.householdId);
-  const recentConversation = formatRecentConversation(conversation, deps) || '(none)';
-  const outcomeSummary = (Array.isArray(outcomes) ? outcomes : [])
-    .map((outcome) => {
-      const capability = safeTrim(outcome?.capability || outcome?.narrationType);
-      const status = safeTrim(outcome?.status);
-      if (!capability) return '';
-      return `${capability}${status ? ` (${status})` : ''}`;
-    })
-    .filter(Boolean)
-    .join(', ');
-
-  try {
-    const response = await createLoggedAnthropicMessage(
-      anthropic,
-      {
-        model: resolveAnthropicModelForCallPurpose('kb_working_context'),
-        max_tokens: 300,
-        system: `You maintain a tiny, background working context for one KitchenBot chat.
-
-Goal:
-- Track only short-term culinary continuity for this specific chat.
-- Preserve enough context for follow-ups like "show me the grocery list for this", "make one of those vegetarian", "search that", or "add them".
-- Do not create a visible planning workflow or a long artifact.
-
-Rules:
-- Return ONLY JSON.
-- If the conversation no longer has useful immediate culinary continuity, return {"keep":false}.
-- Otherwise return:
-  {"keep":true,"topicSummary":"...","mealIdeas":["..."],"subjectItems":["..."],"activeConstraints":["..."],"offeredIngredients":["..."],"offeredSearchTopic":"...","groceryFocus":["..."]}
-- Keep all strings short and concrete.
-- mealIdeas should contain only still-relevant meal ideas or dishes from the recent part of the chat.
-- subjectItems should include any concrete dishes, drinks, recipes, or natural shorthand variants that are still immediately relevant.
-- Do not treat subjectItems as an authoritative hidden workflow state. They are only a lightweight compression of recent continuity.
-- If the latest user turn clearly starts a fresh cooking-help moment, a different night, or a different dish, drop stale older meal ideas instead of stretching them forward.
-- If the user explicitly zooms in on a self-contained sub-recipe or prep within an active dish, it is okay to include both the parent dish and the more specific prep, but keep only what is immediately relevant now.
-- activeConstraints should capture refinements introduced in this chat.
-- offeredIngredients should capture the specific ingredients KitchenBot most recently proposed or confirmed when they are likely to be referred to as "them" or "all".
-- offeredSearchTopic should capture the concrete thing KitchenBot most recently offered to search for.
-- groceryFocus should capture the items or meal set a grocery request would most likely refer to.
-- Prefer keeping continuity only when the latest turn is clearly referential or continuing the same immediate task.
-- If the latest turn or recent transcript says this is a new night, they are making something now, or they already finished the prior dish, treat that as fresh context and stop carrying old meal state forward.
-- This is short-term chat context only. Do not restate durable household memory or defaults unless they materially shape the current culinary thread.
-- If the turn is unrelated and no culinary thread remains active, return {"keep":false}.`,
-        messages: [
-          {
-            role: 'user',
-            content: JSON.stringify({
-              latestPrompt: routePrompt,
-              currentWorkingContext: existingContext || null,
-              recentConversation,
-              relevantMemory: memoryContext?.promptText || '(none)',
-              appliedMemory: memoryContext?.applicationText || '(none)',
-              structuredHouseholdDefaults: memoryContext?.defaultsText || '(none)',
-              appliedHouseholdDefaults: memoryContext?.appliedDefaultsText || '(none)',
-              executedOutcomes: outcomeSummary || '(none)',
-            }),
-          },
-        ],
-      },
-      {
-        householdId: req.householdId,
-        chatId,
-        turnId: req.kbTurnId || null,
-        prompt: routePrompt,
-        runtimeEnabled: true,
-        callSurface: 'background',
-        callPurpose: 'kb_working_context',
-        webSearchEnabledAtCall: false,
-        usedWebSearchTool: false,
-      }
-    );
-
-    const raw = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
-    const parsed = parseJsonObject(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    if (parsed.keep === false) return null;
-    if (parsed.keep !== true) return null;
-    return normalizeWorkingContext(parsed);
-  } catch (error) {
-    console.error('KitchenBot working context refresh failed:', error?.message || error);
-    return null;
-  }
-}

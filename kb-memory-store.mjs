@@ -1,5 +1,3 @@
-import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
-import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
 import {
   getGroceryItems,
   getHouseholdDefaults,
@@ -118,23 +116,6 @@ function deriveHouseholdNoteLabel(summary) {
   return normalizeLabel(compact || 'Household note');
 }
 
-function parseJsonObject(raw) {
-  let s = String(raw ?? '').trim();
-  const fence = s.match(/^```(?:json)?\s*([\s\S]*?)```$/im);
-  if (fence) s = fence[1].trim();
-  try {
-    return JSON.parse(s);
-  } catch {
-    const m = s.match(/\{[\s\S]*\}/);
-    if (!m) return null;
-    try {
-      return JSON.parse(m[0]);
-    } catch {
-      return null;
-    }
-  }
-}
-
 function fallbackRecord({ key, value }) {
   const normKey = normalizeMemoryKey(key);
   const normValue = normalizeMemoryValue(value);
@@ -197,60 +178,39 @@ function coerceRecord(record) {
   return { memoryType, label, summary, attributes };
 }
 
-export async function inferMemoryRecord({ anthropic, householdId, chatId, key, value }) {
-  const fallback = fallbackRecord({ key, value });
-  const normKey = normalizeMemoryKey(key);
-  if (/^[a-z0-9]+_preferences$/.test(normKey)) {
-    return fallback;
-  }
-  if (!anthropic) return fallback;
-  try {
-    const callPurpose = 'kb_memory_shape';
-    const response = await createLoggedAnthropicMessage(
-      anthropic,
-      {
-        model: resolveAnthropicModelForCallPurpose(callPurpose),
-        max_tokens: 220,
-        system: `You convert a KitchenBot memory save into one compact structured record.
+// ONE BRAIN (KITCHENBOT_BRAIN_CONTRACT.md): whether a memory is about a person or the whole
+// household is the main brain's decision — it passes `scope` and `person` on the tool call.
+// We honor those deterministically (no side-model), falling back to the key/value heuristic
+// only when the brain gave no hint.
+export function resolveMemoryRecordDeterministic({ scope, person, value, key }) {
+  const summary = normalizeMemoryValue(value);
+  if (!summary) return null;
+  const scopeStr = String(scope ?? '').trim().toLowerCase();
+  const personName = normalizeLabel(person);
 
-Output ONLY one JSON object:
-{"memoryType":"person|household_note","label":"...","summary":"...","attributes":{"notes":[{"text":"..."}]}}
-
-Rules:
-- Keep label short and editable.
-- Keep summary compact and durable.
-- Use person for named household members and their stable preferences or constraints.
-- Use household_note when the memory is household-wide rather than person-specific.
-- Do not invent facts beyond the supplied key and value.`,
-        messages: [{ role: 'user', content: JSON.stringify({ key, value }) }],
-      },
-      {
-        householdId,
-        chatId,
-        runtimeEnabled: true,
-        callSurface: 'background',
-        callPurpose,
-        webSearchEnabledAtCall: false,
-        usedWebSearchTool: false,
-      }
-    );
-    const raw = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
-    const parsed = parseJsonObject(raw);
-    return (
-      coerceRecord({
-        memoryType: parsed?.memoryType,
-        label: parsed?.label,
-        summary: parsed?.summary,
-        attributes: {
-          ...normalizeAttributes(fallback?.attributes),
-          ...normalizeAttributes(parsed?.attributes),
-        },
-      }) || fallback
-    );
-  } catch (error) {
-    console.error('KitchenBot memory shaping failed:', error?.message || error);
-    return fallback;
+  if (personName) {
+    const note = normalizeNoteText(summary);
+    return coerceRecord({
+      memoryType: 'person',
+      label: personName,
+      summary: note || summary,
+      attributes: { originalKey: normalizeMemoryKey(key), notes: [{ text: note || summary }] },
+    });
   }
+  if (scopeStr === 'person') {
+    // Explicit person scope but no name given — the heuristic can still pull a name from the value.
+    return fallbackRecord({ key, value });
+  }
+  if (scopeStr === 'household') {
+    return coerceRecord({
+      memoryType: 'household_note',
+      label: deriveHouseholdNoteLabel(summary),
+      summary,
+      attributes: { originalKey: normalizeMemoryKey(key) },
+    });
+  }
+  // No scope/person hint from the brain — deterministic key/value heuristic.
+  return fallbackRecord({ key, value });
 }
 
 export function buildMemoryRecordForStorage(raw) {
@@ -305,72 +265,6 @@ export function mergeMemoryRecord(existingItem, incomingItem) {
       ...normalizeAttributes(incoming.attributes),
     },
   };
-}
-
-export async function reconcilePersonMemoryRecord({
-  anthropic,
-  householdId,
-  chatId,
-  existingItem,
-  incomingItem,
-}) {
-  const existing = existingItem && typeof existingItem === 'object' ? existingItem : null;
-  const incoming = incomingItem && typeof incomingItem === 'object' ? incomingItem : null;
-  if (!existing || !incoming) return mergeMemoryRecord(existingItem, incomingItem);
-  if (normalizeMemoryType(existing.memoryType || incoming.memoryType) !== 'person') {
-    return mergeMemoryRecord(existingItem, incomingItem);
-  }
-  if (!anthropic) return mergeMemoryRecord(existingItem, incomingItem);
-
-  try {
-    const callPurpose = 'kb_memory_shape';
-    const response = await createLoggedAnthropicMessage(
-      anthropic,
-      {
-        model: resolveAnthropicModelForCallPurpose(callPurpose),
-        max_tokens: 220,
-        system: `You reconcile KitchenBot person memory updates into one coherent current record.
-
-Output ONLY one JSON object:
-{"label":"...","notes":[{"text":"..."}]}
-
-Rules:
-- Preserve independent still-true preferences from existing notes.
-- If the incoming note refines, narrows, or replaces an older note on the same topic, keep only the refined current truth.
-- Do not keep contradictory old and new notes together.
-- Keep notes short, durable, and non-overlapping.
-- Do not invent facts beyond the supplied notes.`,
-        messages: [{
-          role: 'user',
-          content: JSON.stringify({
-            label: normalizeLabel(incoming.label || existing.label),
-            existingNotes: normalizePersonNotes(existing?.attributes?.notes || []),
-            incomingNotes: normalizePersonNotes(incoming?.attributes?.notes || []),
-          }),
-        }],
-      },
-      {
-        householdId,
-        chatId,
-        runtimeEnabled: true,
-        callSurface: 'background',
-        callPurpose,
-        webSearchEnabledAtCall: false,
-        usedWebSearchTool: false,
-      }
-    );
-    const raw = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
-    const parsed = parseJsonObject(raw);
-    const merged = buildMemoryRecordForStorage({
-      memoryType: 'person',
-      label: parsed?.label || incoming.label || existing.label,
-      attributes: { notes: parsed?.notes },
-    });
-    return merged || mergeMemoryRecord(existingItem, incomingItem);
-  } catch (error) {
-    console.error('KitchenBot person-memory reconciliation failed:', error?.message || error);
-    return mergeMemoryRecord(existingItem, incomingItem);
-  }
 }
 
 function buildSearchHaystack(item) {

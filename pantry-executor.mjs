@@ -5,8 +5,9 @@ import {
   deletePantryItem,
   getGroceryItems,
   getPantryItems,
+  updatePantryItemSection,
 } from './db.mjs';
-import { resolveInventoryItems } from './inventory-classification.mjs';
+import { resolveInventoryItems, PANTRY_SECTION_KEYS } from './inventory-classification.mjs';
 import { resolveInventoryItemMatch } from './inventory-item-resolver.mjs';
 import { buildClarifyActionState } from './kb-next-action.mjs';
 
@@ -130,6 +131,41 @@ export async function executePantryAdd(runtimeAction, context) {
     status: addedCount > 0 ? 'added' : 'unchanged',
     addedCount,
     items,
+  };
+}
+
+// Re-file an existing pantry item into a different section. The brain supplies the
+// target section directly (it knows the valid sections from the tool schema), so the
+// auto-classifier is not involved — this is the "actually move things" capability.
+export async function executePantryRecategorize(runtimeAction, context) {
+  const resolved = await resolveRequiredPantryItem('pantry.recategorize', runtimeAction, context);
+  if (!resolved?.item) return resolved;
+  const input =
+    runtimeAction?.input && typeof runtimeAction.input === 'object' && !Array.isArray(runtimeAction.input)
+      ? runtimeAction.input
+      : {};
+  const section = safeTrim(input.section).toLowerCase();
+  if (!PANTRY_SECTION_KEYS.has(section)) {
+    return {
+      capability: 'pantry.recategorize',
+      status: 'invalid_section',
+      requestedSection: safeTrim(input.section),
+      validSections: [...PANTRY_SECTION_KEYS],
+      error: `"${safeTrim(input.section)}" is not a valid pantry section. Valid sections: ${[...PANTRY_SECTION_KEYS].join(', ')}.`,
+    };
+  }
+  const item = resolved.item;
+  const prevSection = safeTrim(item.section);
+  if (prevSection === section) {
+    return { capability: 'pantry.recategorize', status: 'unchanged', itemName: item.name, section };
+  }
+  await updatePantryItemSection(context.req.householdId, item.id, section, item.name);
+  return {
+    capability: 'pantry.recategorize',
+    status: 'recategorized',
+    itemName: item.name,
+    previousSection: prevSection,
+    section,
   };
 }
 

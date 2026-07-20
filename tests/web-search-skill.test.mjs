@@ -206,7 +206,7 @@ test('recordAnthropicUsageFromResponse normalizes placeholder models and zero ch
       chatId: 0,
       runtimeEnabled: true,
       callSurface: 'chat',
-      callPurpose: 'kb_turn_grounding_final',
+      callPurpose: 'chat_title',
       webSearchEnabledAtCall: false,
     });
     const rows = await db.getAnthropicUsageLedgerAllRows({ householdId: created.householdId });

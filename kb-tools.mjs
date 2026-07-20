@@ -13,6 +13,10 @@ import {
   getKbSkill,
   normalizeKbSkillAction,
 } from './kb-skills.mjs';
+import { GROCERY_SECTION_KEYS, PANTRY_SECTION_KEYS } from './inventory-classification.mjs';
+
+const GROCERY_SECTIONS = [...GROCERY_SECTION_KEYS];
+const PANTRY_SECTIONS = [...PANTRY_SECTION_KEYS];
 
 // ---------------------------------------------------------------------------
 // Capability <-> Anthropic tool-name mapping.
@@ -48,8 +52,11 @@ const READ_ONLY_CAPABILITIES = new Set([
   'grocery.list',
   'pantry.list',
   'household.defaults.get',
+  'inventory.sections',
   'grocery.preview',
   'web.search',
+  'plan.list',
+  'thread.search',
 ]);
 
 export function isWriteCapability(capability) {
@@ -80,18 +87,47 @@ const INPUT_SCHEMAS = {
     },
     required: ['value'],
   },
-  'recipe.revise': {
-    type: 'object',
-    properties: { request: { type: 'string', description: 'The requested change to the active recipe in this chat.' } },
-    required: ['request'],
-  },
   'cookbook.save': {
     type: 'object',
-    properties: { request: { type: 'string', description: 'What to save and any framing, e.g. "save this recipe to our cookbook".' } },
+    properties: {
+      recipe: {
+        type: 'object',
+        description:
+          'The recipe to save — YOU provide it (the one you just wrote or the user gave you). Do NOT expect me to re-read the chat to reconstruct it. Omit only when saving from a URL or pasted text (put those in request).',
+        properties: {
+          title: { type: 'string', description: 'A clean recipe title (no assistant framing).' },
+          ingredients: { type: 'array', items: { type: 'string' }, description: 'Every ingredient line.' },
+          instructions: { type: 'array', items: { type: 'string' }, description: 'The steps, in order.' },
+          summary: { type: 'string', description: 'One or two lines: what it is and what it is good for.' },
+          sourceUrl: { type: 'string' },
+          sourceTitle: { type: 'string' },
+        },
+        required: ['title', 'ingredients', 'instructions'],
+      },
+      request: {
+        type: 'string',
+        description: 'Framing, a recipe URL to fetch, or pasted recipe text. e.g. "save this to our cookbook".',
+      },
+    },
   },
   'cookbook.update': {
     type: 'object',
-    properties: { request: { type: 'string', description: 'Which saved recipe to replace and with what revised version.' } },
+    properties: {
+      name: { type: 'string', description: "The exact title of the saved recipe to update (use cookbook.list if you are unsure of the title)." },
+      recipe: {
+        type: 'object',
+        description:
+          'The FULL revised recipe with your change already applied — YOU rewrite it and pass the whole thing. It replaces the saved version. This is the normal way to update a recipe.',
+        properties: {
+          title: { type: 'string' },
+          ingredients: { type: 'array', items: { type: 'string' }, description: 'Every ingredient line of the revised recipe.' },
+          instructions: { type: 'array', items: { type: 'string' }, description: 'The revised steps, in order.' },
+          summary: { type: 'string' },
+        },
+        required: ['title', 'ingredients', 'instructions'],
+      },
+      request: { type: 'string', description: 'Optional: describe the change in words only if you are not passing a full revised recipe.' },
+    },
   },
   'cookbook.list': NO_INPUT,
   'cookbook.delete': {
@@ -108,15 +144,22 @@ const INPUT_SCHEMAS = {
     properties: {
       items: {
         type: 'array',
-        description: 'Explicit items to add. Omit to derive items from the meals/plan under discussion.',
+        description:
+          'The exact grocery items to add — YOU decide them. When building a list from meals/recipes, ' +
+          'enumerate every ingredient yourself (scaled to portions), exclude anything pantry.list shows is ' +
+          'already on hand, and pass them here. Set each item\'s section and quantity when you know them.',
         items: {
           type: 'object',
-          properties: { name: { type: 'string' }, quantity: { type: 'string' } },
+          properties: {
+            name: { type: 'string' },
+            quantity: { type: 'string', description: 'Human-readable amount, e.g. "2 lbs", "1 carton".' },
+            section: { type: 'string', enum: GROCERY_SECTIONS, description: 'Which grocery section it belongs in.' },
+          },
           required: ['name'],
         },
       },
       mode: { type: 'string', enum: ['add', 'replace'], description: '"add" (default) appends; "replace" wipes the list then writes.' },
-      source: { type: 'string', description: 'Optional provenance hint, e.g. "explicit_items".' },
+      source: { type: 'string', description: 'Set to "explicit_items" when you pass items (the normal case).' },
     },
   },
   'grocery.preview': NO_INPUT,
@@ -132,6 +175,7 @@ const INPUT_SCHEMAS = {
       name: { type: 'string', description: 'Name of the item already on the list to update.' },
       amount: { type: 'string', description: 'The new quantity/amount, e.g. "12" or "2 dozen". Omit to leave the amount unchanged.' },
       checked: { type: 'boolean', description: 'Set false to put a bought item back on the active list, true to mark it bought. Omit to leave unchanged.' },
+      section: { type: 'string', enum: GROCERY_SECTIONS, description: 'Re-file the item under a different grocery section. Omit to leave it where it is.' },
     },
     required: ['name'],
   },
@@ -148,23 +192,79 @@ const INPUT_SCHEMAS = {
     properties: {
       items: {
         type: 'array',
-        description: 'Staples/on-hand items to add to the Pantry.',
-        items: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+        description: 'Staples/on-hand items to add to the Pantry. Set each item\'s section yourself when you know it (you know pantry items well) so it lands in the right place; leave it off only if unsure.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            section: { type: 'string', enum: PANTRY_SECTIONS, description: 'Which pantry section this belongs in.' },
+            amount: { type: 'string', description: 'Optional quantity, e.g. "2 bags".' },
+          },
+          required: ['name'],
+        },
       },
     },
     required: ['items'],
   },
+  'pantry.recategorize': {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Name of the pantry item to re-file.' },
+      section: { type: 'string', enum: PANTRY_SECTIONS, description: 'The pantry section to move it into.' },
+    },
+    required: ['name', 'section'],
+  },
+  'inventory.sections': NO_INPUT,
   'pantry.remove': NAME_ONLY,
   'pantry.move_to_grocery': NAME_ONLY,
   'grocery.move_to_pantry': NAME_ONLY,
-  'meal.refine': {
-    type: 'object',
-    properties: { request: { type: 'string', description: 'The tweak or selection for the current meal ideas in this chat.' } },
-    required: ['request'],
-  },
   'web.search': {
     type: 'object',
     properties: { query: { type: 'string', description: 'The web search query.' } },
+    required: ['query'],
+  },
+  'plan.list': NO_INPUT,
+  'plan.add': {
+    type: 'object',
+    properties: {
+      meals: {
+        type: 'array',
+        description: "The meals for THIS week's plan — YOU decide them (the ones you and the user settled on). They show up in the household's This Week panel.",
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'The meal, e.g. "Cod with corn & lima bean succotash".' },
+            note: { type: 'string', description: 'Optional short note about this meal.' },
+          },
+          required: ['name'],
+        },
+      },
+    },
+    required: ['meals'],
+  },
+  'plan.update': {
+    type: 'object',
+    properties: {
+      meal: { type: 'string', description: "Which meal on this week's plan to change (its name, or enough of it to identify it)." },
+      status: { type: 'string', enum: ['planned', 'cooked'], description: 'Mark it cooked (done) or back to planned.' },
+      newName: { type: 'string', description: 'Rename the meal.' },
+      note: { type: 'string', description: 'Set or replace a short note.' },
+    },
+    required: ['meal'],
+  },
+  'plan.remove': {
+    type: 'object',
+    properties: { meal: { type: 'string', description: "Which meal to remove from this week's plan." } },
+    required: ['meal'],
+  },
+  'thread.search': {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'What to find earlier in THIS chat that is no longer in your recent context, e.g. "toum broke fix" or "lemon juice amount".',
+      },
+    },
     required: ['query'],
   },
 };
@@ -263,6 +363,14 @@ const OUTCOME_PASSTHROUGH_KEYS = [
   'previousAmount',
   'amountChanged',
   'checkedChanged',
+  'section',
+  'previousSection',
+  'sectionChanged',
+  'requestedSection',
+  'validSections',
+  'grocerySections',
+  'pantrySections',
+  'cookbookCategories',
   'missingName',
   'question',
   'title',
@@ -280,6 +388,19 @@ const OUTCOME_PASSTHROUGH_KEYS = [
   'results',
   'sources',
   'query',
+  // This Week's Plan + thread search
+  'meals',
+  'addedMeals',
+  'alreadyOnPlan',
+  'plannedCount',
+  'cookedCount',
+  'mealName',
+  'previousName',
+  'newStatus',
+  'changed',
+  'requestedName',
+  'matches',
+  'totalMessages',
 ];
 
 export function summarizeOutcomeForModel(capability, outcome) {

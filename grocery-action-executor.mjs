@@ -4,7 +4,9 @@ import {
   getGroceryItems,
   setGroceryItemAmount,
   updateGroceryItem,
+  updateGroceryItemSection,
 } from './db.mjs';
+import { GROCERY_SECTION_KEYS } from './inventory-classification.mjs';
 import { resolveInventoryItemMatch } from './inventory-item-resolver.mjs';
 import { buildClarifyActionState } from './kb-next-action.mjs';
 
@@ -129,9 +131,10 @@ export async function executeGroceryClear(_runtimeAction, context) {
   };
 }
 
-function buildUpdateSummary(name, { amountChanged, nextAmount, checkedChanged, nextChecked, prevChecked }) {
+function buildUpdateSummary(name, { amountChanged, nextAmount, checkedChanged, nextChecked, prevChecked, sectionChanged, nextSection }) {
   const parts = [];
   if (amountChanged) parts.push(`set the amount to ${nextAmount}`);
+  if (sectionChanged) parts.push(`moved it to the ${nextSection} section`);
   if (checkedChanged) {
     parts.push(nextChecked ? 'marked it as bought' : 'put it back on the active list');
   } else if (amountChanged && prevChecked) {
@@ -161,23 +164,40 @@ export async function executeGroceryUpdateItem(runtimeAction, context) {
   const nextAmount = safeTrim(input.amount);
   const checkedProvided = typeof input.checked === 'boolean';
   const nextChecked = checkedProvided ? input.checked : !!item.checked;
+  const sectionProvided = safeTrim(input.section) !== '';
+  const nextSection = safeTrim(input.section).toLowerCase();
+
+  // Reject an explicitly-provided but invalid section rather than silently ignoring it.
+  if (sectionProvided && !GROCERY_SECTION_KEYS.has(nextSection)) {
+    return {
+      capability,
+      status: 'invalid_section',
+      itemName: item.name,
+      name: item.name,
+      requestedSection: safeTrim(input.section),
+      validSections: [...GROCERY_SECTION_KEYS],
+      error: `"${safeTrim(input.section)}" is not a valid grocery section. Valid sections: ${[...GROCERY_SECTION_KEYS].join(', ')}.`,
+    };
+  }
 
   const prevAmount = safeTrim(item.amount);
   const prevChecked = !!item.checked;
+  const prevSection = safeTrim(item.section);
   const amountChanged = amountProvided && nextAmount !== prevAmount;
   const checkedChanged = checkedProvided && nextChecked !== prevChecked;
+  const sectionChanged = sectionProvided && nextSection !== prevSection;
 
-  if (!amountProvided && !checkedProvided) {
+  if (!amountProvided && !checkedProvided && !sectionProvided) {
     return {
       capability,
       status: 'unchanged',
       itemName: item.name,
       name: item.name,
       item,
-      note: 'No new amount or checked state was provided, so nothing changed.',
+      note: 'No new amount, checked state, or section was provided, so nothing changed.',
     };
   }
-  if (!amountChanged && !checkedChanged) {
+  if (!amountChanged && !checkedChanged && !sectionChanged) {
     return {
       capability,
       status: 'unchanged',
@@ -189,15 +209,19 @@ export async function executeGroceryUpdateItem(runtimeAction, context) {
   }
 
   // Apply the checked change first so a follow-on amount update is not blocked if
-  // the item is being put back on the active list; then set the amount directly.
+  // the item is being put back on the active list; then set the amount + section.
   if (checkedChanged) {
     await updateGroceryItem(context.req.householdId, item.id, { checked: nextChecked });
   }
   if (amountChanged) {
     await setGroceryItemAmount(context.req.householdId, item.id, nextAmount);
   }
+  if (sectionChanged) {
+    await updateGroceryItemSection(context.req.householdId, item.id, nextSection);
+  }
 
   const finalAmount = amountChanged ? nextAmount : prevAmount;
+  const finalSection = sectionChanged ? nextSection : prevSection;
   return {
     capability,
     status: 'updated',
@@ -207,9 +231,12 @@ export async function executeGroceryUpdateItem(runtimeAction, context) {
     amount: finalAmount,
     previousChecked: prevChecked,
     checked: nextChecked,
+    previousSection: prevSection,
+    section: finalSection,
     amountChanged,
     checkedChanged,
-    summary: buildUpdateSummary(item.name, { amountChanged, nextAmount, checkedChanged, nextChecked, prevChecked }),
-    item: { ...item, amount: finalAmount, checked: nextChecked },
+    sectionChanged,
+    summary: buildUpdateSummary(item.name, { amountChanged, nextAmount, checkedChanged, nextChecked, prevChecked, sectionChanged, nextSection }),
+    item: { ...item, amount: finalAmount, checked: nextChecked, section: finalSection },
   };
 }
