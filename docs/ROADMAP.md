@@ -87,19 +87,20 @@ tests added).
   read-tool; add a `household_members` table so the non-login 4yo is a first-class member with
   structured preferences. ~Medium. *(The person-save-without-`key` silent no-op and brain-owned memory
   scope were fixed in the 2026-07-20 one-brain pass.)*
-- **Phase 2b — Week-long-thread memory ("This Week's Plan"). Rob's #1 real-usage gap (flagged
-  2026-07-20).** He runs ONE chat per week; each meal can be ~100 messages, so by the 4th meal the
-  thread is 800+ deep — but the brain only sees the last **16** messages (`HISTORY_MESSAGE_LIMIT`), so
-  the meals decided on day 1 (e.g. "cod + corn & lima bean succotash") fall out of view. The old
-  working-context haiku half-tried this and was silent + unreliable (deleted in the one-brain sweep;
-  the v3 loop never read it anyway — so this is a genuine v3 hole, not a regression). **Direction (NOT
-  generic compaction — lossy + silent):** make "This Week's Plan" a first-class **visible** object like
-  grocery/pantry — the brain records each meal via a tool call the user SEES and can edit, and reads it
-  back via a cheap `plan.list` read-tool (same context-as-cognition trick as `grocery.list`). Pair with
-  a `thread.search` read-tool for arbitrary old details (the toum fix, the lemon amount) so the brain
-  looks back on demand and narrates it. **Hard constraint (Rob): nothing holding the plan can be silent
-  to the user.** Open design call: is "This Week" just the meal list, or does each meal carry its own
-  state? Spec WITH Rob before building. See `docs/design-decisions.md` once decided.
+- **Phase 2b — Week-long-thread memory ("This Week's Plan"). ✅ v1 built 2026-07-20 (on `dev`).**
+  Rob's #1 real-usage gap: he runs ONE chat per week (~100 msgs/meal), but the brain only sees the last
+  **16** messages (`HISTORY_MESSAGE_LIMIT`), so day-1 meals fell out of view. Built a first-class,
+  per-chat, **visible** meal plan (not generic compaction): a "This Week" sub-tab in Kitchen shows the
+  current chat's meals as cards (cooked checkbox + remove); the brain records them with `plan.add`,
+  reads them with `plan.list`, edits with `plan.update`/`plan.remove` — same context-as-cognition
+  pattern as grocery/pantry. Plus a `thread.search` read-tool: deterministic ranked retrieval over THIS
+  chat's messages so the brain recalls an old detail (the toum fix, a lemon amount) without carrying the
+  whole thread. One-brain throughout (brain decides + passes; executors mechanical; no side-model).
+  Commits `de18f56` (backend + tools) and `dfa350c` (UI + tests). 136 tests green; verified live in the
+  browser. **Follow-ups:** (a) each meal can point at its saved cookbook recipe (`cookbook_entry_id`
+  column exists; auto-link by title not yet wired); (b) a chat-embedded "This Week" strip (currently the
+  panel lives in the Kitchen tab, scoped to the current chat) would be even more visible-while-chatting;
+  (c) style the cooked checkbox to the palette accent (currently the default blue).
 - **Phase 3 — Recipe robustness.** Real **SSRF** in the chat fetch path (`recipe-url-ingestion.mjs`
   `fetchRecipePage` — no private-IP guard); no input caps / timeouts; two divergent import pipelines
   to unify. ~S–M each.
