@@ -1956,3 +1956,35 @@ test('cookbook list filtering keeps historical valid recipes visible while hidin
   assert.equal(visible.length, 1);
   assert.equal(visible[0].title, 'Crispy Chicken Sandwich');
 });
+
+test('ONE BRAIN: cookbook.update stores the brain-provided full revised recipe with NO side-model', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-update-recipe-'));
+  const dbPath = path.join(tempDir, 'cookbook-update-recipe.db');
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const executor = await import(new URL('./cookbook-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const cb = await import(new URL('./cookbook-store.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({ householdName: 'Home', householdKey: 'home', ownerDisplayName: 'Rob', pin: '1234' });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Update');
+    const rec = cb.buildCookbookRecordForStorage({ title: 'Simple Green Salad', summary: 'A crisp, simple green salad.', ingredients: ['mixed greens', 'olive oil', 'red wine vinegar'], instructions: ['Toss the greens with the dressing.', 'Serve.'] });
+    await db.saveCookbookEntry(created.householdId, rec, { sourceKind: 'manual', sourceChatId: chatId });
+    // A referential name that does NOT match, and a throwing anthropic — proves the single-entry
+    // resolution fallback + that the brain-provided recipe is stored with no side-model.
+    const anthropic = { messages: { create: async () => { throw new Error('cookbook.update must not call a side-model when the brain passed a full recipe'); } } };
+    const outcome = await executor.executeCookbookUpdate(
+      { capability: 'cookbook.update', input: { name: 'that saved recipe', recipe: { title: 'Simple Green Salad', ingredients: ['mixed greens', 'olive oil', 'red wine vinegar', 'a handful of toasted pumpkin seeds'], instructions: ['Toss the greens with the dressing.', 'Top with the pumpkin seeds.', 'Serve.'] } } },
+      { req: { householdId: created.householdId }, chatId, prompt: 'add pumpkin seeds', anthropic, memoryContext: {} }
+    );
+    const entries = await db.listCookbookEntries(created.householdId);
+    process.stdout.write(JSON.stringify({ status: outcome.status, entry: entries[0] }));
+  `;
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath },
+  });
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.status, 'updated');
+  assert.ok(parsed.entry.ingredients.some((line) => /pumpkin/i.test(line)), 'the brain-provided revised recipe (with pumpkin seeds) was stored');
+  await fs.rm(tempDir, { recursive: true, force: true });
+});

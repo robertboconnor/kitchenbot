@@ -881,6 +881,18 @@ export async function executeCookbookUpdate(runtimeAction, context) {
 
   let replacementRecord = normalizeUpdatedCookbookInputRecord(input.revisedRecord, existing);
 
+  // ONE BRAIN: the normal path — the brain rewrote the recipe and passes the FULL revised
+  // version in `recipe`. Build the replacement from it directly; no side-model re-derives the
+  // edit. (The reviseStructuredRecipe fallback below only handles a bare `request`.)
+  if (!replacementRecord && input.recipe) {
+    const brainRecipe = buildCandidateFromBrainRecipe(input.recipe, {
+      preferredTitle: existing.title,
+      sourceUrl: existing.sourceUrl,
+      sourceTitle: existing.sourceTitle,
+    });
+    if (brainRecipe) replacementRecord = normalizeUpdatedCookbookInputRecord(brainRecipe, existing);
+  }
+
   if (!replacementRecord && input.targetRecipe && typeof input.targetRecipe === 'object' && !Array.isArray(input.targetRecipe)) {
     const explicitTargetRecipe = input.targetRecipe;
     const explicitRecipeRecord =
@@ -988,13 +1000,17 @@ export function normalizeCookbookUpdateInput(input, context = {}) {
     raw.revisedRecord && typeof raw.revisedRecord === 'object' && !Array.isArray(raw.revisedRecord)
       ? raw.revisedRecord
       : null;
+  const recipe = raw.recipe && typeof raw.recipe === 'object' && !Array.isArray(raw.recipe) ? raw.recipe : null;
   const request = safeTrim(raw.request || raw.payload || raw.text || context.originalPrompt);
-  const explicitName = safeTrim(raw.name || raw.title || raw.recipe) || extractExplicitCookbookUpdateName(request);
+  const explicitName =
+    safeTrim(raw.name || raw.title || (typeof raw.recipe === 'string' ? raw.recipe : '')) ||
+    extractExplicitCookbookUpdateName(request);
   const normalized = {
     ...(Number.isFinite(Number(raw.id)) ? { id: Number(raw.id) } : {}),
     ...(explicitName ? { name: explicitName } : {}),
     ...(request ? { request } : {}),
     ...(revisedRecord ? { revisedRecord } : {}),
+    ...(recipe ? { recipe } : {}),
     ...(raw.targetRecipe && typeof raw.targetRecipe === 'object' && !Array.isArray(raw.targetRecipe)
       ? { targetRecipe: raw.targetRecipe }
       : {}),

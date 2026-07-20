@@ -112,7 +112,22 @@ const INPUT_SCHEMAS = {
   },
   'cookbook.update': {
     type: 'object',
-    properties: { request: { type: 'string', description: 'Which saved recipe to replace and with what revised version.' } },
+    properties: {
+      name: { type: 'string', description: "The exact title of the saved recipe to update (use cookbook.list if you are unsure of the title)." },
+      recipe: {
+        type: 'object',
+        description:
+          'The FULL revised recipe with your change already applied — YOU rewrite it and pass the whole thing. It replaces the saved version. This is the normal way to update a recipe.',
+        properties: {
+          title: { type: 'string' },
+          ingredients: { type: 'array', items: { type: 'string' }, description: 'Every ingredient line of the revised recipe.' },
+          instructions: { type: 'array', items: { type: 'string' }, description: 'The revised steps, in order.' },
+          summary: { type: 'string' },
+        },
+        required: ['title', 'ingredients', 'instructions'],
+      },
+      request: { type: 'string', description: 'Optional: describe the change in words only if you are not passing a full revised recipe.' },
+    },
   },
   'cookbook.list': NO_INPUT,
   'cookbook.delete': {
