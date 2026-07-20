@@ -16,14 +16,15 @@ test('renderClientBootTags emits an external browser runtime and HTML-safe boot 
   });
 
   assert.match(html, /<script id="kb-boot-data" type="application\/json">/);
-  assert.match(html, /<script src="\/app\.js"><\/script>/);
+  // app.js is cache-busted with a ?v=<deploy version> query so deploys never serve stale JS.
+  assert.match(html, /<script src="\/app\.js(\?v=\d+)?"><\/script>/);
   assert.doesNotMatch(html, /Pasta <\/script><script>alert\(1\)<\/script>/);
   assert.match(html, /\\u003c\/script\\u003e\\u003cscript\\u003ealert\(1\)\\u003c\/script\\u003e/);
 });
 
 test('renderClientBootTags supports a dedicated client runtime per page', async () => {
   const html = renderClientBootTags({ ok: true }, { scriptSrc: '/recipe-importer.js' });
-  assert.match(html, /<script src="\/recipe-importer\.js"><\/script>/);
+  assert.match(html, /<script src="\/recipe-importer\.js(\?v=\d+)?"><\/script>/);
 });
 
 test('public app runtime parses as a standalone browser file', async () => {
