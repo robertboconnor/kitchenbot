@@ -22,7 +22,6 @@ import {
   normalizeMemoryValue,
 } from './kb-memory-policy.mjs';
 import { normalizeWorkingContext } from './kb-working-context.mjs';
-import { executeRecipeRevise } from './recipe-executor.mjs';
 import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet, executeInventorySections, executePlanList, executeThreadSearch } from './kb-read-executors.mjs';
 
 function safeTrim(text) {
@@ -33,8 +32,6 @@ function progressTextForNarrationType(narrationType) {
   switch (String(narrationType ?? '').trim()) {
     case 'memory.save':
       return 'Saving memory…';
-    case 'recipe.revise':
-      return 'Reworking the recipe…';
     case 'cookbook.save':
       return 'Saving to cookbook…';
     case 'cookbook.update':
@@ -197,17 +194,6 @@ function inferExplicitGroceryItemsFromPrompt(promptRaw) {
 
 function normalizeEmptyActionInput() {
   return {};
-}
-
-function normalizeRecipeReviseActionInput(input, context = {}) {
-  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-  const request = safeTrim(raw.request || raw.payload || raw.text || raw.change || raw.revision || context.originalPrompt);
-  const normalized = request ? { request } : null;
-  if (!normalized) return null;
-  if (raw.targetRecipe && typeof raw.targetRecipe === 'object' && !Array.isArray(raw.targetRecipe)) {
-    normalized.targetRecipe = raw.targetRecipe;
-  }
-  return normalized;
 }
 
 function normalizePantryItems(raw) {
@@ -522,23 +508,6 @@ export const KB_SKILLS = {
     },
     normalizeActionInput: normalizeMemorySaveActionInput,
     execute: executeMemorySave,
-  },
-  'recipe.revise': {
-    id: 'recipe.revise',
-    description: 'Revise the currently active recipe in chat without mutating saved cookbook state.',
-    narrationType: 'recipe.revise',
-    contextProfile: {
-      includeCookbook: true,
-      includeWorkingContext: true,
-    },
-    interpreterDescription:
-      'Revise the active recipe when the user tweaks ingredients, steps, seasoning, heat, substitutions, or structure in conversational recipe-edit terms. This is chat-only unless the user explicitly asks to update the saved cookbook entry.',
-    exampleAction: {
-      capability: 'recipe.revise',
-      input: { request: 'add tajin and work it into the dressing' },
-    },
-    normalizeActionInput: normalizeRecipeReviseActionInput,
-    execute: executeRecipeRevise,
   },
   'cookbook.save': {
     id: 'cookbook.save',
@@ -1041,22 +1010,6 @@ function applyGroundedSkillInput(capability, input, context = {}) {
   if (!groundedTurn) return input;
   const out = input && typeof input === 'object' && !Array.isArray(input) ? { ...input } : {};
   const currentObject = groundedTurn.currentObject && typeof groundedTurn.currentObject === 'object' ? groundedTurn.currentObject : null;
-
-  if (capability === 'recipe.revise' && !out.targetRecipe) {
-    const targetRecipe =
-      (currentObject?.objectType === 'chat_recipe'
-        ? {
-            type: 'chat_recipe',
-            title: safeTrim(currentObject.title),
-            label: safeTrim(currentObject.title || currentObject.versionSummary),
-            recipeText: safeTrim(currentObject.recipeText),
-            recipeRecord: currentObject.recipeRecord,
-          }
-        : null) ||
-      findGroundedObject(groundedTurn, (object) => object?.type === 'chat_recipe') ||
-      findGroundedObject(groundedTurn, (object) => object?.type === 'cookbook_entry');
-    if (targetRecipe) out.targetRecipe = targetRecipe;
-  }
 
   if (capability === 'cookbook.save' && !out.targetRecipe && currentObject?.objectType === 'chat_recipe') {
     out.targetRecipe = {

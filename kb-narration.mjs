@@ -25,7 +25,6 @@ export const WHIMSY_BY_CAPABILITY = {
   'inventory.sections': 'Checking the category list…',
   'pantry.move_to_grocery': 'Adding that to the shopping run…',
   'memory.save': 'Committing that to memory…',
-  'recipe.revise': 'Reworking the recipe…',
   'cookbook.save': 'Tucking that into the cookbook…',
   'cookbook.update': 'Updating the cookbook…',
   'cookbook.delete': 'Tearing that page out of the cookbook…',

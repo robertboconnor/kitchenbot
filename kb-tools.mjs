@@ -87,11 +87,6 @@ const INPUT_SCHEMAS = {
     },
     required: ['value'],
   },
-  'recipe.revise': {
-    type: 'object',
-    properties: { request: { type: 'string', description: 'The requested change to the active recipe in this chat.' } },
-    required: ['request'],
-  },
   'cookbook.save': {
     type: 'object',
     properties: {

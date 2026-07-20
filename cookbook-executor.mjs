@@ -842,24 +842,33 @@ export async function executeCookbookUpdate(runtimeAction, context) {
   } else if (requestedName) {
     const entries = await listCookbookEntries(req.householdId);
     const matches = findCookbookMatches(entries, requestedName);
-    if (matches.length === 0) {
+    if (matches.length === 1) {
+      existing = matches[0];
+    } else if (matches.length > 1) {
+      return {
+        capability: 'cookbook.update',
+        requestedName,
+        ...buildCookbookUpdateClarify(matches, requestedName),
+      };
+    } else if (entries.length === 1) {
+      // The name (often a referential phrase like "that saved recipe") didn't match, but
+      // there is exactly one saved recipe — that is unambiguously the target.
+      existing = entries[0];
+    } else {
       return {
         capability: 'cookbook.update',
         status: 'missing',
         requestedName,
       };
     }
-    if (matches.length > 1) {
-      return {
-        capability: 'cookbook.update',
-        requestedName,
-        ...buildCookbookUpdateClarify(matches, requestedName),
-      };
-    }
-    existing = matches[0];
   } else {
     const selected = Array.isArray(memoryContext?.selectedCookbookEntries) ? memoryContext.selectedCookbookEntries.filter(Boolean) : [];
-    if (selected.length === 1) existing = selected[0];
+    if (selected.length === 1) {
+      existing = selected[0];
+    } else {
+      const entries = await listCookbookEntries(req.householdId);
+      if (entries.length === 1) existing = entries[0];
+    }
   }
 
   if (!existing) {
