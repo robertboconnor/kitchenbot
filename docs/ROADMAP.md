@@ -87,6 +87,19 @@ tests added).
   read-tool; add a `household_members` table so the non-login 4yo is a first-class member with
   structured preferences. ~Medium. *(The person-save-without-`key` silent no-op and brain-owned memory
   scope were fixed in the 2026-07-20 one-brain pass.)*
+- **Phase 2b — Week-long-thread memory ("This Week's Plan"). Rob's #1 real-usage gap (flagged
+  2026-07-20).** He runs ONE chat per week; each meal can be ~100 messages, so by the 4th meal the
+  thread is 800+ deep — but the brain only sees the last **16** messages (`HISTORY_MESSAGE_LIMIT`), so
+  the meals decided on day 1 (e.g. "cod + corn & lima bean succotash") fall out of view. The old
+  working-context haiku half-tried this and was silent + unreliable (deleted in the one-brain sweep;
+  the v3 loop never read it anyway — so this is a genuine v3 hole, not a regression). **Direction (NOT
+  generic compaction — lossy + silent):** make "This Week's Plan" a first-class **visible** object like
+  grocery/pantry — the brain records each meal via a tool call the user SEES and can edit, and reads it
+  back via a cheap `plan.list` read-tool (same context-as-cognition trick as `grocery.list`). Pair with
+  a `thread.search` read-tool for arbitrary old details (the toum fix, the lemon amount) so the brain
+  looks back on demand and narrates it. **Hard constraint (Rob): nothing holding the plan can be silent
+  to the user.** Open design call: is "This Week" just the meal list, or does each meal carry its own
+  state? Spec WITH Rob before building. See `docs/design-decisions.md` once decided.
 - **Phase 3 — Recipe robustness.** Real **SSRF** in the chat fetch path (`recipe-url-ingestion.mjs`
   `fetchRecipePage` — no private-IP guard); no input caps / timeouts; two divergent import pipelines
   to unify. ~S–M each.
