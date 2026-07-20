@@ -169,7 +169,7 @@ test('grocery.write appends a direct explicit item when it is missing', async ()
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('grocery.write prefers the freshest explicit recipe in recent conversation over inferred soup vibes', async () => {
+test('ONE BRAIN: grocery.write does NOT derive items from a recipe in the transcript (returns no_items)', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-grocery-recent-recipe-'));
   const dbPath = path.join(tempDir, 'grocery-recent-recipe.db');
 
@@ -288,19 +288,12 @@ Instructions
   });
   const parsed = JSON.parse(stdout.trim());
 
-  assert.equal(parsed.outcome.status, 'committed');
+  // ONE BRAIN: even with recipes in the chat and a referential prompt, grocery.write must NOT
+  // scan the transcript and derive the shopping list itself. It returns no_items so the brain
+  // enumerates the ingredients and passes them explicitly. No side-model, no items written.
+  assert.equal(parsed.outcome.status, 'no_items');
   assert.equal(parsed.anthropicCalls, 0);
-  assert.equal(parsed.groceryItems.some((item) => /artichoke/i.test(item.name)), true);
-  assert.equal(parsed.groceryItems.some((item) => /butter/i.test(item.name)), true);
-  assert.equal(parsed.groceryItems.some((item) => /lemon/i.test(item.name)), true);
-  assert.equal(parsed.groceryItems.some((item) => /pot stickers|bok choy/i.test(item.name)), false);
-  assert.equal(parsed.groceryItems.some((item) => /diced|minced|drained|juice/i.test(item.name)), false);
-  assert.equal(parsed.groceryItems.some((item) => item.name === 'white onion' && item.section === 'produce'), true);
-  assert.equal(parsed.groceryItems.some((item) => item.name === 'celery' && item.section === 'produce'), true);
-  assert.equal(parsed.groceryItems.some((item) => item.name === 'garlic' && item.section === 'produce'), true);
-  assert.equal(parsed.groceryItems.some((item) => item.name === 'lemons' && item.section === 'produce'), true);
-  assert.equal(parsed.groceryItems.some((item) => item.name === 'chicken or vegetable stock' && item.section === 'dry'), true);
-  assert.equal(parsed.groceryItems.some((item) => item.name === 'artichoke hearts' && item.section === 'dry'), true);
+  assert.equal(parsed.groceryItems.length, 0);
 
   await fs.rm(tempDir, { recursive: true, force: true });
 });
