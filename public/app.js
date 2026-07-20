@@ -45,6 +45,10 @@
         const grocerySubviewList = document.getElementById('grocery-subview-list');
         const grocerySubviewPantry = document.getElementById('grocery-subview-pantry');
         const grocerySubviewCookbook = document.getElementById('grocery-subview-cookbook');
+        const grocerySubtabThisweek = document.getElementById('grocery-subtab-thisweek');
+        const grocerySubviewThisweek = document.getElementById('grocery-subview-thisweek');
+        const thisweekList = document.getElementById('thisweek-list');
+        const thisweekEmpty = document.getElementById('thisweek-empty');
         const cookbookWorkspace = document.getElementById('cookbook-workspace');
         const cookbookResultsArea = document.getElementById('cookbook-results-area');
         const cookbookList = document.getElementById('cookbook-list');
@@ -157,7 +161,7 @@
         function readKitchenSectionPreference() {
           try {
             const saved = sessionStorage.getItem(KITCHEN_SECTION_STORAGE_KEY);
-            return saved === 'list' || saved === 'pantry' || saved === 'cookbook' ? saved : 'cookbook';
+            return saved === 'list' || saved === 'pantry' || saved === 'cookbook' || saved === 'thisweek' ? saved : 'cookbook';
           } catch (error) {
             return 'cookbook';
           }
@@ -674,6 +678,9 @@
                     const shouldStickToBottom = isChatNearBottom();
                     void loadHistory({ preserveViewport: true }).catch(() => {});
                     if (!shouldStickToBottom) showNewMessageIndicator();
+                  }
+                  if (currentGroceriesSubview === 'thisweek') {
+                    loadThisWeek();
                   }
                   return;
                 }
@@ -3293,15 +3300,100 @@
         }
 
         function setGroceriesSubview(view) {
-          currentGroceriesSubview = view === 'pantry' || view === 'cookbook' ? view : 'list';
+          currentGroceriesSubview =
+            view === 'pantry' || view === 'cookbook' || view === 'thisweek' ? view : 'list';
           persistKitchenSectionPreference(currentGroceriesSubview);
           if (grocerySubtabList) grocerySubtabList.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'list');
           if (grocerySubtabPantry) grocerySubtabPantry.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'pantry');
           if (grocerySubtabCookbook) grocerySubtabCookbook.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'cookbook');
+          if (grocerySubtabThisweek) grocerySubtabThisweek.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'thisweek');
           if (grocerySubviewList) grocerySubviewList.style.display = currentGroceriesSubview === 'list' ? '' : 'none';
           if (grocerySubviewPantry) grocerySubviewPantry.style.display = currentGroceriesSubview === 'pantry' ? '' : 'none';
           if (grocerySubviewCookbook) grocerySubviewCookbook.style.display = currentGroceriesSubview === 'cookbook' ? '' : 'none';
+          if (grocerySubviewThisweek) grocerySubviewThisweek.style.display = currentGroceriesSubview === 'thisweek' ? '' : 'none';
+          if (currentGroceriesSubview === 'thisweek') loadThisWeek();
           syncCookbookWorkspaceLayout();
+        }
+
+        async function loadThisWeek() {
+          if (!thisweekList) return;
+          if (currentChatId == null) {
+            thisweekList.innerHTML = '';
+            if (thisweekEmpty) {
+              thisweekEmpty.textContent = 'Open or start a chat to see this week’s plan.';
+              thisweekEmpty.style.display = '';
+            }
+            return;
+          }
+          let items = [];
+          try {
+            const res = await fetch('/plan?chatId=' + encodeURIComponent(currentChatId), { credentials: 'same-origin' });
+            if (res.ok) items = (await res.json()).items || [];
+          } catch (err) {
+            /* leave empty on failure */
+          }
+          thisweekList.innerHTML = '';
+          if (thisweekEmpty) {
+            thisweekEmpty.textContent = 'No meals planned in this chat yet. Ask KitchenBot to plan the week and they’ll show up here.';
+            thisweekEmpty.style.display = items.length === 0 ? '' : 'none';
+          }
+          for (const item of items) {
+            const li = document.createElement('li');
+            li.className = 'g-item' + (item.status === 'cooked' ? ' g-item-checked' : '');
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = item.status === 'cooked';
+            checkbox.title = item.status === 'cooked' ? 'Mark as still to cook' : 'Mark as cooked';
+            checkbox.addEventListener('change', async () => {
+              await fetch('/plan/' + item.id, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ chatId: currentChatId, status: checkbox.checked ? 'cooked' : 'planned' }),
+              }).catch(() => {});
+              loadThisWeek();
+            });
+            li.appendChild(checkbox);
+
+            const nameWrap = document.createElement('span');
+            nameWrap.className = 'g-item-name';
+            const nameText = document.createElement('span');
+            nameText.textContent = item.name;
+            if (item.status === 'cooked') nameText.style.textDecoration = 'line-through';
+            nameWrap.appendChild(nameText);
+            if (item.recipeTitle) {
+              const tag = document.createElement('span');
+              tag.textContent = ' • recipe saved';
+              tag.style.color = 'var(--text-soft)';
+              tag.style.fontSize = '12px';
+              nameWrap.appendChild(tag);
+            }
+            if (item.note) {
+              const note = document.createElement('div');
+              note.textContent = item.note;
+              note.style.color = 'var(--text-soft)';
+              note.style.fontSize = '12px';
+              nameWrap.appendChild(note);
+            }
+            li.appendChild(nameWrap);
+
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'g-item-remove';
+            remove.textContent = '✕';
+            remove.title = 'Remove from this week';
+            remove.addEventListener('click', async () => {
+              await fetch('/plan/' + item.id + '?chatId=' + encodeURIComponent(currentChatId), {
+                method: 'DELETE',
+                credentials: 'same-origin',
+              }).catch(() => {});
+              loadThisWeek();
+            });
+            li.appendChild(remove);
+
+            thisweekList.appendChild(li);
+          }
         }
 
         function renderChats() {
@@ -3496,6 +3588,11 @@
           grocerySubtabCookbook.addEventListener('click', async () => {
             setGroceriesSubview('cookbook');
             await loadCookbook();
+          });
+        }
+        if (grocerySubtabThisweek) {
+          grocerySubtabThisweek.addEventListener('click', () => {
+            setGroceriesSubview('thisweek');
           });
         }
         function initializeCookbookUi() {

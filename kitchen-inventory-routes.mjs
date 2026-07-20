@@ -15,6 +15,9 @@ export function registerKitchenInventoryRoutes(app, deps) {
     deletePantryItem,
     clearGroceryItems,
     findPantryItemById,
+    getMealPlanItems,
+    updateMealPlanItem,
+    deleteMealPlanItem,
   } = db;
   const { normalizeGroceryItemsForPost, normalizePantryItemsForPost } = inventory;
 
@@ -35,6 +38,57 @@ export function registerKitchenInventoryRoutes(app, deps) {
     } catch (error) {
       console.error(error);
       res.status(500).json({ items: [] });
+    }
+  });
+
+  // This Week's Plan — scoped to a chat (= a week). chatId comes from the client's current chat.
+  app.get('/plan', requireHousehold, requireAuth, async (req, res) => {
+    try {
+      const chatId = Number(req.query.chatId);
+      if (!Number.isFinite(chatId)) {
+        return res.json({ items: [] });
+      }
+      const items = await getMealPlanItems(req.householdId, chatId);
+      res.json({ items });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ items: [] });
+    }
+  });
+
+  app.patch('/plan/:id', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const chatId = Number(req.body.chatId);
+      if (!Number.isFinite(id) || !Number.isFinite(chatId)) {
+        return res.status(400).json({ error: 'Invalid id or chatId.' });
+      }
+      const fields = {};
+      if (req.body.status === 'cooked' || req.body.status === 'planned') fields.status = req.body.status;
+      if (typeof req.body.cooked === 'boolean') fields.status = req.body.cooked ? 'cooked' : 'planned';
+      if (Object.keys(fields).length === 0) {
+        return res.status(400).json({ error: 'Nothing to update.' });
+      }
+      await updateMealPlanItem(req.householdId, chatId, id, fields);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ ok: false });
+    }
+  });
+
+  app.delete('/plan/:id', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const chatId = Number(req.query.chatId);
+      if (!Number.isFinite(id) || !Number.isFinite(chatId)) {
+        return res.status(400).json({ error: 'Invalid id or chatId.' });
+      }
+      await deleteMealPlanItem(req.householdId, chatId, id);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ ok: false });
     }
   });
 
