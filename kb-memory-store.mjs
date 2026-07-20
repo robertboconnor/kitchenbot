@@ -253,6 +253,41 @@ Rules:
   }
 }
 
+// ONE BRAIN (KITCHENBOT_BRAIN_CONTRACT.md): whether a memory is about a person or the whole
+// household is the main brain's decision — it passes `scope` and `person` on the tool call.
+// We honor those deterministically (no side-model), falling back to the key/value heuristic
+// only when the brain gave no hint.
+export function resolveMemoryRecordDeterministic({ scope, person, value, key }) {
+  const summary = normalizeMemoryValue(value);
+  if (!summary) return null;
+  const scopeStr = String(scope ?? '').trim().toLowerCase();
+  const personName = normalizeLabel(person);
+
+  if (personName) {
+    const note = normalizeNoteText(summary);
+    return coerceRecord({
+      memoryType: 'person',
+      label: personName,
+      summary: note || summary,
+      attributes: { originalKey: normalizeMemoryKey(key), notes: [{ text: note || summary }] },
+    });
+  }
+  if (scopeStr === 'person') {
+    // Explicit person scope but no name given — the heuristic can still pull a name from the value.
+    return fallbackRecord({ key, value });
+  }
+  if (scopeStr === 'household') {
+    return coerceRecord({
+      memoryType: 'household_note',
+      label: deriveHouseholdNoteLabel(summary),
+      summary,
+      attributes: { originalKey: normalizeMemoryKey(key) },
+    });
+  }
+  // No scope/person hint from the brain — deterministic key/value heuristic.
+  return fallbackRecord({ key, value });
+}
+
 export function buildMemoryRecordForStorage(raw) {
   const record = coerceRecord(raw);
   if (!record) return null;

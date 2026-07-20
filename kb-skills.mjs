@@ -70,31 +70,22 @@ function progressTextForNarrationType(narrationType) {
   }
 }
 
-function normalizeMemorySaveActionInput(input, context = {}) {
+function normalizeMemorySaveActionInput(input) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-  const directKey = normalizeMemoryKey(raw.key);
-  const directValue = normalizeMemoryValue(raw.value);
-  if (directKey && directValue) {
-    return { key: directKey, value: directValue };
-  }
-
+  // ONE BRAIN: pass through whatever the brain provided; it owns the scope/person decision.
+  // A value is required; scope/person/key are optional hints the executor resolves.
+  const value = normalizeMemoryValue(
+    raw.value || raw.note || raw.summary || raw.preference || raw.fact || raw.memory || raw.payload || raw.text
+  );
+  if (!value) return null;
+  const out = { value };
+  const scope = safeTrim(raw.scope).toLowerCase();
+  if (scope === 'person' || scope === 'household') out.scope = scope;
   const person = safeTrim(raw.person || raw.label || raw.entity);
-  const personNote = normalizeMemoryValue(raw.note || raw.summary || raw.preference || raw.fact);
-  if (person && personNote) {
-    return {
-      key: normalizeMemoryKey(`${person}_preferences`),
-      value: personNote,
-    };
-  }
-
-  const payload = safeTrim(raw.payload || raw.text || raw.note || raw.summary || raw.fact || raw.memory);
-  if (payload) {
-    return inferMemoryKeyAndValue(payload, context.memoriesByKey, {
-      activeSpeakerName: context.activeSpeakerName,
-    });
-  }
-
-  return null;
+  if (person) out.person = person;
+  const key = normalizeMemoryKey(raw.key);
+  if (key) out.key = key;
+  return out;
 }
 
 function promptClearlyRequestsDirectGroceryWrite(promptRaw) {

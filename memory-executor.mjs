@@ -1,14 +1,8 @@
 import { getKbMemoryByTypeAndLabel, saveKbMemory } from './db.mjs';
 import {
-  mergeMemoryProposal,
-  normalizeMemoryKey,
-  normalizeMemoryValue,
-} from './kb-memory-policy.mjs';
-import {
   buildMemoryRecordForStorage,
-  inferMemoryRecord,
   mergeMemoryRecord,
-  reconcilePersonMemoryRecord,
+  resolveMemoryRecordDeterministic,
 } from './kb-memory-store.mjs';
 
 function buildMemoryOutcomeReply(outcome) {
@@ -42,12 +36,9 @@ export async function executeMemorySave(runtimeAction, context) {
     name,
     chatId,
     prompt,
-    memories = [],
-    anthropic,
     skipIncrement = false,
     userMessageAlreadyPersisted = false,
     runtimeManagedResponse = false,
-    kbModeEnabled = false,
     deps = {},
   } = context;
 
@@ -55,108 +46,63 @@ export async function executeMemorySave(runtimeAction, context) {
     await deps.incrementUserMessageCountForSender?.(req);
   }
 
-  const keyRaw = runtimeAction?.input?.key;
-  const valueRaw = runtimeAction?.input?.value;
-  const normKey = normalizeMemoryKey(keyRaw);
-  const newValue = normalizeMemoryValue(valueRaw);
+  // ONE BRAIN: the brain decides scope (person vs household) + who; we build the record
+  // deterministically from what it passed. No side-model shaping, no side-model "scope"
+  // decision. A value is required; a person name is what makes it a person memory.
+  const input =
+    runtimeAction?.input && typeof runtimeAction.input === 'object' && !Array.isArray(runtimeAction.input)
+      ? runtimeAction.input
+      : {};
+  const record = buildMemoryRecordForStorage(
+    resolveMemoryRecordDeterministic({
+      scope: input.scope,
+      person: input.person,
+      value: input.value,
+      key: input.key,
+    })
+  );
 
-  if (!normKey || !newValue) {
-    return {
+  let outcome;
+  if (!record) {
+    outcome = {
       capability: 'memory.save',
       status: 'invalid',
-      error: 'Memory key and value are required.',
+      error: 'A value to remember is required (and a person name for a person-scoped memory).',
     };
-  }
-
-  const existing = Array.isArray(memories) ? memories.find((r) => r.key === normKey) : null;
-  let outcome;
-  if (kbModeEnabled) {
-    const shaped = await inferMemoryRecord({
-      anthropic,
-      householdId: req.householdId,
-      chatId,
-      key: normKey,
-      value: newValue,
-    });
-    const record = buildMemoryRecordForStorage(shaped);
-    if (!record) {
+  } else {
+    const prior = await getKbMemoryByTypeAndLabel(req.householdId, record.memoryType, record.normalizedLabel);
+    if (!prior) {
+      await saveKbMemory(req.householdId, record, { sourceKind: 'kb_action', sourceChatId: chatId });
       outcome = {
         capability: 'memory.save',
-        status: 'invalid',
-        key: normKey,
-        error: 'I could not shape that into KitchenBot memory.',
+        status: 'saved',
+        storedValue: record.summary,
+        previousValue: null,
+        memoryType: record.memoryType,
+        label: record.label,
       };
     } else {
-      const priorStructured = await getKbMemoryByTypeAndLabel(
-        req.householdId,
-        record.memoryType,
-        record.normalizedLabel
-      );
-      if (!priorStructured) {
-        await saveKbMemory(req.householdId, record, {
-          sourceKind: 'kb_action',
-          sourceChatId: chatId,
-        });
+      const merged = mergeMemoryRecord(prior, record);
+      if ((merged.summary || '').trim() === String(prior.summary ?? '').trim()) {
         outcome = {
           capability: 'memory.save',
-          status: 'saved',
-          key: normKey,
-          storedValue: record.summary,
-          previousValue: null,
-          memoryType: record.memoryType,
-          label: record.label,
+          status: 'unchanged',
+          storedValue: String(prior.summary ?? ''),
+          previousValue: String(prior.summary ?? ''),
+          memoryType: merged.memoryType,
+          label: merged.label,
         };
       } else {
-        const mergedStructured =
-          record.memoryType === 'person'
-            ? await reconcilePersonMemoryRecord({
-                anthropic,
-                householdId: req.householdId,
-                chatId,
-                existingItem: priorStructured,
-                incomingItem: record,
-              })
-            : mergeMemoryRecord(priorStructured, record);
-        if ((mergedStructured.summary || '').trim() === String(priorStructured.summary ?? '').trim()) {
-          outcome = {
-            capability: 'memory.save',
-            status: 'unchanged',
-            key: normKey,
-            storedValue: String(priorStructured.summary ?? ''),
-            previousValue: String(priorStructured.summary ?? ''),
-            memoryType: mergedStructured.memoryType,
-            label: mergedStructured.label,
-          };
-        } else {
-          await saveKbMemory(req.householdId, mergedStructured, {
-            id: priorStructured.id,
-            sourceKind: 'kb_action',
-            sourceChatId: chatId,
-          });
-          outcome = {
-            capability: 'memory.save',
-            status: 'updated',
-            key: normKey,
-            storedValue: mergedStructured.summary,
-            previousValue: String(priorStructured.summary ?? ''),
-            memoryType: mergedStructured.memoryType,
-            label: mergedStructured.label,
-          };
-        }
+        await saveKbMemory(req.householdId, merged, { id: prior.id, sourceKind: 'kb_action', sourceChatId: chatId });
+        outcome = {
+          capability: 'memory.save',
+          status: 'updated',
+          storedValue: merged.summary,
+          previousValue: String(prior.summary ?? ''),
+          memoryType: merged.memoryType,
+          label: merged.label,
+        };
       }
-    }
-  } else {
-    const existingValue = String(existing?.value ?? '');
-    const merged = mergeMemoryProposal(existingValue, newValue);
-    if (merged === null || merged.trim() === existingValue.trim()) {
-      outcome = {
-        capability: 'memory.save',
-        status: existingValue ? 'unchanged' : 'invalid',
-        key: normKey,
-        storedValue: existingValue,
-        previousValue: existingValue,
-        error: existingValue ? undefined : 'Memory key and value are required.',
-      };
     }
   }
 
