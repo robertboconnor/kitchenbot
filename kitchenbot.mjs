@@ -23,8 +23,10 @@ import {
   clearGroceryItems,
   listAllHouseholdsSummary,
   updateHouseholdUserChatColor,
+  updateHouseholdUserPalette,
   runMigrations,
   normalizeChatColor,
+  normalizePalette,
   needsBootstrap,
   bootstrapFirstHousehold,
   createHouseholdWithInitialOwner,
@@ -144,19 +146,56 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
       <title>KitchenBot Recipe Importer</title>
       <link rel="icon" href="/logo.png" type="image/png" />
       <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-      <style>
-        :root {
-          --bg-gradient: radial-gradient(circle at top left, #ffe6f2, #e3f2ff 40%, #ffffff 80%);
-          --card-bg: rgba(255, 255, 255, 0.92);
-          --accent: #ff7aa2;
-          --accent-soft: #ffe0ec;
-          --accent-strong: #ff4f87;
-          --border-subtle: #e3e6ee;
-          --text-main: #1f2430;
-          --text-soft: #6b7280;
-          --shadow-soft: 0 18px 40px rgba(15, 23, 42, 0.12);
-          --radius-lg: 18px;
+      <meta name="color-scheme" content="light" />
+      <script>
+        /* Apply the user's palette BEFORE first paint (no flash). Authoritative value
+           comes from /me after load and rewrites localStorage; this reads the cache. */
+        try {
+          var kbP = localStorage.getItem('kb-palette');
+          var kbAllowed = { 'cotton-candy': 1, 'sweetwater': 1, 'sous-chef': 1 };
+          document.documentElement.setAttribute('data-palette', kbAllowed[kbP] ? kbP : 'sweetwater');
+        } catch (e) {
+          document.documentElement.setAttribute('data-palette', 'sweetwater');
         }
+      </script>
+      <style>
+        /* Three user-selectable palettes — kept in sync with the main app, switched by
+           <html data-palette="…">. No dark mode. TODO(Phase 1): fold this importer into
+           the Cookbook surface so there is one shared stylesheet. */
+        :root {
+          color-scheme: light;
+          --font-display: ui-rounded, "SF Pro Rounded", "Nunito", "Quicksand", system-ui, sans-serif;
+          --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+          --radius-lg: 16px;
+        }
+        :root, :root[data-palette="sweetwater"] {
+          --bg-gradient: radial-gradient(1200px 820px at 12% -12%, #f0fbf7 0%, #f5f8fa 48%, #edf3fb 100%);
+          --card-bg: #ffffff; --card-rgb: 255, 255, 255;
+          --accent: #1f9e8e; --accent-rgb: 31, 158, 142;
+          --accent-soft: #d3f0ea; --accent-strong: #17897b; --accent-strong-rgb: 23, 137, 123;
+          --accent-blue: #7bb0e0; --border-subtle: #e4e9ec;
+          --text-main: #1e2226; --text-soft: #6b7178;
+          --shadow-soft: 0 14px 34px rgba(30, 60, 70, 0.10);
+        }
+        :root[data-palette="cotton-candy"] {
+          --bg-gradient: radial-gradient(1200px 820px at 12% -12%, #fff1f7 0%, #fdf4f8 45%, #f1fbf9 100%);
+          --card-bg: #ffffff; --card-rgb: 255, 255, 255;
+          --accent: #ff82bd; --accent-rgb: 255, 130, 189;
+          --accent-soft: #ffe1ef; --accent-strong: #ec5aa4; --accent-strong-rgb: 236, 90, 164;
+          --accent-blue: #35c9bb; --border-subtle: #f0dfe8;
+          --text-main: #3a2733; --text-soft: #8f7a86;
+          --shadow-soft: 0 14px 34px rgba(120, 40, 80, 0.10);
+        }
+        :root[data-palette="sous-chef"] {
+          --bg-gradient: radial-gradient(1200px 820px at 12% -12%, #fff8ee 0%, #fffaf2 50%, #f2f8fb 100%);
+          --card-bg: #fffdf9; --card-rgb: 255, 253, 249;
+          --accent: #ee6c48; --accent-rgb: 238, 108, 72;
+          --accent-soft: #ffe2d6; --accent-strong: #d9542f; --accent-strong-rgb: 217, 84, 47;
+          --accent-blue: #6aa8c8; --border-subtle: #eee2d2;
+          --text-main: #2f4257; --text-soft: #74808f;
+          --shadow-soft: 0 14px 34px rgba(60, 50, 40, 0.12);
+        }
+        h1, h2, h3, h4, button, .pill { font-family: var(--font-display); }
 
         * { box-sizing: border-box; }
 
@@ -258,7 +297,7 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
           border: 1px solid var(--border-subtle);
           border-radius: 12px;
           padding: 11px 12px;
-          background: #fff;
+          background: var(--card-bg);
           color: var(--text-main);
         }
 
@@ -289,7 +328,7 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
         }
 
         .button-secondary {
-          background: #fff;
+          background: var(--card-bg);
           color: var(--text-main);
           border: 1px solid var(--border-subtle);
         }
@@ -301,8 +340,8 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
           gap: 14px;
           padding: 14px 16px;
           border-radius: 18px;
-          border: 1px solid rgba(255, 122, 162, 0.22);
-          background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(255,240,246,0.96));
+          border: 1px solid rgba(var(--accent-rgb), 0.22);
+          background: linear-gradient(135deg, rgba(var(--card-rgb),0.96), rgba(var(--card-rgb),0.96));
           color: var(--text-main);
           box-shadow: var(--shadow-soft);
         }
@@ -315,7 +354,7 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
         #importer-status[data-tone="error"] {
           display: flex;
           border-color: rgba(180, 35, 24, 0.22);
-          background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(255,241,240,0.96));
+          background: linear-gradient(135deg, rgba(var(--card-rgb),0.96), rgba(var(--card-rgb),0.96));
           color: #8a1c1c;
         }
 
@@ -324,7 +363,7 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
           width: 18px;
           height: 18px;
           border-radius: 999px;
-          border: 3px solid rgba(255, 79, 135, 0.18);
+          border: 3px solid rgba(23, 138, 84, 0.18);
           border-top-color: var(--accent-strong);
           flex: 0 0 auto;
         }
@@ -419,7 +458,7 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
           max-height: 320px;
           padding: 14px;
           border-radius: 14px;
-          background: rgba(255, 255, 255, 0.75);
+          background: rgba(var(--card-rgb), 0.75);
           border: 1px solid var(--border-subtle);
           line-height: 1.45;
           font-size: 14px;
@@ -447,8 +486,8 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
           margin: -2px 0 2px;
           padding: 12px;
           border-radius: 16px;
-          border: 1px solid rgba(255, 122, 162, 0.16);
-          background: linear-gradient(135deg, rgba(255,255,255,0.97), rgba(255,244,248,0.97));
+          border: 1px solid rgba(var(--accent-rgb), 0.16);
+          background: linear-gradient(135deg, rgba(var(--card-rgb),0.97), rgba(var(--card-rgb),0.97));
           box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
           backdrop-filter: blur(8px);
         }
@@ -530,7 +569,7 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
           justify-content: center;
           border-radius: 999px;
           padding: 11px 16px;
-          background: #fff;
+          background: var(--card-bg);
           border: 1px solid var(--border-subtle);
           color: var(--text-main);
           font-weight: 700;
@@ -1720,34 +1759,141 @@ app.get('/', (req, res) => {
       <title>KitchenBot</title>
       <link rel="icon" href="/logo.png" type="image/png" />
       <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+      <meta name="color-scheme" content="light" />
+      <script>
+        /* Apply the user's palette BEFORE first paint (no flash). Authoritative value
+           comes from /me after load and rewrites localStorage; this reads the cache. */
+        try {
+          var kbP = localStorage.getItem('kb-palette');
+          var kbAllowed = { 'cotton-candy': 1, 'sweetwater': 1, 'sous-chef': 1 };
+          document.documentElement.setAttribute('data-palette', kbAllowed[kbP] ? kbP : 'sweetwater');
+        } catch (e) {
+          document.documentElement.setAttribute('data-palette', 'sweetwater');
+        }
+      </script>
       <style>
+        /* ============================================================
+           Playful sous-chef — design tokens (docs/design-decisions.md)
+           THREE user-selectable palettes, switched by <html data-palette="…">:
+             cotton-candy · sweetwater · sous-chef   (per-user pref, mirrors chat_color)
+           Philosophy — "COLOR IS A SCALPEL": ~90% soft/neutral; the ONE key action or
+           state per screen gets the saturated pop (--accent). Never rainbow.
+           NO dark mode (bright & friendly for cooking + entertaining).
+           Base = palette-independent tokens + the default (sweetwater) so the pre-login
+           screen is themed; each [data-palette] block overrides the color tokens.
+           ============================================================ */
         :root {
-          --bg-gradient: radial-gradient(circle at top left, #ffe6f2, #e3f2ff 40%, #ffffff 80%);
-          --card-bg: #ffffff;
-          --accent: #ff7aa2;
-          --accent-soft: #ffe0ec;
-          --accent-strong: #ff4f87;
-          --accent-blue: #6b9bd1;
-          --accent-blue-soft: #e8f0f8;
-          --assistant-bg: #f4f6fb;
-          --border-subtle: #e3e6ee;
-          --text-main: #1f2430;
-          --text-soft: #6b7280;
-          --shadow-soft: 0 18px 40px rgba(15, 23, 42, 0.12);
-          --radius-lg: 18px;
+          color-scheme: light;
+          /* Rounded display voice + clean UI sans — NO serifs, ever */
+          --font-display: ui-rounded, "SF Pro Rounded", "Nunito", "Quicksand", system-ui, sans-serif;
+          --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+          --radius-sm: 9px;
+          --radius-md: 12px;
+          --radius-lg: 16px;
           --radius-pill: 999px;
-          --sidebar-bg: rgba(255, 255, 255, 0.94);
-          --sidebar-border: rgba(148, 163, 184, 0.25);
-          --sidebar-text-main: #1f2430;
-          --sidebar-text-soft: #64748b;
+        }
+
+        /* ---- Sweetwater (default) — cool city neutrals → warm pastels; aqua scalpel,
+               sundress yellow reserved, cornflower cool-secondary. ---- */
+        :root, :root[data-palette="sweetwater"] {
+          --bg-gradient: radial-gradient(1200px 820px at 12% -12%, #f0fbf7 0%, #f5f8fa 48%, #edf3fb 100%);
+          --card-bg: #ffffff;
+          --card-rgb: 255, 255, 255;
+          --card-bg-2: #eef1f3;
+          --accent: #1f9e8e;
+          --accent-rgb: 31, 158, 142;
+          --accent-soft: #d3f0ea;
+          --accent-strong: #17897b;
+          --accent-strong-rgb: 23, 137, 123;
+          --accent-blue: #7bb0e0;
+          --accent-blue-soft: #e6eff9;
+          --accent-warm: #f6e28a;
+          --assistant-bg: #f4fbf9;
+          --border-subtle: #e4e9ec;
+          --text-main: #1e2226;
+          --text-soft: #6b7178;
+          --success: #2fb38a;
+          --danger: #e06a6a;
+          --warning: #d9a92e;
+          --shadow-soft: 0 14px 34px rgba(30, 60, 70, 0.10);
+          --shadow-pop: 0 6px 16px rgba(30, 60, 70, 0.12);
+          --sidebar-bg: rgba(246, 249, 250, 0.95);
+          --sidebar-border: rgba(120, 150, 165, 0.16);
+          --sidebar-text-main: #1e2226;
+          --sidebar-text-soft: #6b7178;
+        }
+
+        /* ---- Cotton Candy — pink → mint; Tickle Me Pink scalpel. ---- */
+        :root[data-palette="cotton-candy"] {
+          --bg-gradient: radial-gradient(1200px 820px at 12% -12%, #fff1f7 0%, #fdf4f8 45%, #f1fbf9 100%);
+          --card-bg: #ffffff;
+          --card-rgb: 255, 255, 255;
+          --card-bg-2: #fdeef5;
+          --accent: #ff82bd;
+          --accent-rgb: 255, 130, 189;
+          --accent-soft: #ffe1ef;
+          --accent-strong: #ec5aa4;
+          --accent-strong-rgb: 236, 90, 164;
+          --accent-blue: #35c9bb;
+          --accent-blue-soft: #d3f4ef;
+          --accent-warm: #ffd28a;
+          --assistant-bg: #fff6fa;
+          --border-subtle: #f0dfe8;
+          --text-main: #3a2733;
+          --text-soft: #8f7a86;
+          --success: #2fb98a;
+          --danger: #e5484d;
+          --warning: #e0a020;
+          --shadow-soft: 0 14px 34px rgba(120, 40, 80, 0.10);
+          --shadow-pop: 0 6px 16px rgba(120, 40, 80, 0.12);
+          --sidebar-bg: rgba(255, 250, 253, 0.95);
+          --sidebar-border: rgba(200, 120, 160, 0.16);
+          --sidebar-text-main: #3a2733;
+          --sidebar-text-soft: #8f7a86;
+        }
+
+        /* ---- Sous Chef — cream + egg-yolk + cooked-coral + deep navy + soft sky.
+               Coral is the scalpel (deepened for contrast); navy = ink; egg-yolk reserved. ---- */
+        :root[data-palette="sous-chef"] {
+          --bg-gradient: radial-gradient(1200px 820px at 12% -12%, #fff8ee 0%, #fffaf2 50%, #f2f8fb 100%);
+          --card-bg: #fffdf9;
+          --card-rgb: 255, 253, 249;
+          --card-bg-2: #fdf0e2;
+          --accent: #ee6c48;
+          --accent-rgb: 238, 108, 72;
+          --accent-soft: #ffe2d6;
+          --accent-strong: #d9542f;
+          --accent-strong-rgb: 217, 84, 47;
+          --accent-blue: #6aa8c8;
+          --accent-blue-soft: #e2eef4;
+          --accent-warm: #ffd166;
+          --assistant-bg: #fffaf3;
+          --border-subtle: #eee2d2;
+          --text-main: #2f4257;
+          --text-soft: #74808f;
+          --success: #3a9d6e;
+          --danger: #cf3a2a;
+          --warning: #cf9518;
+          --shadow-soft: 0 14px 34px rgba(60, 50, 40, 0.12);
+          --shadow-pop: 0 6px 16px rgba(60, 50, 40, 0.14);
+          --sidebar-bg: rgba(255, 251, 244, 0.95);
+          --sidebar-border: rgba(180, 140, 90, 0.16);
+          --sidebar-text-main: #2f4257;
+          --sidebar-text-soft: #74808f;
         }
 
         * {
           box-sizing: border-box;
         }
 
+        /* Headings, brand, and buttons carry the rounded display voice;
+           body copy stays a clean sans so it reads grown-up, not childish. */
+        h1, h2, h3, h4, .brand, button, .tab-button, .pill, input, textarea, select {
+          font-family: var(--font-display);
+        }
+
         body {
-          font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+          font-family: var(--font-ui);
           margin: 0;
           padding: 24px 16px 12px;
           height: 100vh;
@@ -1928,7 +2074,7 @@ app.get('/', (req, res) => {
           font-size: 12px;
           border-radius: 999px;
           border: 1px solid var(--border-subtle);
-          background: #fff;
+          background: var(--card-bg);
           color: var(--text-main);
         }
 
@@ -1979,7 +2125,7 @@ app.get('/', (req, res) => {
           height: 34px;
           border-radius: 999px;
           border: 1px solid var(--border-subtle);
-          background: rgba(255, 255, 255, 0.9);
+          background: rgba(var(--card-rgb), 0.9);
           color: var(--text-main);
           display: inline-flex;
           align-items: center;
@@ -2083,7 +2229,7 @@ app.get('/', (req, res) => {
         #bootstrap-owner-display-name:focus,
         #bootstrap-pin:focus {
           border-color: var(--accent);
-          box-shadow: 0 0 0 2px rgba(255, 122, 162, 0.25);
+          box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.25);
         }
 
         #bootstrap-submit {
@@ -2188,7 +2334,7 @@ app.get('/', (req, res) => {
         #login-name:focus,
         #login-password:focus {
           border-color: var(--accent);
-          box-shadow: 0 0 0 2px rgba(255, 122, 162, 0.25);
+          box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.25);
         }
 
         #login-button {
@@ -2199,19 +2345,19 @@ app.get('/', (req, res) => {
           font-size: 14px;
           padding: 8px 14px;
           font-weight: 500;
-          box-shadow: 0 8px 18px rgba(255, 122, 162, 0.45);
+          box-shadow: 0 8px 18px rgba(var(--accent-rgb), 0.45);
           transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.12s ease;
         }
 
         #login-button:hover {
           background: var(--accent-strong);
           transform: translateY(-1px);
-          box-shadow: 0 10px 20px rgba(255, 79, 135, 0.5);
+          box-shadow: 0 10px 20px rgba(23, 138, 84, 0.5);
         }
 
         #login-button:active {
           transform: translateY(0);
-          box-shadow: 0 6px 14px rgba(255, 79, 135, 0.45);
+          box-shadow: 0 6px 14px rgba(23, 138, 84, 0.45);
         }
 
         #login-status {
@@ -2223,7 +2369,7 @@ app.get('/', (req, res) => {
         #chat {
           border-radius: var(--radius-lg);
           padding: 16px 18px;
-          background: rgba(255, 255, 255, 0.9);
+          background: rgba(var(--card-rgb), 0.9);
           backdrop-filter: blur(14px);
           display: flex;
           flex-direction: column;
@@ -2248,13 +2394,13 @@ app.get('/', (req, res) => {
           line-height: 1.1;
           padding-block: 7px;
           border: 1px solid rgba(148, 163, 184, 0.7);
-          background: rgba(255, 255, 255, 0.7);
+          background: rgba(var(--card-rgb), 0.7);
           -webkit-tap-highlight-color: transparent;
           touch-action: manipulation;
         }
 
         .tab-button:not(.tab-active):hover {
-          background: #f3f4ff;
+          background: var(--card-bg-2);
           transform: translateY(-0.5px);
           box-shadow: 0 6px 14px rgba(148, 163, 184, 0.35);
         }
@@ -2268,7 +2414,7 @@ app.get('/', (req, res) => {
           background: var(--accent);
           color: #fff;
           border-color: var(--accent);
-          box-shadow: 0 4px 12px rgba(255, 122, 162, 0.4);
+          box-shadow: 0 4px 12px rgba(var(--accent-rgb), 0.4);
         }
 
         .tab-button.tab-active:hover,
@@ -2277,7 +2423,7 @@ app.get('/', (req, res) => {
           color: #fff;
           border-color: var(--accent-strong);
           transform: none;
-          box-shadow: 0 4px 12px rgba(255, 79, 135, 0.4);
+          box-shadow: 0 4px 12px rgba(23, 138, 84, 0.4);
         }
 
         .panel {
@@ -2286,7 +2432,7 @@ app.get('/', (req, res) => {
 
         #grocery-panel,
         #settings-panel {
-          background: rgba(255, 255, 255, 0.9);
+          background: rgba(var(--card-rgb), 0.9);
           backdrop-filter: blur(14px);
           box-shadow: var(--shadow-soft);
           border: 1px solid rgba(148, 163, 184, 0.18);
@@ -2308,7 +2454,7 @@ app.get('/', (req, res) => {
           padding: 9px 16px;
           border-radius: 999px;
           border: 1px solid rgba(148, 163, 184, 0.45);
-          background: rgba(255, 255, 255, 0.86);
+          background: rgba(var(--card-rgb), 0.86);
           cursor: pointer;
           font-size: 14px;
         }
@@ -2316,8 +2462,8 @@ app.get('/', (req, res) => {
         .settings-subtab-btn.settings-subtab-active {
           border-color: var(--accent-strong);
           font-weight: 600;
-          box-shadow: 0 8px 18px rgba(255, 122, 162, 0.18);
-          background: rgba(255, 245, 248, 0.95);
+          box-shadow: 0 8px 18px rgba(var(--accent-rgb), 0.18);
+          background: rgba(var(--card-rgb), 0.95);
         }
 
         .kitchen-shell {
@@ -2331,9 +2477,9 @@ app.get('/', (req, res) => {
           gap: 14px;
           padding: 18px 20px;
           border-radius: 22px;
-          border: 1px solid rgba(255, 206, 219, 0.9);
-          background: linear-gradient(140deg, rgba(255, 248, 250, 0.98), rgba(243, 248, 255, 0.95));
-          box-shadow: 0 18px 44px rgba(140, 163, 191, 0.12);
+          border: 1px solid var(--border-subtle);
+          background: linear-gradient(140deg, var(--card-bg), rgba(var(--accent-rgb), 0.07));
+          box-shadow: var(--shadow-soft);
         }
 
         .kitchen-workspace-copy {
@@ -2385,7 +2531,7 @@ app.get('/', (req, res) => {
           padding: 10px 16px;
           border-radius: 999px;
           border: 1px solid rgba(148, 163, 184, 0.42);
-          background: rgba(255, 255, 255, 0.92);
+          background: rgba(var(--card-rgb), 0.92);
           color: var(--text-main);
           font-size: 14px;
           font-weight: 600;
@@ -2400,8 +2546,8 @@ app.get('/', (req, res) => {
 
         .kitchen-section-btn.settings-subtab-active {
           border-color: var(--accent-strong);
-          background: linear-gradient(135deg, rgba(255, 244, 248, 0.98), rgba(255, 255, 255, 0.98));
-          box-shadow: 0 12px 28px rgba(255, 122, 162, 0.16);
+          background: linear-gradient(135deg, rgba(var(--card-rgb), 0.98), rgba(var(--card-rgb), 0.98));
+          box-shadow: 0 12px 28px rgba(var(--accent-rgb), 0.16);
         }
 
         .kitchen-section-btn--secondary {
@@ -2416,12 +2562,12 @@ app.get('/', (req, res) => {
           padding: 20px;
           border-radius: 24px;
           border: 1px solid rgba(226, 232, 240, 0.95);
-          background: rgba(255, 255, 255, 0.86);
+          background: rgba(var(--card-rgb), 0.86);
           box-shadow: 0 18px 42px rgba(148, 163, 184, 0.1);
         }
 
         .kitchen-section-panel--pantry {
-          background: rgba(248, 250, 252, 0.9);
+          background: rgba(var(--card-rgb), 0.9);
           border-color: rgba(226, 232, 240, 0.9);
           box-shadow: 0 12px 28px rgba(148, 163, 184, 0.08);
         }
@@ -2477,12 +2623,12 @@ app.get('/', (req, res) => {
           gap: 8px;
           padding: 11px 16px;
           border-radius: 999px;
-          border: 1px solid rgba(255, 122, 162, 0.24);
-          background: linear-gradient(135deg, rgba(255, 104, 153, 0.96), rgba(255, 133, 180, 0.96));
+          border: 1px solid rgba(var(--accent-rgb), 0.24);
+          background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.98), rgba(var(--accent-strong-rgb), 0.98));
           color: #fff;
           font-weight: 700;
           text-decoration: none;
-          box-shadow: 0 14px 28px rgba(255, 122, 162, 0.22);
+          box-shadow: 0 14px 28px rgba(var(--accent-rgb), 0.22);
         }
 
         .cookbook-hero-hint {
@@ -2523,7 +2669,7 @@ app.get('/', (req, res) => {
           padding: 18px;
           border: 1px dashed var(--border-subtle);
           border-radius: 18px;
-          background: rgba(255,255,255,0.7);
+          background: rgba(var(--card-rgb),0.7);
           color: var(--text-soft);
         }
 
@@ -2550,7 +2696,7 @@ app.get('/', (req, res) => {
         }
 
         .cookbook-card {
-          background: rgba(255,255,255,0.82);
+          background: rgba(var(--card-rgb),0.82);
           border: 1px solid var(--border-subtle);
           border-radius: 16px;
           padding: 14px 16px;
@@ -2561,15 +2707,15 @@ app.get('/', (req, res) => {
         }
 
         .cookbook-card:hover {
-          border-color: rgba(255, 122, 162, 0.28);
+          border-color: rgba(var(--accent-rgb), 0.28);
           box-shadow: 0 16px 34px rgba(148, 163, 184, 0.12);
           transform: translateY(-1px);
         }
 
         .cookbook-card--active {
-          border-color: rgba(255, 122, 162, 0.55);
-          box-shadow: 0 20px 34px rgba(255, 122, 162, 0.14);
-          background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,245,248,0.92));
+          border-color: rgba(var(--accent-rgb), 0.55);
+          box-shadow: 0 20px 34px rgba(var(--accent-rgb), 0.14);
+          background: linear-gradient(180deg, rgba(var(--card-rgb),0.95), rgba(var(--card-rgb),0.92));
         }
 
         .cookbook-card-header {
@@ -2674,7 +2820,7 @@ app.get('/', (req, res) => {
           padding: 9px 14px;
           border-radius: var(--radius-pill);
           border: 1px solid rgba(148, 163, 184, 0.7);
-          background: #ffffff;
+          background: var(--card-bg);
           font-size: 14px;
           font-weight: 500;
           color: var(--text-main);
@@ -2698,7 +2844,7 @@ app.get('/', (req, res) => {
           padding: 8px;
           border-radius: 16px;
           border: 1px solid rgba(226, 232, 240, 0.95);
-          background: rgba(255, 255, 255, 0.98);
+          background: rgba(var(--card-rgb), 0.98);
           box-shadow: 0 18px 38px rgba(148, 163, 184, 0.2);
           display: grid;
           gap: 6px;
@@ -2738,7 +2884,7 @@ app.get('/', (req, res) => {
         }
 
         .cookbook-card--mobile.cookbook-card--active {
-          background: rgba(255, 245, 248, 0.58);
+          background: rgba(var(--card-rgb), 0.58);
           border-color: var(--border-subtle);
           box-shadow: none;
         }
@@ -2758,11 +2904,11 @@ app.get('/', (req, res) => {
         }
 
         .cookbook-card-mobile-row:hover {
-          background: rgba(255, 248, 251, 0.7);
+          background: rgba(var(--card-rgb), 0.7);
         }
 
         .cookbook-card-mobile-row:focus-visible {
-          outline: 2px solid rgba(255, 122, 162, 0.42);
+          outline: 2px solid rgba(var(--accent-rgb), 0.42);
           outline-offset: -2px;
         }
 
@@ -2810,7 +2956,7 @@ app.get('/', (req, res) => {
           padding: 10px 16px;
           border-radius: var(--radius-pill);
           border: 1px solid rgba(148, 163, 184, 0.7);
-          background: #ffffff;
+          background: var(--card-bg);
           color: var(--text-main);
           font-size: 14px;
           font-weight: 600;
@@ -2824,12 +2970,12 @@ app.get('/', (req, res) => {
 
         .cookbook-detail-button--primary {
           background: var(--accent-strong);
-          border-color: rgba(255, 79, 135, 0.9);
+          border-color: rgba(23, 138, 84, 0.9);
           color: #ffffff;
         }
 
         .cookbook-detail-button--primary:hover {
-          background: #ff5d91;
+          background: var(--accent-strong);
         }
 
         .cookbook-detail-button--danger {
@@ -2893,7 +3039,7 @@ app.get('/', (req, res) => {
         }
 
         .settings-card {
-          background: rgba(255, 255, 255, 0.94);
+          background: rgba(var(--card-rgb), 0.94);
           border: 1px solid rgba(148, 163, 184, 0.18);
           border-radius: 18px;
           padding: 16px 18px;
@@ -2947,7 +3093,7 @@ app.get('/', (req, res) => {
         .settings-meta-item {
           padding: 10px 12px;
           border-radius: 14px;
-          background: rgba(248, 250, 252, 0.95);
+          background: rgba(var(--card-rgb), 0.95);
           border: 1px solid rgba(226, 232, 240, 0.95);
         }
 
@@ -2979,7 +3125,7 @@ app.get('/', (req, res) => {
           padding: 12px 14px;
           border-radius: 14px;
           border: 1px solid rgba(148, 163, 184, 0.2);
-          background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(244,247,251,0.98));
+          background: linear-gradient(135deg, rgba(var(--card-rgb),0.96), rgba(244,247,251,0.98));
         }
 
         .settings-split-grid {
@@ -2997,7 +3143,7 @@ app.get('/', (req, res) => {
           border-radius: 12px;
           border: 1px solid var(--border-subtle);
           font-size: 14px;
-          background: rgba(255, 255, 255, 0.95);
+          background: rgba(var(--card-rgb), 0.95);
         }
 
         #settings-panel input[type='number'] {
@@ -3076,16 +3222,16 @@ app.get('/', (req, res) => {
           border-radius: 12px;
           border: 1px solid var(--border-subtle);
           font-size: 14px;
-          background: rgba(255, 255, 255, 0.95);
+          background: rgba(var(--card-rgb), 0.95);
           color: var(--text-main);
           outline: none;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+          box-shadow: inset 0 1px 0 rgba(var(--card-rgb), 0.7);
         }
 
         .cookbook-filter-field input:focus,
         .cookbook-filter-field select:focus {
           border-color: var(--accent);
-          box-shadow: 0 0 0 2px rgba(255, 122, 162, 0.2);
+          box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
         }
 
         .settings-divider {
@@ -3097,7 +3243,7 @@ app.get('/', (req, res) => {
         .settings-memory-viewer {
           padding: 12px;
           border-radius: 14px;
-          background: rgba(248, 250, 252, 0.72);
+          background: rgba(var(--card-rgb), 0.72);
           border: 1px solid rgba(226, 232, 240, 0.92);
           min-height: 84px;
         }
@@ -3105,7 +3251,7 @@ app.get('/', (req, res) => {
         .settings-memory-editor {
           padding: 12px;
           border-radius: 14px;
-          background: rgba(255, 255, 255, 0.86);
+          background: rgba(var(--card-rgb), 0.86);
           border: 1px dashed rgba(148, 163, 184, 0.42);
         }
 
@@ -3119,7 +3265,7 @@ app.get('/', (req, res) => {
         .settings-admin-detail-card {
           padding: 14px;
           border-radius: 16px;
-          background: rgba(248, 250, 252, 0.82);
+          background: rgba(var(--card-rgb), 0.82);
           border: 1px solid rgba(226, 232, 240, 0.92);
           min-width: 0;
           overflow-x: hidden;
@@ -3161,7 +3307,7 @@ app.get('/', (req, res) => {
         .admin-report-stat {
           padding: 12px;
           border-radius: 14px;
-          background: rgba(248, 250, 252, 0.95);
+          background: rgba(var(--card-rgb), 0.95);
           border: 1px solid rgba(226, 232, 240, 0.95);
         }
 
@@ -3189,7 +3335,7 @@ app.get('/', (req, res) => {
         .admin-report-section {
           padding: 12px;
           border-radius: 14px;
-          background: rgba(255, 255, 255, 0.92);
+          background: rgba(var(--card-rgb), 0.92);
           border: 1px solid rgba(226, 232, 240, 0.92);
           min-width: 0;
         }
@@ -3261,7 +3407,7 @@ app.get('/', (req, res) => {
           padding: 10px;
           border: 1px solid rgba(229, 231, 235, 0.95);
           border-radius: 8px;
-          background: rgba(249, 250, 251, 0.9);
+          background: rgba(var(--card-rgb), 0.9);
           transition: box-shadow 0.2s ease, background 0.2s ease;
         }
 
@@ -3274,7 +3420,7 @@ app.get('/', (req, res) => {
 
         .settings-user-row.settings-user-row-role-flash {
           box-shadow: 0 0 0 2px var(--accent-strong);
-          background: rgba(255, 122, 162, 0.14);
+          background: rgba(var(--accent-rgb), 0.14);
         }
 
         .settings-user-row-role-col {
@@ -3357,7 +3503,7 @@ app.get('/', (req, res) => {
           justify-content: space-between;
           padding: 12px;
           border-radius: 14px;
-          background: rgba(255, 255, 255, 0.94);
+          background: rgba(var(--card-rgb), 0.94);
           border: 1px solid rgba(226, 232, 240, 0.95);
         }
 
@@ -3405,7 +3551,7 @@ app.get('/', (req, res) => {
         .settings-memory-empty {
           padding: 12px;
           border-radius: 14px;
-          background: rgba(255, 255, 255, 0.78);
+          background: rgba(var(--card-rgb), 0.78);
           border: 1px dashed rgba(148, 163, 184, 0.45);
           color: var(--text-soft);
           font-size: 13px;
@@ -3426,7 +3572,7 @@ app.get('/', (req, res) => {
           justify-content: space-between;
           padding: 10px 12px;
           border-radius: 12px;
-          background: rgba(248, 250, 252, 0.82);
+          background: rgba(var(--card-rgb), 0.82);
           border: 1px solid rgba(226, 232, 240, 0.95);
         }
 
@@ -3447,7 +3593,7 @@ app.get('/', (req, res) => {
           justify-content: space-between;
           padding: 12px 14px;
           border-radius: 14px;
-          background: rgba(248, 250, 252, 0.78);
+          background: rgba(var(--card-rgb), 0.78);
           border: 1px solid rgba(226, 232, 240, 0.95);
         }
 
@@ -3493,14 +3639,14 @@ app.get('/', (req, res) => {
         }
 
         .settings-admin-tag.settings-admin-tag--on {
-          background: rgba(255, 122, 162, 0.12);
+          background: rgba(var(--accent-rgb), 0.12);
           color: var(--accent-strong);
         }
 
         .settings-admin-usage-summary {
           padding: 12px;
           border-radius: 14px;
-          background: rgba(255, 255, 255, 0.92);
+          background: rgba(var(--card-rgb), 0.92);
           border: 1px solid rgba(226, 232, 240, 0.95);
         }
 
@@ -3535,9 +3681,18 @@ app.get('/', (req, res) => {
           margin-bottom: 4px;
         }
 
+        /* Scalpel: "Add" is the key action on this screen — give it the sweet pop. */
         #grocery-manual-add button#grocery-add-submit {
-          padding: 6px 12px;
+          padding: 6px 14px;
           font-size: 14px;
+          background: var(--accent);
+          color: #fff;
+          border-color: var(--accent);
+          font-weight: 700;
+        }
+        #grocery-manual-add button#grocery-add-submit:hover {
+          background: var(--accent-strong);
+          border-color: var(--accent-strong);
         }
 
         #grocery-sections,
@@ -3570,7 +3725,7 @@ app.get('/', (req, res) => {
           padding: 6px 8px;
           border-radius: 10px;
           border: 1px solid rgba(229, 231, 235, 0.9);
-          background: rgba(249, 250, 251, 0.85);
+          background: rgba(var(--card-rgb), 0.85);
           margin-bottom: 4px;
         }
 
@@ -3630,14 +3785,18 @@ app.get('/', (req, res) => {
           background: #fee2e2;
         }
 
+        /* Scalpel: "Move to pantry" is a secondary utility — keep it neutral/quiet,
+           a hint of candy only on hover. Don't spend accent on routine actions. */
         .g-delete.g-move-to-pantry-ready {
-          border-color: rgba(34, 197, 94, 0.32);
-          background: rgba(220, 252, 231, 0.95);
-          color: #166534;
+          border-color: var(--border-subtle);
+          background: var(--card-bg-2);
+          color: var(--text-soft);
         }
 
         .g-delete.g-move-to-pantry-ready:hover {
-          background: rgba(187, 247, 208, 0.98);
+          background: var(--accent-soft);
+          color: var(--accent-strong);
+          border-color: var(--accent-soft);
         }
 
         .g-delete.g-action-working,
@@ -3730,14 +3889,36 @@ app.get('/', (req, res) => {
         }
 
         .assistant {
-          background: var(--assistant-bg);
+          background: var(--card-bg);
           margin-right: auto;
           text-align: left;
+          border: 1px solid var(--border-subtle);
+          box-shadow: var(--shadow-pop);
+          border-top-left-radius: 6px;
+        }
+
+        /* Give the sous-chef a bit of identity in the byline. */
+        .message.assistant .message-author {
+          color: var(--accent-strong);
+          font-family: var(--font-display);
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          font-size: 10.5px;
+        }
+        .message.assistant .message-author::before {
+          content: "";
+          display: inline-block;
+          width: 7px;
+          height: 7px;
+          margin-right: 6px;
+          border-radius: 50%;
+          background: var(--accent);
+          vertical-align: middle;
         }
 
         .message.user.user-msg-chat-pink {
           background: #ffe4ea;
-          border: 1px solid rgba(255, 122, 162, 0.38);
+          border: 1px solid rgba(var(--accent-rgb), 0.38);
         }
         .message.user.user-msg-chat-blue {
           background: #dbeafe;
@@ -3766,12 +3947,15 @@ app.get('/', (req, res) => {
           box-sizing: border-box;
           border-radius: 20px;
           border: 1px solid var(--border-subtle);
+          background: var(--card-bg);
+          color: var(--text-main);
           resize: none;
           font-size: 14px;
           font-family: inherit;
           outline: none;
           line-height: 1.4;
         }
+        textarea::placeholder { color: var(--text-soft); }
 
         #prompt {
           height: auto;
@@ -3781,7 +3965,7 @@ app.get('/', (req, res) => {
 
         textarea:focus {
           border-color: var(--accent);
-          box-shadow: 0 0 0 2px rgba(255, 122, 162, 0.25);
+          box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.20);
         }
 
         #typing-indicator {
@@ -3803,8 +3987,8 @@ app.get('/', (req, res) => {
           padding: 6px 12px;
           margin: 2px 0 6px;
           border-radius: 999px;
-          border: 1px solid rgba(255, 122, 162, 0.32);
-          background: rgba(255, 255, 255, 0.96);
+          border: 1px solid rgba(var(--accent-rgb), 0.32);
+          background: rgba(var(--card-rgb), 0.96);
           color: var(--accent-strong);
           font-size: 12px;
           font-weight: 600;
@@ -3813,7 +3997,7 @@ app.get('/', (req, res) => {
 
         #chat-new-message:hover {
           background: var(--accent-soft);
-          border-color: rgba(255, 122, 162, 0.5);
+          border-color: rgba(var(--accent-rgb), 0.5);
         }
 
         #input-area {
@@ -3830,7 +4014,7 @@ app.get('/', (req, res) => {
           align-self: flex-start;
           border-radius: var(--radius-pill);
           border: 1px solid rgba(148, 163, 184, 0.7);
-          background: #ffffff;
+          background: var(--card-bg);
           font-size: 14px;
           font-weight: 500;
           color: var(--text-main);
@@ -3838,7 +4022,7 @@ app.get('/', (req, res) => {
         }
 
         button:hover {
-          background: #f3f4ff;
+          background: var(--card-bg-2);
           transform: translateY(-0.5px);
           box-shadow: 0 6px 14px rgba(148, 163, 184, 0.35);
         }
@@ -3852,7 +4036,7 @@ app.get('/', (req, res) => {
           padding: 6px 12px;
           font-size: 12px;
           border-color: rgba(148, 163, 184, 0.6);
-          background: #ffffff;
+          background: var(--card-bg);
         }
 
         #logout:hover {
@@ -3875,12 +4059,12 @@ app.get('/', (req, res) => {
           background: var(--accent);
           color: #fff;
           border: none;
-          box-shadow: 0 2px 8px rgba(255, 122, 162, 0.5);
+          box-shadow: 0 2px 8px rgba(var(--accent-rgb), 0.5);
         }
 
         #input-area #send:hover {
           background: var(--accent-strong);
-          box-shadow: 0 4px 12px rgba(255, 79, 135, 0.55);
+          box-shadow: 0 4px 12px rgba(23, 138, 84, 0.55);
         }
 
         @media (max-width: 640px) {
@@ -3892,7 +4076,7 @@ app.get('/', (req, res) => {
             gap: 6px;
             margin-bottom: 6px;
             padding: 2px 0 8px;
-            background: linear-gradient(180deg, rgba(249, 250, 255, 0.98), rgba(249, 250, 255, 0.82) 70%, rgba(249, 250, 255, 0));
+            background: linear-gradient(180deg, rgba(var(--card-rgb), 0.98), rgba(var(--card-rgb), 0.82) 70%, rgba(var(--card-rgb), 0));
             backdrop-filter: blur(8px);
             -webkit-backdrop-filter: blur(8px);
           }
@@ -4486,7 +4670,7 @@ app.get('/', (req, res) => {
                   Your cookbook is empty right now. Try asking KitchenBot to “save that recipe” or “add this meal idea to our cookbook.”
                 </div>
                 <div id="cookbook-list" style="display:grid;gap:12px;"></div>
-                <div id="cookbook-detail-view" style="display:none;background:rgba(255,255,255,0.9);border:1px solid var(--border-subtle);border-radius:18px;padding:18px;gap:14px;flex-direction:column;">
+                <div id="cookbook-detail-view" style="display:none;background:rgba(var(--card-rgb),0.9);border:1px solid var(--border-subtle);border-radius:18px;padding:18px;gap:14px;flex-direction:column;">
                   <div class="cookbook-detail-header">
                     <div class="cookbook-detail-meta-block">
                       <button id="cookbook-detail-back" class="cookbook-detail-button" type="button" style="align-self:flex-start;">Back to cookbook</button>
@@ -4671,6 +4855,24 @@ app.get('/', (req, res) => {
               Everything here applies to the household you are logged into (your session household).
             </p>
             <div class="settings-card-grid">
+              <section class="settings-card">
+                <div class="settings-card-header">
+                  <div>
+                    <h3>Appearance</h3>
+                    <p class="settings-card-subtitle">Your personal color palette — just for you, and it follows you onto any device you sign into. Everyone in the household can pick their own.</p>
+                  </div>
+                  <span class="settings-pill-note">Just you</span>
+                </div>
+                <label for="my-palette-select" style="font-size:13px;color:var(--text-soft);display:block;margin:4px 0 6px;">Palette</label>
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                  <select id="my-palette-select" style="padding:8px 12px;border-radius:10px;border:1px solid var(--border-subtle);font-size:14px;min-width:200px;">
+                    <option value="sweetwater">Sweetwater</option>
+                    <option value="cotton-candy">Cotton Candy</option>
+                    <option value="sous-chef">Sous Chef</option>
+                  </select>
+                  <span id="my-palette-msg" style="font-size:13px;color:var(--accent-strong);"></span>
+                </div>
+              </section>
               <section class="settings-card">
                 <div class="settings-card-header">
                   <div>
@@ -5094,6 +5296,7 @@ export async function handleGetMe(req, res) {
       chatColors,
       householdId: req.householdId,
       userId: req.userId,
+      palette: normalizePalette(me?.palette),
       isOwner: !!(me && me.role === 'owner'),
       householdName,
       householdKey: h ? h.household_key : '',
@@ -5118,6 +5321,18 @@ export async function handleGetMe(req, res) {
 }
 
 app.get('/me', requireHousehold, requireAuth, handleGetMe);
+
+// Self-service: each user sets their OWN UI palette (not owner-gated, unlike chat_color).
+app.post('/settings/me/palette', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
+  try {
+    const palette = normalizePalette(req.body?.palette);
+    await updateHouseholdUserPalette(req.householdId, req.userId, palette);
+    return res.json({ ok: true, palette });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
 
 const SETTINGS_ROLES = new Set(['owner', 'member']);
 

@@ -11,7 +11,7 @@ import {
   normalizeCookbookUpdateInput,
 } from './cookbook-executor.mjs';
 import { previewGroceryListFromConversation, writeGroceryListFromConversation } from './grocery-executor.mjs';
-import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, executeGroceryUncheck } from './grocery-action-executor.mjs';
+import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, executeGroceryUncheck, executeGroceryUpdateItem } from './grocery-action-executor.mjs';
 import { executeHouseholdDefaultsUpdate } from './household-defaults-executor.mjs';
 import { executeMealRefine } from './meal-refine-executor.mjs';
 import { executeGroceryMoveToPantry, executePantryAdd, executePantryMoveToGrocery, executePantryRemove } from './pantry-executor.mjs';
@@ -24,6 +24,7 @@ import {
 } from './kb-memory-policy.mjs';
 import { normalizeWorkingContext } from './kb-working-context.mjs';
 import { executeRecipeRevise } from './recipe-executor.mjs';
+import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet } from './kb-read-executors.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -52,6 +53,7 @@ function progressTextForNarrationType(narrationType) {
     case 'grocery.remove':
     case 'grocery.check':
     case 'grocery.uncheck':
+    case 'grocery.update_item':
     case 'grocery.clear':
       return 'Checking grocery list…';
     case 'household.defaults.update':
@@ -138,7 +140,14 @@ function normalizeGroceryWriteActionInput(input, context = {}) {
         section: safeTrim(item?.section),
       }))
       .filter((item) => item.name);
-    if (items.length > 0) out.items = items;
+    if (items.length > 0) {
+      out.items = items;
+      // Model-provided explicit items: tag as an explicit add so grocery.write does a
+      // clean live-checked add (grocery-executor.mjs:514 short-circuit) instead of the
+      // AI meal-planning draft, which re-derives items from the whole conversation and
+      // sends the agent loop into a confused retry spiral.
+      if (!safeTrim(out.source)) out.source = 'explicit_items';
+    }
   }
   const hasStructuredSource =
     !!out.sourceMealSet ||
@@ -341,6 +350,18 @@ function normalizeNameOnlyActionInput(input, context = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const name = safeTrim(raw.name || raw.item || raw.product || raw.payload || raw.text || context.originalPrompt);
   return name ? { name } : null;
+}
+
+function normalizeGroceryUpdateItemActionInput(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const name = safeTrim(raw.name || raw.item || raw.product);
+  if (!name) return null;
+  const out = { name };
+  const amount = safeTrim(raw.amount ?? raw.quantity ?? raw.qty);
+  if (amount) out.amount = amount;
+  if (typeof raw.checked === 'boolean') out.checked = raw.checked;
+  else if (typeof raw.bought === 'boolean') out.checked = raw.bought;
+  return out;
 }
 
 function normalizeWebSearchActionInput(input, context = {}) {
@@ -582,7 +603,7 @@ export const KB_SKILLS = {
       includeWorkingContext: true,
     },
     interpreterDescription:
-      'Generate or update the household grocery list when the user clearly wants list changes.',
+      'Add items to the household grocery list (or replace it) when the user clearly wants list changes. Adds NEW items and merges duplicates. To change the QUANTITY of an item already on the list, or to put a bought item back on the active list, use grocery.update_item instead — grocery.write will not change the amount of an item that is already marked bought.',
     exampleAction: {
       capability: 'grocery.write',
       input: {},
@@ -658,6 +679,22 @@ export const KB_SKILLS = {
     },
     normalizeActionInput: normalizeNameOnlyActionInput,
     execute: executeGroceryUncheck,
+  },
+  'grocery.update_item': {
+    id: 'grocery.update_item',
+    description: 'Change the quantity of an item already on the Grocery List tab, or put a bought item back on the active list.',
+    narrationType: 'grocery.update_item',
+    contextProfile: {
+      includeGrocery: true,
+    },
+    interpreterDescription:
+      'Update an item ALREADY on the Grocery List tab: set a new amount and/or change whether it is checked off (bought). Use this to change a quantity ("make the eggs a dozen") or to un-check a bought item and put it back on the active list. This does NOT add new items — use grocery.write to add. Unlike grocery.write, it CAN change the amount of an item that is already marked as bought.',
+    exampleAction: {
+      capability: 'grocery.update_item',
+      input: { name: 'eggs', amount: '12', checked: false },
+    },
+    normalizeActionInput: normalizeGroceryUpdateItemActionInput,
+    execute: executeGroceryUpdateItem,
   },
   'grocery.clear': {
     id: 'grocery.clear',
@@ -793,6 +830,39 @@ export const KB_SKILLS = {
     normalizeActionInput: normalizeWebSearchActionInput,
     interpretFollowUp: interpretWebSearchFollowUp,
     execute: executeWebSearch,
+  },
+  'grocery.list': {
+    id: 'grocery.list',
+    description: 'Read the current household grocery list.',
+    narrationType: 'grocery.list',
+    contextProfile: { includeGrocery: true },
+    interpreterDescription:
+      'Read the current grocery list to see what is already on it — check this before answering questions about the list or before adding an item that might already be there.',
+    exampleAction: { capability: 'grocery.list', input: {} },
+    normalizeActionInput: normalizeEmptyActionInput,
+    execute: executeGroceryList,
+  },
+  'pantry.list': {
+    id: 'pantry.list',
+    description: 'Read the current household pantry (tracked staples on hand).',
+    narrationType: 'pantry.list',
+    contextProfile: { includePantry: true },
+    interpreterDescription:
+      'Read the current pantry to see which staples the household already keeps on hand.',
+    exampleAction: { capability: 'pantry.list', input: {} },
+    normalizeActionInput: normalizeEmptyActionInput,
+    execute: executePantryList,
+  },
+  'household.defaults.get': {
+    id: 'household.defaults.get',
+    description: 'Read structured household defaults (dinner portions, weeknight cooking style).',
+    narrationType: 'household.defaults.get',
+    contextProfile: { includeDefaults: true },
+    interpreterDescription:
+      'Read the household defaults (default dinner portions, weeknight cooking style) when they matter for planning.',
+    exampleAction: { capability: 'household.defaults.get', input: {} },
+    normalizeActionInput: normalizeEmptyActionInput,
+    execute: executeHouseholdDefaultsGet,
   },
 };
 

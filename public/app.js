@@ -250,6 +250,21 @@
           if (key === 'friendly') return 'helpful';
           return ['helpful', 'concise', 'witty', 'thirsty'].includes(key) ? key : 'helpful';
         }
+        // Per-user UI palette. Keys must match the CSS [data-palette] blocks + server PALETTE_KEYS.
+        const PALETTE_OPTIONS = [
+          { key: 'sweetwater', label: 'Sweetwater' },
+          { key: 'cotton-candy', label: 'Cotton Candy' },
+          { key: 'sous-chef', label: 'Sous Chef' },
+        ];
+        const PALETTE_KEY_SET = new Set(PALETTE_OPTIONS.map((p) => p.key));
+        function applyPalette(palette) {
+          const p = PALETTE_KEY_SET.has(palette) ? palette : 'sweetwater';
+          document.documentElement.setAttribute('data-palette', p);
+          try { localStorage.setItem('kb-palette', p); } catch (e) {}
+          const sel = document.getElementById('my-palette-select');
+          if (sel && sel.value !== p) sel.value = p;
+          return p;
+        }
         function rebuildDisplayNameToColorFromMeChatColors(chatColors) {
           displayNameToColor = {};
           if (chatColors && typeof chatColors === 'object' && !Array.isArray(chatColors)) {
@@ -600,6 +615,18 @@
           if (shouldStickToBottom) chat.scrollTop = chat.scrollHeight;
         }
 
+        // Discard reply text streamed so far this turn (server sent delta_reset because
+        // an earlier turn's pre-tool narration must be cleared before the final reply
+        // streams). Leaves the bubble in place, ready to receive the real reply.
+        function clearTransientAssistantDelta(turnId = null) {
+          if (!remoteStreamBodyEl) return;
+          const normalizedTurnId = turnId != null ? String(turnId) : null;
+          if (normalizedTurnId && remoteStreamTurnId && normalizedTurnId !== remoteStreamTurnId) return;
+          if (!remoteStreamHasStarted) return;
+          remoteStreamBodyEl.textContent = '';
+          remoteStreamHasStarted = false;
+        }
+
         function sendTypingViewing() {
           if (!typingWs || typingWs.readyState !== 1) return;
           if (currentHouseholdId == null || !Number.isFinite(Number(currentHouseholdId))) return;
@@ -673,6 +700,16 @@
                   const shouldStickToBottom = isChatNearBottom();
                   appendTransientAssistantDelta(msg.delta, msg.turnId || null);
                   if (!shouldStickToBottom) showNewMessageIndicator();
+                  return;
+                }
+                if (msg.type === 'stream_delta_reset' && msgChatId === currentChatId) {
+                  if (msgHid != null && currentHouseholdId != null && msgHid !== Number(currentHouseholdId)) {
+                    return;
+                  }
+                  if (weAreStreamingThisChat) {
+                    return;
+                  }
+                  clearTransientAssistantDelta(msg.turnId || null);
                   return;
                 }
                 if (msg.type === 'user_typing' || msg.type === 'user_stopped_typing') {
@@ -3415,6 +3452,7 @@
           isCurrentUserOwner = !!meData.isOwner;
           applyGodModeFromMe(meData);
           syncMemoriesWrapVisibility();
+          applyPalette(meData.palette);
           rebuildDisplayNameToColorFromMeChatColors(meData.chatColors);
           showApp(meData.name);
           const shouldOpenCookbookFromHash = isCookbookHash();
@@ -3932,6 +3970,33 @@
           });
         }
 
+        // Self-service palette picker (per-user; applies instantly, persists via /settings/me/palette).
+        const paletteSelect = document.getElementById('my-palette-select');
+        if (paletteSelect) {
+          paletteSelect.addEventListener('change', async () => {
+            const chosen = paletteSelect.value;
+            applyPalette(chosen);
+            const msg = document.getElementById('my-palette-msg');
+            if (msg) msg.textContent = 'Saving…';
+            try {
+              const r = await fetch('/settings/me/palette', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ palette: chosen }),
+              });
+              if (!r.ok) throw new Error('save failed');
+              const data = await r.json().catch(() => ({}));
+              if (data && data.palette) applyPalette(data.palette);
+              if (msg) {
+                msg.textContent = 'Saved ✓';
+                setTimeout(() => { if (msg.textContent === 'Saved ✓') msg.textContent = ''; }, 1500);
+              }
+            } catch (e) {
+              if (msg) msg.textContent = 'Could not save';
+            }
+          });
+        }
+
         menuButton.addEventListener('click', async () => {
           try {
             const resp = await fetch('/chats');
@@ -4387,6 +4452,13 @@
                     const event = JSON.parse(line);
                     if (event && event.type === 'progress') {
                       setTransientAssistantProgress(event.text || 'Thinking…', event.turnId || null);
+                    } else if (event && event.type === 'delta_reset') {
+                      // An earlier turn's pre-tool narration must be discarded before the
+                      // final reply streams. Drop it from both the live bubble and the
+                      // accumulator so the persisted render matches the final turn only.
+                      fullReply = '';
+                      firstStreamChunk = true;
+                      clearTransientAssistantDelta(event.turnId || null);
                     } else if (event && event.type === 'delta' && event.delta) {
                       fullReply += String(event.delta);
                       if (firstStreamChunk) firstStreamChunk = false;
