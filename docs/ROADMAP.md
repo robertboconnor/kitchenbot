@@ -40,19 +40,23 @@ Dead-code sweep removed ~690 lines of now-orphaned sub-brain scaffolding. These 
 (memory person/household scope, grocery-from-meals, pantry add + recategorize, grocery quantity update)
 with **zero side-model calls in any tool trace**. **On `dev`, not yet merged to prod** (Rob's call).
 
-**Re-hunt (2026-07-20) — the refactored subsystems are clean; the recipe/cookbook path is the remaining
-one-brain debt.** A full audit of every side-model call site confirmed the brain + two shape helpers are
-the only model calls in memory/grocery/section/working-context. It also surfaced that the **recipe &
-cookbook executors still reconstruct intent from the transcript** — the next fixes (tracked below):
-- `cookbook-store.mjs inferCookbookRecord` — a side-model that *synthesizes an entire cookbook entry from
-  the chat* when `cookbook.save` gets no explicit recipe. Brain should pass the record.
-- Shared "scan the transcript to pick *which* recipe the user means" engine (`findLatestExplicitRecipeCandidate`
-  / `findLatestAssistantRecipeText`) used by both `cookbook.save` and `recipe.revise` when the brain passed no
-  explicit target. Brain owns what "this recipe" refers to.
-- `grocery-executor` residual "derive groceries from a transcript recipe" branch (contradicts the file's own
-  one-brain comment) + a dead grocery-generation system-prompt still built into every draft (a re-wiring hazard).
-- Milder: `kb-skills` prompt-regex fallbacks that pull a write payload from text when the brain sent none.
-(Legit parse/shape, left as-is: recipe OCR/URL structuring, additive-edit extraction, cookbook category tagging.)
+**Re-hunt (2026-07-20) — full audit of every side-model call site.** Confirmed the brain + two shape
+helpers are the only model calls in memory/grocery/section/working-context, and surfaced the remaining
+transcript-derivation in the recipe/cookbook path. Status of each finding:
+- ✅ **`grocery-executor` residual "derive groceries from a transcript recipe"** branch + the dead
+  grocery-generation system-prompt (re-wiring hazard) — removed (commit `4748084`).
+- ✅ **`cookbook.save`**: `inferCookbookRecord` (side-model that synthesized a whole entry from the chat)
+  deleted; the transcript-scan that picked "which recipe" removed; the brain now passes the recipe in a
+  structured `recipe` field. Verified live (commit `1d602d2`).
+- ⬜ **`recipe.revise`** (`recipe-executor.mjs resolveRecipeBase`) still scans the transcript
+  (`findLatestExplicitRecipeCandidate` / `findLatestAssistantRecipeText`) to pick the base recipe when the
+  brain passed no target — same violation as cookbook.save. **Open design question first:** with cookbook.save
+  now recipe-aware, the brain can revise conversationally and re-save, which may make `recipe.revise`'s model
+  call redundant — decide whether to give it a `recipe` field or remove the tool. (Roadmap task.)
+- ⬜ Milder (`B4`, low): `kb-skills` prompt-regex fallbacks that pull a write payload from the current prompt
+  when the brain sent none (grocery items / household defaults / pantry adds). Guarded, prompt-only, deterministic.
+(Legit parse/shape, left as-is: recipe OCR/URL structuring, additive-edit extraction, cookbook category tagging,
+chat titles, web-search execution.)
 
 **Latency UX — done.** True token streaming to both household members + whimsical per-tool progress
 ("Plotting something delicious…"), broadcast over WebSocket to co-viewers.
