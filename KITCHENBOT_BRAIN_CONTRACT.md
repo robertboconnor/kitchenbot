@@ -56,6 +56,45 @@ Anything that bypasses this loop is suspect.
 
 ---
 
+## Smart Brain, Dumb Executors (the executor contract)
+
+The brain does the deciding. Executors do the doing. This is the single most important
+structural rule in KitchenBot, and most architectural debt is a violation of it.
+
+**The brain (the agent loop) owns every DECISION**, including:
+- what to do, and in what order
+- which items to add / remove / change, and their quantities
+- which section or category something belongs in
+- whether a memory is about a person or the household, and who
+- whether a turn is a refinement, a fresh plan, or a question
+- what the user's "this" / "that" refers to
+- which pantry staples are already on hand and should be excluded from a shopping list
+
+**Executors (tools) are MECHANICAL.** An executor receives explicit, already-decided inputs
+from the brain and mutates state. It must NOT:
+- call a model to decide what to do, what items to derive, or how to classify
+- re-read the chat transcript to reconstruct intent or re-plan
+- run regex / heuristics that *select an action* or *infer intent*
+
+**The only side-model calls allowed** are pure *parse / shape / structure* helpers that
+transform already-given data without choosing an action: titling a chat, OCR, structuring a
+recipe from external page/image text, fetching a URL. These convert data; they do not decide.
+Deterministic transforms (name normalization, dedup, or a cheap section-guess FALLBACK for
+when the brain declined to specify one) are fine — as a fallback, never as the primary decider.
+
+**Why this rule exists:** the executors were built intelligent to compensate for the OLD
+deterministic router, which only picked one capability and handed over a thin input — so each
+executor had to re-read the chat, re-plan, classify, and derive on its own. The v3 loop replaced
+that router with a real brain but left the executors smart. Any remaining executor intelligence
+is now a SECOND brain competing with the first — the direct cause of "it can't actually do X,"
+"it re-did the wrong thing," and silent, uncontrollable behavior. One brain, or it isn't KitchenBot.
+
+**The test for any executor:** if you removed its ability to call a model or read the transcript,
+could the brain still reach the same outcome by passing richer inputs? If yes, that intelligence
+belongs in the brain, not the executor — move it.
+
+---
+
 ## Core Cognition
 
 The following are part of KitchenBot’s brain and must be treated as global cognition, not as skills:

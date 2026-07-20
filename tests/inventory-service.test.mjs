@@ -59,68 +59,42 @@ test('probably pantry item inference stays tightly scoped for grocery rows', () 
   );
 });
 
-test('shared grocery normalization can mark pantry-ish dry goods beyond the narrow fallback keyword list', async () => {
+test('ONE BRAIN: grocery normalization honors an explicit section and consults NO side-model', async () => {
+  let modelCalled = false;
   const anthropic = {
-    messages: {
-      create: async () => ({
-        model: 'claude-haiku-4-5-20251001',
-        usage: { input_tokens: 12, output_tokens: 20 },
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              items: [{ index: 0, section: 'dry', probablyPantryItem: true }],
-            }),
-          },
-        ],
-      }),
-    },
+    messages: { create: async () => { modelCalled = true; return { content: [] }; } },
   };
 
-  const [item] = await normalizeGroceryItemsForPost(
-    [{ name: 'cardamom', section: '' }],
-    {
-      householdId: 1,
-      getAnthropicClient: async () => ({ client: anthropic }),
-      callSurface: 'kb_action',
-      runtimeEnabled: true,
-    }
+  // A brain-provided section is honored verbatim...
+  const [explicit] = await normalizeGroceryItemsForPost(
+    [{ name: 'cardamom', section: 'dry' }],
+    { householdId: 1, getAnthropicClient: async () => ({ client: anthropic }), callSurface: 'kb_action', runtimeEnabled: true }
   );
+  assert.equal(explicit.section, 'dry');
 
-  assert.equal(item.section, 'dry');
-  assert.equal(item.probablyPantryItem, true);
+  // ...and an unsectioned item falls to the DETERMINISTIC bucket, never a model guess.
+  const [fallback] = await normalizeGroceryItemsForPost(
+    [{ name: 'cardamom', section: '' }],
+    { householdId: 1, getAnthropicClient: async () => ({ client: anthropic }), callSurface: 'kb_action', runtimeEnabled: true }
+  );
+  assert.equal(fallback.section, 'other');
+  assert.equal(modelCalled, false, 'section classification must not consult a side-model anymore');
 });
 
-test('shared grocery normalization still vetoes usually refrigerated items', async () => {
+test('grocery normalization deterministically files a refrigerated item (no model)', async () => {
+  let modelCalled = false;
   const anthropic = {
-    messages: {
-      create: async () => ({
-        model: 'claude-haiku-4-5-20251001',
-        usage: { input_tokens: 12, output_tokens: 20 },
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              items: [{ index: 0, section: 'dry', probablyPantryItem: true }],
-            }),
-          },
-        ],
-      }),
-    },
+    messages: { create: async () => { modelCalled = true; return { content: [] }; } },
   };
 
   const [item] = await normalizeGroceryItemsForPost(
     [{ name: 'Greek yogurt', section: '' }],
-    {
-      householdId: 1,
-      getAnthropicClient: async () => ({ client: anthropic }),
-      callSurface: 'kb_action',
-      runtimeEnabled: true,
-    }
+    { householdId: 1, getAnthropicClient: async () => ({ client: anthropic }), callSurface: 'kb_action', runtimeEnabled: true }
   );
 
-  assert.equal(item.section, 'dry');
+  assert.equal(item.section, 'dairy');
   assert.equal(item.probablyPantryItem, false);
+  assert.equal(modelCalled, false);
 });
 
 test('shared grocery normalization cleans recipe-derived names and classifies obvious shelf-stable ingredients sanely', async () => {

@@ -1,6 +1,5 @@
-import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
-import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
-
+// No model imports: this module is now fully deterministic (name normalization + section
+// fallback). Section decisions come from the brain via explicit tool inputs (ONE BRAIN).
 export const GROCERY_SECTION_KEYS = new Set(['produce', 'meat', 'dairy', 'frozen', 'dry', 'other']);
 export const PANTRY_SECTION_KEYS = new Set([
   'spices_herbs',
@@ -57,26 +56,6 @@ export function normalizeInventoryItemName(rawName, { target = 'grocery' } = {})
   return name;
 }
 
-function normalizeBooleanLike(raw) {
-  if (raw === true || raw === 1 || raw === '1') return true;
-  if (typeof raw === 'string') {
-    const value = safeTrim(raw).toLowerCase();
-    if (value === 'true' || value === 'yes') return true;
-    if (value === 'false' || value === 'no') return false;
-  }
-  return false;
-}
-
-function parseJson(raw, fallback) {
-  let text = safeTrim(raw);
-  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)```$/im);
-  if (fenced) text = safeTrim(fenced[1]);
-  try {
-    return JSON.parse(text);
-  } catch {
-    return fallback;
-  }
-}
 
 function normalizeExplicitSection(target, rawSection) {
   const section = safeTrim(rawSection).toLowerCase();
@@ -211,84 +190,15 @@ function allowedSectionKeys(target) {
   return target === 'pantry' ? [...PANTRY_SECTION_KEYS] : [...GROCERY_SECTION_KEYS];
 }
 
-async function classifyAutoSections({
-  target,
-  unresolved,
-  anthropic,
-  householdId = null,
-  chatId = null,
-  runtimeEnabled = false,
-  callSurface = 'background',
-}) {
-  if (!anthropic || !Array.isArray(unresolved) || unresolved.length === 0) return new Map();
-  const allowed = allowedSectionKeys(target);
-  try {
-    const response = await createLoggedAnthropicMessage(
-      anthropic,
-      {
-        model: resolveAnthropicModelForCallPurpose('inventory_section_classification'),
-        max_tokens: 250,
-        system: `You classify household inventory items into one fixed section taxonomy.
-
-Target taxonomy: ${target}
-Allowed section keys: ${allowed.join(', ')}
-
-Rules:
-- Return ONLY JSON.
-- Shape for pantry: {"items":[{"index":0,"section":"allowed_key"}]}
-- Shape for grocery: {"items":[{"index":0,"section":"allowed_key","probablyPantryItem":true|false}]}
-- Choose exactly one allowed section key for each item index.
-- Use the item name as the primary signal.
-- Use amount, sourceSection, and sourceListType only as secondary hints.
-- For grocery items, set probablyPantryItem to true only when the item is usually something households keep on hand in Pantry:
-  spices, herbs, flours, baking items, oils, vinegars, sweeteners, pasta, grains, beans, lentils, or similar dry goods.
-- For grocery items, set probablyPantryItem to false for things that are usually refrigerated.
-- If unsure, choose the best allowed section instead of inventing a new one.`,
-        messages: [
-          {
-            role: 'user',
-            content: JSON.stringify({
-              target,
-              allowedSectionKeys: allowed,
-              items: unresolved.map((entry) => ({
-                index: entry.index,
-                name: entry.name,
-                amount: entry.amount,
-                sourceSection: entry.sourceSection,
-                sourceListType: entry.sourceListType,
-              })),
-            }),
-          },
-        ],
-      },
-      {
-        householdId,
-        chatId,
-        runtimeEnabled,
-        callSurface,
-        callPurpose: 'inventory_section_classification',
-        webSearchEnabledAtCall: false,
-        usedWebSearchTool: false,
-      }
-    );
-
-    const raw = response.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n').trim();
-    const parsed = parseJson(raw, null);
-    const rows = Array.isArray(parsed?.items) ? parsed.items : [];
-    const out = new Map();
-    for (const row of rows) {
-      const index = Number(row?.index);
-      const section = normalizeExplicitSection(target, row?.section);
-      if (!Number.isInteger(index) || !section) continue;
-      out.set(index, {
-        section,
-        probablyPantryItem: target === 'grocery' ? normalizeBooleanLike(row?.probablyPantryItem) : false,
-      });
-    }
-    return out;
-  } catch {
-    return new Map();
-  }
+// ONE BRAIN (KITCHENBOT_BRAIN_CONTRACT.md — "Smart Brain, Dumb Executors"):
+// item -> section is the MAIN brain's decision. The brain passes an explicit `section`
+// on the add/recategorize tool call, which resolveInventoryItems honors directly.
+// This used to be a haiku sub-brain that classified every item's section (and derived
+// `probablyPantryItem`) outside the loop. It now returns nothing, so resolveInventoryItems
+// falls through to the deterministic inferInventorySectionFallback for any item the brain
+// left unsectioned — a cheap fallback, never the primary decider.
+async function classifyAutoSections() {
+  return new Map();
 }
 
 export function mapPantrySectionToGrocerySection(rawSection) {
