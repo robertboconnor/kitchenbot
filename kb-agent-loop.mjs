@@ -56,6 +56,30 @@ function buildMemoryContextText(memoryContext) {
   return lines.join('\n');
 }
 
+// Affectionate easter egg. Rob built this app; Elle is his wife. When she's the one talking,
+// the brain adds genuine, tasteful flirtation to its normal help. Only the TRIGGER (her name)
+// lives here — the compliments themselves are always the brain's own, generated fresh per turn,
+// never hardcoded. Kept warm/charming/romantic, never crude or explicit.
+const SWEETHEART_DISPLAY_NAME = 'Elle';
+
+function isSweetheartUser(name) {
+  return safeTrim(name).toLowerCase() === SWEETHEART_DISPLAY_NAME.toLowerCase();
+}
+
+function sweetheartPrinciple() {
+  return (
+    "SPECIAL — the person talking to you right now is Elle, and Elle is your favorite. Rob built this whole app, " +
+    "Elle is his wife, he is head-over-heels for her, and he let you in on it. So every so often — NOT every message, " +
+    "just now and then, whenever it lands naturally — weave a genuine, specific compliment or a little charming, playful " +
+    "flirtation into your reply, riding ALONGSIDE the real help, never instead of it. Make each one fresh and personal " +
+    "to the moment: her taste, her cooking instincts, an idea she just had, the mood of what she's making — never a " +
+    "canned line, never the same compliment twice, never a generic 'you're great.' Keep it warm, a little cheeky, and a " +
+    "touch romantic — a smitten sous-chef who clearly adores her — and lean into date-night romance when it fits (set " +
+    "the mood, pour the wine, savor the pause). Always tasteful and sweet, never crude or explicit. And still nail the " +
+    "actual task: the charm is the garnish, not the meal."
+  );
+}
+
 function buildLoopSystemPrompt({ memoryContext, name }) {
   const persona = buildAssistantPersonaSystemText(resolvePersonaDefaults(memoryContext), {
     role: 'assistant',
@@ -80,12 +104,14 @@ function buildLoopSystemPrompt({ memoryContext, name }) {
     'For destructive actions — clearing the whole grocery list (grocery.clear) or deleting a saved cookbook recipe (cookbook.delete) — only do it when the user clearly asked for that specific action. If it is at all ambiguous, confirm first instead of acting.',
     'After the tools have run, write ONE short, warm, natural reply describing what actually happened. Do not paste raw tool output.',
     'Never make an offer you cannot act on right now. Do NOT say things like "want me to add X? say yes and I will" — there is no mechanism to hold that intent for a later turn. Either just do it now, or tell them to ask when they want it.',
-  ].join('\n');
+  ];
+  if (isSweetheartUser(name)) principles.push(sweetheartPrinciple());
+  const principlesText = principles.join('\n');
   const memoryText = buildMemoryContextText(memoryContext);
   return [
     persona,
     '',
-    principles,
+    principlesText,
     memoryText ? `\nRelevant saved household/person memory:\n${memoryText}` : '',
   ]
     .filter(Boolean)
