@@ -11,6 +11,27 @@ legitimate application"* — both in how it **works** (one reasoning brain with 
 it's never going to the app store, so no abuse/scale/cost threat-modeling. Family actually uses it
 (Rob + Elle + a 4yo, Bizzy).
 
+## ✅ Shipped to PROD on 2026-07-20 (main `27a3056`, Render live)
+
+The whole overnight body of work is now **deployed**, not just on `dev`. In prod:
+- **One-brain rearchitecture** ("smart brain, dumb executors") — every side-model that made a
+  *decision* removed; details below.
+- **This Week's Plan + `thread.search`** — the week-long-thread memory fix (Phase 2b below).
+- **Truthful-writes guard** (`kb-claim-guard.mjs`) — catches a "Saved it!" claim with no matching
+  tool call, wipes the streamed text, forces the model to actually do it or retract. Fixed a real
+  trust bug from live use. ⚠️ *Maintenance note: the guard is per-capability-family; every NEW write
+  capability needs a family added to `WRITE_FAMILIES` or its false claims slip through.*
+- **Cookbook tags** — the brain can set/read/filter tags ("kid-approved"); also fixed `cookbook.list`
+  hiding recipe titles from the brain.
+- **Structured person profiles** — `person.profile.update`/`get` (accepted/rejected foods, allergies,
+  notes); the brain's first memory READ tool; accept↔reject auto-reconciles. (This is a big chunk of
+  old "Phase 2" — see below.)
+- **Elle easter egg** — name-gated, tasteful, brain-generated flirtation for Rob's wife.
+- **Deploy hygiene** — `app.js` is cache-busted so deploys never serve stale client JS.
+
+**149 tests green.** Rollback tags: `pre-oneb-plan-2026-07-20`, `pre-trust-profiles-2026-07-20`.
+`dev` == `main` right now. Everything below marked "on dev / not merged" is now **live**.
+
 ## Where we are now (working branch: `dev`)
 
 **The brain (v3) — done & battle-tested.** Rewritten from a deterministic grounding→interpreter→
@@ -83,12 +104,17 @@ tests added).
   non-owner members** (today it's behind an owner-only "Household" button), fold the standalone
   Recipe Importer into Cookbook, self-host the display font (currently `ui-rounded` = Apple-only),
   wire the reserved `--accent-warm` (Sundress yellow / Egg Yolk) as a surgical "joy-pop" on wins.
-- **Phase 2 — Memory / people model (highest FUNCTIONAL value).** Today retrieval **silently drops
-  any household member who isn't the person typing**, so "plan our family's dinners" loses Elle and
-  Bizzy. Fixes: always-include the household's people in context; add a `memory.list`/`search`
-  read-tool; add a `household_members` table so the non-login 4yo is a first-class member with
-  structured preferences. ~Medium. *(The person-save-without-`key` silent no-op and brain-owned memory
-  scope were fixed in the 2026-07-20 one-brain pass.)*
+- **Phase 2 — Memory / people model (highest FUNCTIONAL value). PARTLY DONE 2026-07-20.**
+  - ✅ **Structured per-person profiles** (`person_profiles` table + `person.profile.update`/`.get`):
+    accepted/rejected foods, allergies, notes — queryable, appendable, accept↔reject auto-reconciles.
+    This is the "first-class member with structured preferences" piece, and `person.profile.get` is the
+    **memory read-tool** the brain never had. The non-login 4yo (Bizzy) is now a real, structured member.
+  - ✅ Person-save-without-`key` silent no-op + brain-owned memory scope (one-brain pass).
+  - ⬜ **Still open:** retrieval **silently drops any household member who isn't the person typing**, so
+    "plan our family's dinners" can still lose Elle/Bizzy from *ambient* context — always-include the
+    household's people; and a **visible UI surface** for person profiles (inspectable/editable, like the
+    This Week panel — the "not silent" rule). A general `memory.list`/`search` over the freeform bucket is
+    still absent (only the structured profile is queryable). ~Medium.
 - **Phase 2b — Week-long-thread memory ("This Week's Plan"). ✅ v1 built 2026-07-20 (on `dev`).**
   Rob's #1 real-usage gap: he runs ONE chat per week (~100 msgs/meal), but the brain only sees the last
   **16** messages (`HISTORY_MESSAGE_LIMIT`), so day-1 meals fell out of view. Built a first-class,
@@ -129,11 +155,17 @@ tests added).
 
 ## Recommended next step
 
-Two good options depending on mood:
-- **Biggest functional win:** Phase 2 (memory/people model) — makes family meal-planning actually
-  reason about Elle and Bizzy.
-- **Finish the "looks legit" story:** the Phase 1 remainder (nav/IA + Settings reachability + the XSS
-  fix) — smaller, visible, and closes the most obvious "this is still a bit janky" gaps.
+The big brain/one-brain arc and the two most-requested functional gaps (week-long-thread memory,
+structured per-person prefs) are **shipped**. Good next moves, by mood:
+- **Close the family-context gap (functional):** the Phase-2 remainder — always-include Elle & Bizzy
+  in ambient context (not just the person typing), plus a **visible person-profile UI** (inspectable/
+  editable, per the "not silent" rule). This is what makes "plan our family's dinners" fully reason
+  about everyone.
+- **Finish the "looks legit" story:** Phase 1 remainder (nav/IA + make Settings reachable to non-owner
+  members + fold in the Recipe Importer) and the **XSS + CSP** paper-cut — small, visible, closes the
+  most obvious "still a bit janky" gaps.
+- **Quick + fun:** redo the **Elle easter-egg examples** (Rob: the test examples were "lame as hell";
+  the feature works — it's the calibration/quality of the flirtation that needs a pass).
 
 ## Run it locally
 
