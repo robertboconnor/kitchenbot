@@ -21,10 +21,14 @@ import { buildKbToolDefinitions, executeKbToolCall } from './kb-tools.mjs';
 import { buildAssistantPersonaSystemText } from './kb-persona.mjs';
 import { respondWithKbReply, streamReplyDelta, resetReplyStream } from './kb-reply.mjs';
 import { narrationForToolName } from './kb-narration.mjs';
+import { findUnbackedWriteClaims, buildClaimCorrectionMessage } from './kb-claim-guard.mjs';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_TOKENS = 2048;
 const HISTORY_MESSAGE_LIMIT = 16;
+// How many times per turn we'll bounce a "you claimed a write you didn't make" reply back to
+// the model to fix. Bounded so a stubborn model can't loop forever; after this we override.
+const MAX_CLAIM_CORRECTIONS = 2;
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -195,6 +199,7 @@ export async function runKbAgentLoop({
   let finalText = '';
   let streamedFinalReply = false;
   let streamedTextInPriorTurn = false;
+  let claimCorrections = 0;
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const stream = anthropic.messages.stream({
@@ -232,9 +237,26 @@ export async function runKbAgentLoop({
     const toolUses = content.filter((block) => block?.type === 'tool_use');
     const textBlocks = content.filter((block) => block?.type === 'text');
 
-    // Done: the model wrote a reply and asked for no (more) tools.
+    // Done: the model wrote a reply and asked for no (more) tools — UNLESS that reply claims a
+    // write it never actually made this turn. Then wipe the streamed text and make the model
+    // either do it for real or retract, rather than ship a false "Saved it!".
     if (response?.stop_reason !== 'tool_use' || toolUses.length === 0) {
-      finalText = textBlocks.map((block) => block.text || '').join('').trim();
+      const candidateText = textBlocks.map((block) => block.text || '').join('').trim();
+      const unbacked = findUnbackedWriteClaims(candidateText, collectedOutcomes);
+      if (unbacked.length > 0 && claimCorrections < MAX_CLAIM_CORRECTIONS) {
+        claimCorrections += 1;
+        console.warn(
+          `[kb-truthfulness] chat ${chatId} turn ${turnId}: reply claimed ` +
+            `${unbacked.map((u) => u.family).join(', ')} with no backing tool call — ` +
+            `forcing correction (${claimCorrections}/${MAX_CLAIM_CORRECTIONS}).`
+        );
+        if (streamedTextThisTurn) resetReplyStream({ res, deps, chatId, householdId, turnId });
+        streamedTextInPriorTurn = false;
+        messages.push({ role: 'assistant', content });
+        messages.push({ role: 'user', content: buildClaimCorrectionMessage(unbacked) });
+        continue;
+      }
+      finalText = candidateText;
       streamedFinalReply = finalText.length > 0; // it was already streamed live above
       break;
     }
@@ -305,6 +327,23 @@ export async function runKbAgentLoop({
     }
   }
   if (!finalText) finalText = 'Okay.';
+
+  // Final catch-all. The in-loop guard covers the streaming path; this also covers the wrap-up
+  // path and an exhausted correction budget. If the reply STILL claims a write with no backing
+  // tool call, replace it with an honest fallback rather than ship a lie — and wipe any streamed
+  // text so the false claim never survives on screen.
+  const residualUnbacked = findUnbackedWriteClaims(finalText, collectedOutcomes);
+  if (residualUnbacked.length > 0) {
+    console.warn(
+      `[kb-truthfulness] chat ${chatId} turn ${turnId}: honest fallback — reply still claimed ` +
+        `${residualUnbacked.map((u) => u.family).join(', ')} with no backing tool call.`
+    );
+    if (streamedFinalReply) resetReplyStream({ res, deps, chatId, householdId, turnId });
+    finalText =
+      "Hold on — I said that was done, but I didn't actually complete it, and I won't claim otherwise. " +
+      "Ask me once more and I'll do it for real.";
+    streamedFinalReply = false;
+  }
 
   // Deliver through the existing reply machinery: streams NDJSON deltas, persists
   // the assistant message, broadcasts to co-viewers, and runs the honesty guards.
