@@ -101,6 +101,12 @@ const INPUT_SCHEMAS = {
           summary: { type: 'string', description: 'One or two lines: what it is and what it is good for.' },
           sourceUrl: { type: 'string' },
           sourceTitle: { type: 'string' },
+          tags: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Optional short labels you can filter on later, e.g. "kid-approved", "quick", "vegetarian", "date-night". A few lowercase words each. Use these for labels like "Bizzy-approved" instead of putting them in the title.',
+          },
         },
         required: ['title', 'ingredients', 'instructions'],
       },
@@ -123,13 +129,26 @@ const INPUT_SCHEMAS = {
           ingredients: { type: 'array', items: { type: 'string' }, description: 'Every ingredient line of the revised recipe.' },
           instructions: { type: 'array', items: { type: 'string' }, description: 'The revised steps, in order.' },
           summary: { type: 'string' },
+          tags: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional labels for filtering, e.g. "kid-approved", "quick". Pass the full set you want on the recipe.',
+          },
         },
         required: ['title', 'ingredients', 'instructions'],
       },
       request: { type: 'string', description: 'Optional: describe the change in words only if you are not passing a full revised recipe.' },
     },
   },
-  'cookbook.list': NO_INPUT,
+  'cookbook.list': {
+    type: 'object',
+    properties: {
+      tag: {
+        type: 'string',
+        description: 'Optional — only return recipes labeled with this tag (e.g. "kid-approved"). Omit to list everything.',
+      },
+    },
+  },
   'cookbook.delete': {
     type: 'object',
     properties: { name: { type: 'string', description: 'Name of the saved cookbook recipe to delete.' } },
@@ -401,6 +420,10 @@ const OUTCOME_PASSTHROUGH_KEYS = [
   'requestedName',
   'matches',
   'totalMessages',
+  // cookbook.list — the brain must actually see its own recipes (title, tags, summary)
+  'entries',
+  'tags',
+  'filteredByTag',
 ];
 
 export function summarizeOutcomeForModel(capability, outcome) {

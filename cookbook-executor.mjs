@@ -768,12 +768,17 @@ export async function executeCookbookSave(runtimeAction, context) {
 
 export async function executeCookbookList(runtimeAction, context) {
   const { req } = context;
-  const entries = await listCookbookEntries(req.householdId);
+  const all = await listCookbookEntries(req.householdId);
+  const rawTag = String(runtimeAction?.input?.tag ?? '').trim().toLowerCase();
+  const entries = rawTag
+    ? all.filter((entry) => Array.isArray(entry.tags) && entry.tags.some((t) => String(t).toLowerCase() === rawTag))
+    : all;
   return {
     capability: 'cookbook.list',
     status: 'listed',
     count: entries.length,
-    entries: entries.slice(0, 12).map((entry) => ({
+    ...(rawTag ? { filteredByTag: rawTag } : {}),
+    entries: entries.slice(0, 20).map((entry) => ({
       id: entry.id,
       title: entry.title,
       summary: entry.summary,

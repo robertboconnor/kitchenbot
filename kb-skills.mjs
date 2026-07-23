@@ -196,6 +196,12 @@ function normalizeEmptyActionInput() {
   return {};
 }
 
+function normalizeCookbookListActionInput(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const tag = safeTrim(raw.tag || raw.label || raw.filter);
+  return tag ? { tag } : {};
+}
+
 function normalizePantryItems(raw) {
   const source = Array.isArray(raw)
     ? raw
@@ -561,12 +567,12 @@ export const KB_SKILLS = {
       includeCookbook: true,
     },
     interpreterDescription:
-      'List saved cookbook entries when the user asks what recipes or saved meals are already in the household cookbook.',
+      'List saved cookbook entries (with their titles and tags) when the user asks what recipes or saved meals are in the cookbook. Pass a `tag` to filter to just those labeled recipes, e.g. tag "kid-approved".',
     exampleAction: {
       capability: 'cookbook.list',
-      input: {},
+      input: { tag: 'kid-approved' },
     },
-    normalizeActionInput: normalizeEmptyActionInput,
+    normalizeActionInput: normalizeCookbookListActionInput,
     execute: executeCookbookList,
   },
   'cookbook.delete': {
