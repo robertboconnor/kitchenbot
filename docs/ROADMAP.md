@@ -75,6 +75,18 @@ A big pass across the roadmap, now **deployed** (`dev` == `main`; 165 tests gree
   hit-rate note: reliably reaches the physical register; "cute butt" verbatim stays its rarest note.
   **Deployed to prod 2026-07-23 (PR #5).** ⚠️ Fires only for a user named exactly "Elle" — verify her
   real account name in prod.
+- **HOTFIX — claim-guard false-positive on "list your tools" (2026-07-23, post-PR-#5).** Real prod
+  bug found in live use: asking KB what it can do / to list its tools (e.g. "list all your tools like
+  `person.profile.update`") made the truthfulness guard (`kb-claim-guard.mjs`) read the tool
+  *description's* completion vocabulary ("adds to your list", "I'll remember it") as a false claim of a
+  completed write — it wiped the streamed reply, retried, and shipped the canned "I said that was done
+  but didn't actually complete it" message. Root cause: the guard couldn't distinguish *describing* a
+  capability from *claiming* a completed action. Fix: `findUnbackedWriteClaims` now suppresses the check
+  when the turn is a description — the reply names ≥2 distinct dotted tool identifiers
+  (`looksLikeToolRundown`), or the user asked what KB can do (`isCapabilityQuestion`); both loop call
+  sites pass `{ userPrompt }`. Core claim-matching is untouched — genuine false claims (incl. one-tool-name
+  mentions) still flag. 169 tests green (4 new). ⚠️ *The claim-guard remains a heuristic text-matcher; if
+  new false-positives surface, prefer widening the description-suppression over weakening claim detection.*
 
 **Deferred (deliberate, with rationale):**
 - **Unify the two recipe-import pipelines — NOT a security fix; needs a product call (deferred).** The
