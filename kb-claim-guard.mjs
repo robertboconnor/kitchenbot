@@ -1,16 +1,24 @@
 // kb-claim-guard.mjs
-// Truthfulness safety net for the agent loop. The brain's system prompt forbids claiming
-// a completed action it didn't actually take via a tool — but nothing ENFORCED it, so the
-// model could end a turn with "Saved it!" while never calling cookbook.save. This module
-// deterministically cross-checks the model's final reply against the turn's real tool trace:
-// if the reply asserts a completed WRITE for a capability family that had no successful tool
-// call this turn, the loop resets the streamed text and forces the model to either actually
-// do it or retract the claim. This is a post-hoc integrity check on the brain's own output —
-// it does NOT select actions or infer user intent (that stays the brain's job).
+// Truthfulness safety net for the agent loop — STRUCTURAL, not text-pattern.
+//
+// The brain must never tell the user it completed an action it didn't actually perform via a
+// tool ("Saved it!" with no cookbook.save). The FIRST version of this guard regex-scanned the
+// reply for "lie-shaped" words and mapped them to capability families. That was a dumb executor
+// pretending to be smart: it couldn't tell "describing a tool" from "claiming a write" and shipped
+// a real prod bug (asking KB to list its tools got the honest answer wiped). Per the brain
+// contract, heuristics that infer meaning from prose are forbidden.
+//
+// This version is structural: we build the turn's ACTUAL tool trace (ground truth of what ran and
+// what changed) and hand it, with the draft reply, to a verifier model that judges whether the
+// reply asserts any change the trace doesn't support. Intelligence over facts, not pattern-matching
+// over prose. It is a post-hoc integrity CHECK on the brain's own output — it selects no action and
+// infers no USER intent (both remain the brain's job), so it does not violate the executor contract.
 
-// A write "counts as done" if the tool ran with ok:true and a status that isn't one of these
-// (these mean nothing was persisted). 'unchanged' / 'already_present' / 'duplicate' DO count —
-// the thing is on the list / in the cookbook, so "it's saved" is truthful.
+import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
+import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
+
+// A write "counts as done" if the tool ran ok with a status that persisted something. These
+// statuses mean nothing was written — a reply must not claim completion off the back of them.
 const NON_COMMITTAL_STATUSES = new Set([
   'invalid',
   'no_items',
@@ -24,190 +32,152 @@ const NON_COMMITTAL_STATUSES = new Set([
   'needs_clarification',
 ]);
 
-// capability -> family, for the two cross-list moves whose prefix would otherwise mislead.
-const EXACT_CAP_FAMILY = {
-  'grocery.move_to_pantry': 'pantry',
-  'pantry.move_to_grocery': 'grocery',
+function compactOutcomeDetail(outcome) {
+  if (!outcome || typeof outcome !== 'object') return '';
+  try {
+    // The full outcome object IS the ground truth; give the verifier the raw fields (capped).
+    const json = JSON.stringify(outcome);
+    return json.length > 600 ? `${json.slice(0, 600)}…` : json;
+  } catch {
+    return '';
+  }
+}
+
+// Deterministic, factual summary of everything the turn actually did — reads and writes, with
+// status and result fields. This is structuring FACTS (not inferring meaning), so it stays in code.
+export function summarizeToolTrace(collectedOutcomes = []) {
+  const lines = [];
+  for (const entry of Array.isArray(collectedOutcomes) ? collectedOutcomes : []) {
+    if (!entry) continue;
+    const cap = String(entry.capability ?? entry.outcome?.capability ?? 'unknown');
+    const kind = entry.isWrite === true ? 'write' : 'read';
+    const ok = entry.ok === true;
+    const status = String(entry.outcome?.status ?? '').trim();
+    const persisted =
+      ok && entry.isWrite === true && !(status && NON_COMMITTAL_STATUSES.has(status.toLowerCase()));
+    const detail = compactOutcomeDetail(entry.outcome);
+    lines.push(
+      `- tool: ${cap} | kind: ${kind} | ok: ${ok}` +
+        (status ? ` | status: ${status}` : '') +
+        (entry.isWrite === true ? ` | persisted_a_change: ${persisted}` : '') +
+        (detail ? ` | result: ${detail}` : '')
+    );
+  }
+  return lines.join('\n');
+}
+
+const VERIFIER_TOOL = {
+  name: 'report_unsupported_claims',
+  description:
+    'Report any statement in the assistant reply that claims a specific change was completed this turn but is not supported by the tool trace. Empty array if the reply is fully truthful.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      unsupportedClaims: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Each unsupported completed-change claim, quoted or briefly paraphrased.',
+      },
+    },
+    required: ['unsupportedClaims'],
+  },
 };
 
-const WRITE_FAMILIES = [
-  {
-    family: 'cookbook',
-    prefixes: ['cookbook.'],
-    patterns: [
-      /\b(saved|added|tucked|stored|popped|put)\b[^.!?\n]{0,50}\bcookbook\b/i,
-      /\b(it'?s|that'?s|they'?re|you'?ll find (?:it|them|that))\b[^.!?\n]{0,40}\b(?:in|to) your cookbook\b/i,
-      /\badded\b[^.!?\n]{0,40}\bto your (?:saved )?recipes\b/i,
-      /\bsaved\b[^.!?\n]{0,40}\b(?:recipe|as a[^.!?\n]{0,30}recipe)\b/i,
-    ],
-  },
-  {
-    family: 'grocery',
-    prefixes: ['grocery.'],
-    patterns: [
-      /\b(added|put|updated|removed|cleared|took|crossed|checked|marked)\b[^.!?\n]{0,50}\b(?:grocery|shopping) list\b/i,
-      /\b(added|put)\b[^.!?\n]{0,30}\bto (?:your|the) list\b/i,
-      /\b(updated|cleared) (?:your|the) (?:grocery|shopping )?list\b/i,
-      /\bit'?s on (?:your|the) (?:grocery|shopping) list\b/i,
-    ],
-  },
-  {
-    family: 'pantry',
-    prefixes: ['pantry.'],
-    patterns: [
-      /\b(added|stocked|put|removed|refiled|re-filed|moved)\b[^.!?\n]{0,50}\bpantry\b/i,
-      /\b(it'?s|that'?s|they'?re) (?:now )?in (?:your|the) pantry\b/i,
-    ],
-  },
-  {
-    family: 'plan',
-    prefixes: ['plan.'],
-    patterns: [
-      /\b(added|put)\b[^.!?\n]{0,40}\bthis week(?:'?s)?(?: plan| menu)?\b/i,
-      /\bon (?:your|the|this)(?: week'?s| weekly)? plan\b/i,
-      /\bmarked\b[^.!?\n]{0,40}\bcooked\b/i,
-      /\badded\b[^.!?\n]{0,40}\bto (?:the |your |this week'?s )?plan\b/i,
-    ],
-  },
-  {
-    family: 'memory',
-    prefixes: ['memory.'],
-    patterns: [
-      /\b(saved|noted|stored|recorded)\b[^.!?\n]{0,40}\b(?:to memory|that down|for (?:later|next time)|in (?:my )?memory)\b/i,
-      /\bi'?ll (?:remember|keep that in mind|note that)\b/i,
-      /\bgot it[,—-]?\s*(?:i'?ve )?(?:saved|noted|recorded)\b/i,
-    ],
-  },
-  {
-    family: 'profile',
-    prefixes: ['person.'],
-    patterns: [
-      /\b(updated|added to|saved|recorded|noted)\b[^.!?\n]{0,40}\b(profile|accepted foods?|rejected foods?|allerg(?:y|ies))\b/i,
-      /\b(?:it'?s|that'?s|they'?re) (?:now )?(?:in|on|off) (?:her|his|their|the)[^.!?\n]{0,30}\b(profile|accepted|rejected)\b/i,
-      /\b(added|moved)\b[^.!?\n]{0,40}\b(?:to |into |onto )?(?:her|his|their|the)?[^.!?\n]{0,15}\b(accepted|rejected)\b[^.!?\n]{0,15}\b(?:foods?|list)\b/i,
-    ],
-  },
-];
+const VERIFIER_SYSTEM =
+  'You are the truthfulness checker for KitchenBot, a shared household kitchen assistant. Your ONLY job: ' +
+  'decide whether the assistant\'s DRAFT REPLY tells the user it COMPLETED or CHANGED something that its ' +
+  'actual tool calls this turn do not support.\n\n' +
+  'You are given the COMPLETE, authoritative TRACE of every tool the assistant called this turn, with ' +
+  'results. The trace is ground truth: if a change is not in the trace (persisted_a_change: true), it did ' +
+  'NOT happen.\n\n' +
+  'Flag a statement ONLY if it asserts, as an accomplished fact, that a specific change was made THIS turn ' +
+  '— saved / added / removed / updated / marked / cleared / moved a recipe, grocery item, pantry item, ' +
+  'planned meal, memory, or person profile — and no tool call in the trace persisted it.\n\n' +
+  'Do NOT flag:\n' +
+  '- Describing what KitchenBot can do, or listing/naming its tools or features. That is not a claim of action.\n' +
+  '- Reading, looking up, checking, or reporting existing state. Reads are not writes.\n' +
+  "- Offers, suggestions, or questions ('I can add that', 'want me to save it?', 'should I…').\n" +
+  "- Recommendations or conditional/future statements ('this pairs well', 'you could add', 'next time').\n" +
+  '- A change the trace shows as done even if its status was duplicate / already-present / unchanged — the ' +
+  "item IS on the list, so 'it's saved' is truthful.\n\n" +
+  'Call report_unsupported_claims with each unsupported claim (short quote or paraphrase), or an empty array ' +
+  'if the reply is fully truthful. When in doubt that a claim is truly unsupported, do NOT flag it.';
 
-// Object-less completion claims ("Saved it!") that name no surface. These only fire when the
-// turn had NO successful write at all — the exact shape of the reported bug.
-const BARE_COMPLETION_PATTERNS = [
-  /\bsaved it\b/i,
-  /\bsaved that\b/i,
-  /\bsaved this\b/i,
-  /^\s*saved[!.]?\s*$/im,
-  /\b(?:all set|done)[!.]?\s+(?:it'?s|that'?s|they'?re)\s+(?:saved|added|updated|on|in)\b/i,
-];
-
-function familyForCapability(cap) {
-  const c = String(cap ?? '').trim().toLowerCase();
-  if (!c) return null;
-  if (EXACT_CAP_FAMILY[c]) return EXACT_CAP_FAMILY[c];
-  for (const fam of WRITE_FAMILIES) {
-    if (fam.prefixes.some((p) => c.startsWith(p))) return fam.family;
-  }
-  return null;
-}
-
-function backedFamiliesFromOutcomes(collectedOutcomes) {
-  const backed = new Set();
-  let anyBackedWrite = false;
-  for (const entry of Array.isArray(collectedOutcomes) ? collectedOutcomes : []) {
-    if (!entry || entry.isWrite !== true || entry.ok !== true) continue;
-    const status = String(entry.outcome?.status ?? '').trim().toLowerCase();
-    if (status && NON_COMMITTAL_STATUSES.has(status)) continue;
-    anyBackedWrite = true;
-    const fam = familyForCapability(entry.capability ?? entry.outcome?.capability);
-    if (fam) backed.add(fam);
-  }
-  return { backed, anyBackedWrite };
-}
-
-function firstMatch(reply, patterns) {
-  for (const re of patterns) {
-    const m = reply.match(re);
-    if (m) return m[0].trim().replace(/\s+/g, ' ').slice(0, 80);
-  }
-  return null;
-}
-
-// --- Description-context suppression --------------------------------------------------------
-// The guard hunts for completion vocabulary ("added to your list", "saved it"). But DESCRIBING a
-// capability reuses the exact same verbs — "grocery.write adds items to your list" reads like
-// "added it to your list". So when the user asks "what can you do" / "list your tools", an honest
-// answer trips the guard, gets wiped, and the loop emits a bogus "I didn't actually complete it"
-// message. (Real prod bug, 2026-07-23.) These detectors recognize the description case and skip
-// the check for that turn — the core claim-matching stays fully active for real action requests.
-const TOOL_IDENTIFIER_RE = /\b(?:cookbook|grocery|pantry|plan|memory|web|thread|person)\.[a-z_]+(?:\.[a-z_]+)?\b/gi;
-
-// True when the reply names two or more DISTINCT tool identifiers — i.e. it is enumerating tools,
-// not reporting one action. One incidental mention does not disarm the guard; a rundown does.
-function looksLikeToolRundown(reply) {
-  const found = new Set();
-  for (const m of String(reply ?? '').matchAll(TOOL_IDENTIFIER_RE)) {
-    found.add(m[0].toLowerCase());
-    if (found.size >= 2) return true;
-  }
-  return false;
-}
-
-// True when the user's turn is asking what KB can do / to list its tools — a description request,
-// not an action request, so nothing in the reply should be read as a completed-write claim.
-function isCapabilityQuestion(prompt) {
-  const p = String(prompt ?? '').toLowerCase();
-  if (!p.trim()) return false;
+function buildVerifierUserMessage(reply, trace) {
   return (
-    /\bwhat (?:can|do|could|all can|else can) you (?:do|help|offer|handle)\b/.test(p) ||
-    /\b(?:what|which)\b[^.?!]{0,20}\b(?:your|you)\b[^.?!]{0,24}\b(?:tools?|features?|capabilit(?:y|ies)|commands?|functions?)\b/.test(p) ||
-    /\b(?:list|show|tell me|explain|enumerate|name)\b[^.?!]{0,30}\b(?:tools?|features?|capabilit(?:y|ies)|commands?|functions?|everything you can)\b/.test(p) ||
-    /\bhow (?:do|does) (?:you|kb|kitchenbot|this app) work\b/.test(p) ||
-    /\bwhat (?:does|do)\b[^.?!]{0,30}\.[a-z_]+[^.?!]{0,20}\bdo\b/.test(p)
+    'TOOL TRACE (everything the assistant actually did this turn):\n' +
+    (trace && trace.trim() ? trace : '(no tools were called this turn)') +
+    '\n\nDRAFT REPLY:\n' +
+    String(reply ?? '')
   );
 }
 
-// Returns [] when the reply is honest. Otherwise returns [{ family, phrase }] for each
-// completed-write claim that has no matching successful tool call this turn.
-export function findUnbackedWriteClaims(replyText, collectedOutcomes = [], context = {}) {
-  const reply = String(replyText ?? '');
-  if (!reply.trim()) return [];
-  // Description-context suppression: if the reply is a tool rundown, or the user asked what KB can
-  // do, the completion vocabulary is descriptive — do not read it as a false claim.
-  if (looksLikeToolRundown(reply) || isCapabilityQuestion(context.userPrompt)) return [];
-  const { backed, anyBackedWrite } = backedFamiliesFromOutcomes(collectedOutcomes);
-
-  const unbacked = [];
-  for (const fam of WRITE_FAMILIES) {
-    if (backed.has(fam.family)) continue;
-    const phrase = firstMatch(reply, fam.patterns);
-    if (phrase) unbacked.push({ family: fam.family, phrase });
-  }
-
-  // Bare "Saved it!"-style claims: only suspicious when literally nothing was written.
-  if (unbacked.length === 0 && !anyBackedWrite) {
-    const phrase = firstMatch(reply, BARE_COMPLETION_PATTERNS);
-    if (phrase) unbacked.push({ family: 'unknown', phrase });
-  }
-  return unbacked;
+// Parses the verifier's forced tool call into a clean string[]. Exported for unit tests.
+export function parseVerifierResponse(response) {
+  const content = Array.isArray(response?.content) ? response.content : [];
+  const block = content.find(
+    (b) => b?.type === 'tool_use' && b?.name === 'report_unsupported_claims'
+  );
+  const raw = block?.input?.unsupportedClaims;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((s) => String(s ?? '').trim()).filter(Boolean);
 }
 
-const FAMILY_TOOL_HINT = {
-  cookbook: 'cookbook.save (or cookbook.update for one already saved)',
-  grocery: 'grocery.write / grocery.update_item',
-  pantry: 'pantry.add',
-  plan: 'plan.add / plan.update',
-  memory: 'memory.save',
-  profile: 'person.profile.update',
-};
+// Verifies the draft reply against the real tool trace using a verifier model. Returns
+// { unsupportedClaims: string[], checked: boolean }. FAILS OPEN — if the check can't run or
+// errors, it returns no claims, because wrongly blocking a truthful reply (the exact prod bug we
+// are fixing) is worse than missing a rare genuine over-claim, which the system prompt discourages.
+export async function verifyReplyClaims({
+  anthropic,
+  replyText,
+  collectedOutcomes = [],
+  ids = {},
+  prompt = '',
+} = {}) {
+  const reply = String(replyText ?? '').trim();
+  if (!reply) return { unsupportedClaims: [], checked: false };
+  if (typeof anthropic?.messages?.create !== 'function') {
+    return { unsupportedClaims: [], checked: false };
+  }
+  const trace = summarizeToolTrace(collectedOutcomes);
+  try {
+    const response = await createLoggedAnthropicMessage(
+      anthropic,
+      {
+        model: resolveAnthropicModelForCallPurpose('kb_truthfulness_check'),
+        max_tokens: 400,
+        system: VERIFIER_SYSTEM,
+        messages: [{ role: 'user', content: buildVerifierUserMessage(reply, trace) }],
+        tools: [VERIFIER_TOOL],
+        tool_choice: { type: 'tool', name: 'report_unsupported_claims' },
+      },
+      {
+        householdId: ids.householdId,
+        chatId: ids.chatId,
+        turnId: ids.turnId,
+        callPurpose: 'kb_truthfulness_check',
+        callSurface: 'chat',
+        prompt,
+      }
+    );
+    return { unsupportedClaims: parseVerifierResponse(response), checked: true };
+  } catch (error) {
+    console.warn(`[kb-truthfulness] verifier error (failing open): ${error?.message || error}`);
+    return { unsupportedClaims: [], checked: false, error: true };
+  }
+}
 
-// The corrective message fed back to the model when it claimed a write it didn't make.
-export function buildClaimCorrectionMessage(unbacked = []) {
-  const families = [...new Set(unbacked.map((u) => u.family))].filter((f) => f && f !== 'unknown');
-  const toolHint = families.length ? families.map((f) => FAMILY_TOOL_HINT[f] || f).join(', ') : 'the matching write tool';
-  const example = unbacked[0]?.phrase || 'saved it';
+// The corrective message fed back to the model when the verifier found unsupported claims.
+export function buildClaimCorrectionMessage(unsupportedClaims = []) {
+  const claims = (Array.isArray(unsupportedClaims) ? unsupportedClaims : [])
+    .map((c) => String(c ?? '').trim())
+    .filter(Boolean);
+  const quoted = claims.length ? claims.map((c) => `"${c}"`).join('; ') : 'that something was done';
   return (
-    `STOP — your draft reply told the user you completed an action ("${example}"), but you did NOT successfully call ` +
-    `the tool for it this turn. Your rules forbid claiming you changed something unless a tool actually did it. ` +
-    `Do ONE of these now: (1) call ${toolHint} to actually do it, then confirm truthfully; or (2) if you can't or ` +
-    `shouldn't, rewrite your reply to say plainly that it is NOT done and how to proceed. Do not repeat the false claim.`
+    `STOP — your draft reply told the user you completed a change you did NOT actually make via a tool this ` +
+    `turn: ${quoted}. Your rules forbid claiming you changed something unless a tool actually did it and ` +
+    `reported success. Do ONE of these now: (1) call the right tool to actually do it, then confirm ` +
+    `truthfully; or (2) rewrite your reply to say plainly what is and is not done, and how to proceed. Do ` +
+    `not repeat the false claim.`
   );
 }

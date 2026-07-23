@@ -1,123 +1,109 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findUnbackedWriteClaims, buildClaimCorrectionMessage } from '../kb-claim-guard.mjs';
+import {
+  summarizeToolTrace,
+  parseVerifierResponse,
+  buildClaimCorrectionMessage,
+  verifyReplyClaims,
+} from '../kb-claim-guard.mjs';
 
-const write = (capability, status, ok = true) => ({ ok, capability, isWrite: true, outcome: { capability, status } });
+// --- summarizeToolTrace: structural fact summary (deterministic) ---
 
-test('the reported bug: "Saved it!" with no tool calls is flagged', () => {
-  const unbacked = findUnbackedWriteClaims('Saved it! You can find it in your cookbook now.', []);
-  assert.ok(unbacked.length > 0, 'should flag an unbacked save claim');
+const gWrite = (status, extra = {}) => ({
+  ok: true,
+  capability: 'grocery.write',
+  isWrite: true,
+  outcome: { capability: 'grocery.write', status, ...extra },
 });
 
-test('"Saved it!" is honest when a cookbook.save actually succeeded', () => {
-  const unbacked = findUnbackedWriteClaims('Saved it!', [write('cookbook.save', 'saved')]);
-  assert.equal(unbacked.length, 0);
+test('summarizeToolTrace marks a real persisted write', () => {
+  const t = summarizeToolTrace([gWrite('written', { addedItems: ['milk'] })]);
+  assert.match(t, /grocery\.write/);
+  assert.match(t, /kind: write/);
+  assert.match(t, /persisted_a_change: true/);
+  assert.match(t, /"addedItems":\["milk"\]/);
 });
 
-test('claim of saving to cookbook with no cookbook tool call is flagged (cookbook family)', () => {
-  const unbacked = findUnbackedWriteClaims('Done — I saved that to your cookbook.', [write('grocery.write', 'committed')]);
-  assert.equal(unbacked.length, 1);
-  assert.equal(unbacked[0].family, 'cookbook');
+test('summarizeToolTrace: a non-committal status did not persist', () => {
+  assert.match(summarizeToolTrace([gWrite('ambiguous')]), /persisted_a_change: false/);
 });
 
-test('grocery add claim with no grocery write is flagged', () => {
-  const unbacked = findUnbackedWriteClaims("I've added butter to your grocery list.", []);
-  assert.equal(unbacked.length, 1);
-  assert.equal(unbacked[0].family, 'grocery');
+test('summarizeToolTrace: a failed write did not persist', () => {
+  const t = summarizeToolTrace([{ ok: false, capability: 'cookbook.save', isWrite: true, outcome: { status: 'error' } }]);
+  assert.match(t, /ok: false/);
+  assert.match(t, /persisted_a_change: false/);
 });
 
-test('grocery add claim IS backed by a real grocery.write', () => {
-  const unbacked = findUnbackedWriteClaims("I've added butter to your grocery list.", [write('grocery.write', 'committed')]);
-  assert.equal(unbacked.length, 0);
+test('summarizeToolTrace: reads are labeled read, with no persisted flag', () => {
+  const t = summarizeToolTrace([{ ok: true, capability: 'grocery.list', isWrite: false, outcome: { items: [] } }]);
+  assert.match(t, /kind: read/);
+  assert.doesNotMatch(t, /persisted_a_change/);
 });
 
-test('a failed/invalid write does NOT back a completion claim', () => {
-  const unbacked = findUnbackedWriteClaims('Saved it to your cookbook!', [write('cookbook.save', 'invalid')]);
-  assert.equal(unbacked.length, 1);
-  assert.equal(unbacked[0].family, 'cookbook');
-});
+// --- parseVerifierResponse: extract the forced tool call (deterministic) ---
 
-test('"already there" statuses (unchanged/duplicate) DO back an "it\'s in your cookbook" claim', () => {
-  for (const status of ['unchanged', 'duplicate', 'already_present']) {
-    const unbacked = findUnbackedWriteClaims("It's already in your cookbook.", [write('cookbook.save', status)]);
-    assert.equal(unbacked.length, 0, `status ${status} should count as backed`);
-  }
-});
-
-test('an OFFER (present tense) is not a completion claim, so it is not flagged', () => {
-  assert.equal(findUnbackedWriteClaims('Want me to save it to your cookbook? Just say the word.', []).length, 0);
-  assert.equal(findUnbackedWriteClaims('I can add butter to your grocery list if you like.', []).length, 0);
-});
-
-test('marking a meal cooked with no plan.update is flagged (plan family)', () => {
-  const unbacked = findUnbackedWriteClaims("Nice — I've marked the succotash as cooked.", []);
-  assert.equal(unbacked.length, 1);
-  assert.equal(unbacked[0].family, 'plan');
-});
-
-test('a purely conversational reply with no claims is clean', () => {
-  const unbacked = findUnbackedWriteClaims(
-    "Here's a quick lemon vinaigrette: whisk lemon juice, dijon, honey, then stream in olive oil. Want me to save it?",
-    []
-  );
-  assert.equal(unbacked.length, 0);
-});
-
-test('pantry move backs a pantry claim (grocery.move_to_pantry maps to pantry, not grocery)', () => {
-  const unbacked = findUnbackedWriteClaims("Moved that into your pantry.", [write('grocery.move_to_pantry', 'moved')]);
-  assert.equal(unbacked.length, 0);
-});
-
-test('claiming a profile update with no person.profile.update is flagged (profile family)', () => {
-  const reply = "I've updated her profile — roasted broccoli is now in her accepted foods and off the rejected list.";
-  const unbacked = findUnbackedWriteClaims(reply, []);
-  assert.equal(unbacked.length, 1);
-  assert.equal(unbacked[0].family, 'profile');
-});
-
-test('a real person.profile.update backs the profile claim', () => {
-  const reply = "Updated her profile — roasted broccoli is now accepted.";
-  const unbacked = findUnbackedWriteClaims(reply, [write('person.profile.update', 'updated')]);
-  assert.equal(unbacked.length, 0);
-});
-
-test('buildClaimCorrectionMessage names the right tool and forbids the false claim', () => {
-  const msg = buildClaimCorrectionMessage([{ family: 'cookbook', phrase: 'saved it' }]);
-  assert.match(msg, /cookbook\.save/);
-  assert.match(msg, /did NOT successfully call/i);
-});
-
-// --- Regression: describing/listing tools must NOT be read as a false claim (prod bug 2026-07-23) ---
-
-test('a tool RUNDOWN (listing tools by name) is not flagged, even with completion vocab', () => {
-  const reply = [
-    'Here are my tools:',
-    '- `grocery.write` — adds items to your grocery list',
-    '- `cookbook.save` — saves a recipe to your cookbook',
-    "- `memory.save` — records a household fact; I'll remember it for next time",
-    "- `person.profile.update` — saves a person's foods and allergies to their profile",
-  ].join('\n');
-  assert.deepEqual(findUnbackedWriteClaims(reply, []), []);
-});
-
-test('a prose capability answer is not flagged when the user asked what KB can do', () => {
-  const reply = "I can add things to your grocery list, save recipes to your cookbook, and I'll remember household facts for next time.";
-  assert.deepEqual(findUnbackedWriteClaims(reply, [], { userPrompt: 'what can you do?' }), []);
-  assert.deepEqual(findUnbackedWriteClaims(reply, [], { userPrompt: 'list all your tools and what they do' }), []);
-});
-
-test('one incidental tool mention does NOT disarm the guard (only a real rundown does)', () => {
-  // A single dotted name in an otherwise-false claim must still be caught.
-  const unbacked = findUnbackedWriteClaims('Saved it to your cookbook via cookbook.save!', []);
-  assert.equal(unbacked.length, 1);
-  assert.equal(unbacked[0].family, 'cookbook');
-});
-
-test('description suppression does not leak into real action turns', () => {
-  // Normal action request + false claim (no meta prompt, no rundown) is still flagged.
-  const unbacked = findUnbackedWriteClaims('Done — I added milk and eggs to your grocery list.', [], {
-    userPrompt: 'add milk and eggs',
+test('parseVerifierResponse extracts claims from the forced tool call', () => {
+  const r = parseVerifierResponse({
+    content: [{ type: 'tool_use', name: 'report_unsupported_claims', input: { unsupportedClaims: ['saved it', ' added milk '] } }],
   });
-  assert.equal(unbacked.length, 1);
-  assert.equal(unbacked[0].family, 'grocery');
+  assert.deepEqual(r, ['saved it', 'added milk']);
+});
+
+test('parseVerifierResponse returns [] for no/other tool call or bad shape', () => {
+  assert.deepEqual(parseVerifierResponse({ content: [{ type: 'text', text: 'x' }] }), []);
+  assert.deepEqual(parseVerifierResponse({}), []);
+  assert.deepEqual(parseVerifierResponse({ content: [{ type: 'tool_use', name: 'report_unsupported_claims', input: {} }] }), []);
+});
+
+// --- buildClaimCorrectionMessage (deterministic) ---
+
+test('buildClaimCorrectionMessage quotes the claims and forbids repeating them', () => {
+  const m = buildClaimCorrectionMessage(['I added milk to your list']);
+  assert.match(m, /I added milk to your list/);
+  assert.match(m, /did NOT actually make/i);
+  assert.match(m, /not repeat the false claim/i);
+});
+
+// --- verifyReplyClaims with a MOCK client (hermetic: no householdId → no usage-ledger write) ---
+
+function mockClient(captured, response) {
+  return { messages: { create: async (params) => { captured.params = params; return response; } } };
+}
+
+test('verifyReplyClaims returns the verifier claims and sends the reply + trace', async () => {
+  const captured = {};
+  const client = mockClient(captured, {
+    content: [{ type: 'tool_use', name: 'report_unsupported_claims', input: { unsupportedClaims: ['Saved it!'] } }],
+  });
+  const r = await verifyReplyClaims({
+    anthropic: client,
+    replyText: 'Saved it!',
+    collectedOutcomes: [gWrite('written', { addedItems: ['milk'] })],
+    ids: {},
+  });
+  assert.deepEqual(r.unsupportedClaims, ['Saved it!']);
+  assert.equal(r.checked, true);
+  assert.equal(captured.params.tool_choice.name, 'report_unsupported_claims');
+  assert.match(captured.params.messages[0].content, /DRAFT REPLY:\nSaved it!/);
+  assert.match(captured.params.messages[0].content, /grocery\.write/); // trace was included
+});
+
+test('verifyReplyClaims returns [] on a clean verdict', async () => {
+  const client = mockClient({}, {
+    content: [{ type: 'tool_use', name: 'report_unsupported_claims', input: { unsupportedClaims: [] } }],
+  });
+  const r = await verifyReplyClaims({ anthropic: client, replyText: 'Here are some dinner ideas.', ids: {} });
+  assert.deepEqual(r.unsupportedClaims, []);
+});
+
+test('verifyReplyClaims FAILS OPEN when the verifier errors', async () => {
+  const client = { messages: { create: async () => { throw new Error('api down'); } } };
+  const r = await verifyReplyClaims({ anthropic: client, replyText: 'Saved it!', ids: {} });
+  assert.deepEqual(r.unsupportedClaims, []);
+  assert.equal(r.error, true);
+});
+
+test('verifyReplyClaims skips the call for an empty reply or a missing client', async () => {
+  assert.deepEqual((await verifyReplyClaims({ replyText: '' })).unsupportedClaims, []);
+  assert.deepEqual((await verifyReplyClaims({ replyText: 'hi' })).unsupportedClaims, []); // no client → fail-open
 });
