@@ -32,9 +32,9 @@ The whole overnight body of work is now **deployed**, not just on `dev`. In prod
 **149 tests green.** Rollback tags: `pre-oneb-plan-2026-07-20`, `pre-trust-profiles-2026-07-20`.
 `dev` == `main` right now. Everything below marked "on dev / not merged" is now **live**.
 
-## 2026-07-23 — Phases 1 / 2 / 4 pass (on `dev`, NOT yet deployed)
+## ✅ Shipped to PROD on 2026-07-23 (main `8655bc8` via PR #5, Render live) — Phases 1 / 2 / 3 / 4 pass
 
-A big pass across the roadmap. Shipped to `dev` (149 tests green, browser-verified):
+A big pass across the roadmap, now **deployed** (`dev` == `main`; 165 tests green, browser-verified):
 - **Phase 1 (looks-legit):** top nav is now **Chat · Kitchen · Settings** with a real, member-reachable
   Settings tab (was owner-only behind a sidebar button); **self-hosted Nunito** (variable woff2) so every
   platform gets the rounded voice; **stored-XSS closed** (DOMPurify-sanitized markdown, marked + DOMPurify
@@ -53,7 +53,7 @@ A big pass across the roadmap. Shipped to `dev` (149 tests green, browser-verifi
   `proposedNextAction` (never a passthrough key) — so the removal is behavior-neutral. The
   `proposed_next_action_json` DB column is retained-but-inert (no migration; always `'{}'`). 144 tests
   green; server boots clean; a live ambiguous-grocery-remove smoke still surfaces `question` + `matches`
-  with no `proposedNextAction`. **On `dev`, not yet deployed.**
+  with no `proposedNextAction`. **Deployed to prod 2026-07-23 (PR #5).**
 - **Phase 3 — Recipe-fetch SSRF closed + fetch hardened (2026-07-23):** the "save this linked recipe"
   chat path is the one place our server fetches a **user-supplied** URL, and it did so with no guard. New
   shared `safe-fetch.mjs` (`safeFetch` / `assertAllowedUrl`) now refuses any URL that resolves to a
@@ -65,7 +65,28 @@ A big pass across the roadmap. Shipped to `dev` (149 tests green, browser-verifi
   (`safe-fetch` + `recipe-url-ingestion`), 162 green total; server boots clean. The other two outbound
   fetches are **not** SSRF vectors and were left alone: the standalone importer hands the URL to a
   third-party scraper (`api.riveterhq.com`, fixed host), and `web.search` runs on Anthropic's servers.
-  **On `dev`, not yet deployed.**
+  **Deployed to prod 2026-07-23 (PR #5).**
+- **Elle sweetheart — examples quality pass (2026-07-23).** Rob flagged the original flirtation as
+  "lame" — the brain defaulted timid because the prompt said "be charming" abstractly with no
+  authorization. Rewrote `sweetheartPrinciple()` to explicitly authorize the register (consensual
+  spousal flirtation, cleared to be suggestive/physical, blunt words "sexy"/"cute butt" over politer
+  synonyms) + calibrate with gold example lines. Still tasteful, never graphic — hard ceiling kept.
+  Name-gate locked by `sweetheart-gate.test.mjs` (exact match; can't leak to non-Elle users). Live
+  hit-rate note: reliably reaches the physical register; "cute butt" verbatim stays its rarest note.
+  **Deployed to prod 2026-07-23 (PR #5).** ⚠️ Fires only for a user named exactly "Elle" — verify her
+  real account name in prod.
+- **HOTFIX — claim-guard false-positive on "list your tools" (2026-07-23, post-PR-#5).** Real prod
+  bug found in live use: asking KB what it can do / to list its tools (e.g. "list all your tools like
+  `person.profile.update`") made the truthfulness guard (`kb-claim-guard.mjs`) read the tool
+  *description's* completion vocabulary ("adds to your list", "I'll remember it") as a false claim of a
+  completed write — it wiped the streamed reply, retried, and shipped the canned "I said that was done
+  but didn't actually complete it" message. Root cause: the guard couldn't distinguish *describing* a
+  capability from *claiming* a completed action. Fix: `findUnbackedWriteClaims` now suppresses the check
+  when the turn is a description — the reply names ≥2 distinct dotted tool identifiers
+  (`looksLikeToolRundown`), or the user asked what KB can do (`isCapabilityQuestion`); both loop call
+  sites pass `{ userPrompt }`. Core claim-matching is untouched — genuine false claims (incl. one-tool-name
+  mentions) still flag. 169 tests green (4 new). ⚠️ *The claim-guard remains a heuristic text-matcher; if
+  new false-positives surface, prefer widening the description-suppression over weakening claim detection.*
 
 **Deferred (deliberate, with rationale):**
 - **Unify the two recipe-import pipelines — NOT a security fix; needs a product call (deferred).** The
@@ -106,7 +127,7 @@ chat-title naming + recipe import structuring (OCR / URL → structured recipe).
 `KITCHENBOT_BRAIN_CONTRACT.md` ("Smart Brain, Dumb Executors") and `anthropic-model-policy.mjs`.
 Dead-code sweep removed ~690 lines of now-orphaned sub-brain scaffolding. These flows verified live
 (memory person/household scope, grocery-from-meals, pantry add + recategorize, grocery quantity update)
-with **zero side-model calls in any tool trace**. **On `dev`, not yet merged to prod** (Rob's call).
+with **zero side-model calls in any tool trace**. **Shipped to prod 2026-07-20** (see the PROD section above).
 
 **Re-hunt (2026-07-20) — full audit of every side-model call site.** Confirmed the brain + two shape
 helpers are the only model calls in memory/grocery/section/working-context, and surfaced the remaining
@@ -162,7 +183,7 @@ tests added).
     household's people; and a **visible UI surface** for person profiles (inspectable/editable, like the
     This Week panel — the "not silent" rule). A general `memory.list`/`search` over the freeform bucket is
     still absent (only the structured profile is queryable). ~Medium.
-- **Phase 2b — Week-long-thread memory ("This Week's Plan"). ✅ v1 built 2026-07-20 (on `dev`).**
+- **Phase 2b — Week-long-thread memory ("This Week's Plan"). ✅ v1 shipped to prod 2026-07-20.**
   Rob's #1 real-usage gap: he runs ONE chat per week (~100 msgs/meal), but the brain only sees the last
   **16** messages (`HISTORY_MESSAGE_LIMIT`), so day-1 meals fell out of view. Built a first-class,
   per-chat, **visible** meal plan (not generic compaction): a "This Week" sub-tab in Kitchen shows the
