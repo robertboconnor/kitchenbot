@@ -100,7 +100,7 @@ test('root page template uses the extracted external client runtime hook', async
   assert.match(source, /importer-conflict-state/);
   assert.match(source, /\.importer-action-state\[data-state-visible="true"\]\s*\{\s*display: flex !important;/);
   assert.doesNotMatch(source, /\.cookbook-card-mobile-body/);
-  assert.doesNotMatch(source, /id="tab-settings"/);
+  assert.match(source, /id="tab-settings"/);
 });
 
 test('main app runtime treats #cookbook as a first-class route into the cookbook subview', async () => {

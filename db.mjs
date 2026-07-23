@@ -1735,6 +1735,30 @@ export async function listPersonProfiles(householdId) {
   return rows.map(mapPersonProfileRow);
 }
 
+const PERSON_PROFILE_FIELD_COLUMNS = {
+  acceptedFoods: 'accepted_foods_json',
+  rejectedFoods: 'rejected_foods_json',
+  allergies: 'allergies_json',
+  notes: 'notes_json',
+};
+
+// Remove one value from one list on a person's profile (UI edit). Returns the updated profile.
+export async function removePersonProfileValue(householdId, person, field, value) {
+  const column = PERSON_PROFILE_FIELD_COLUMNS[field];
+  if (!column) return null;
+  const norm = normalizePersonKey(person);
+  const existing = await getPersonProfile(householdId, person);
+  if (!norm || !existing) return existing || null;
+  const target = String(value ?? '').trim().toLowerCase();
+  const next = (existing[field] || []).filter((v) => String(v).trim().toLowerCase() !== target);
+  await run(
+    `UPDATE person_profiles SET ${column} = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE household_id = ? AND normalized_person = ?`,
+    [JSON.stringify(next), householdId, norm]
+  );
+  return await getPersonProfile(householdId, person);
+}
+
 // Append food/allergy/notes facts for a person. Returns the merged profile.
 export async function updatePersonProfile(householdId, person, fields = {}) {
   const name = String(person ?? '').trim();

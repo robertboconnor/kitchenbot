@@ -39,6 +39,10 @@ import {
   getHouseholdByKey,
   setHouseholdWebSearchEnabled,
   listHouseholdUsers,
+  listPersonProfiles,
+  getPersonProfile,
+  updatePersonProfile,
+  removePersonProfileValue,
   getUserByHouseholdAndDisplayName,
   getHouseholdUserById,
   createHouseholdUser,
@@ -4571,6 +4575,7 @@ app.get('/', (req, res) => {
         <div id="tab-bar" class="tab-bar">
           <button id="tab-chat" class="tab-button tab-active">Chat</button>
           <button id="tab-groceries" class="tab-button">Kitchen</button>
+          <button id="tab-settings" class="tab-button">Settings</button>
         </div>
       </div>
 
@@ -4905,15 +4910,17 @@ app.get('/', (req, res) => {
         <div id="settings-panel" class="panel" style="display: none;">
           <h2 style="margin-top: 0;">Settings</h2>
           <div id="settings-subnav" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px;">
-            <button type="button" id="settings-subtab-my-btn" class="settings-subtab-btn settings-subtab-active">My household</button>
+            <button type="button" id="settings-subtab-my-btn" class="settings-subtab-btn settings-subtab-active">My preferences</button>
+            <button type="button" id="settings-subtab-family-btn" class="settings-subtab-btn">Family food</button>
+            <button type="button" id="settings-subtab-household-btn" class="settings-subtab-btn" style="display: none;">Household</button>
             <button type="button" id="settings-subtab-usage-btn" class="settings-subtab-btn" style="display: none;">Anthropic usage</button>
-            <button type="button" id="settings-subtab-admin-btn" class="settings-subtab-btn" style="display: none;">Global admin</button>
+            <button type="button" id="settings-subtab-admin-btn" class="settings-subtab-btn" style="display: none;">God Mode</button>
           </div>
 
           <div id="settings-view-my" class="settings-subview">
-            <h3 style="margin-top: 0;">Your household</h3>
+            <h3 style="margin-top: 0;">My preferences</h3>
             <p class="settings-page-intro">
-              Everything here applies to the household you are logged into (your session household).
+              Just you — your settings follow you onto any device you sign into. Everyone in the household has their own.
             </p>
             <div class="settings-card-grid">
               <section class="settings-card">
@@ -4934,6 +4941,15 @@ app.get('/', (req, res) => {
                   <span id="my-palette-msg" style="font-size:13px;color:var(--accent-strong);"></span>
                 </div>
               </section>
+            </div>
+          </div>
+
+          <div id="settings-view-household" class="settings-subview" style="display: none;">
+            <h3 style="margin-top: 0;">Household</h3>
+            <p class="settings-page-intro">
+              Household identity, members, KitchenBot defaults, and the API key. Owners only.
+            </p>
+            <div class="settings-card-grid">
               <section class="settings-card">
                 <div class="settings-card-header">
                   <div>
@@ -5098,6 +5114,16 @@ app.get('/', (req, res) => {
               </section>
             </div>
             <div id="my-settings-msg"></div>
+          </div>
+
+          <div id="settings-view-family" class="settings-subview" style="display: none;">
+            <h3 style="margin-top: 0;">Family food</h3>
+            <p class="settings-page-intro">
+              What everyone eats — likes, dislikes, and allergies. KitchenBot uses this to plan meals for the whole
+              household, and it stays in sync with what you tell KitchenBot in chat. Anyone can view and add what they know.
+            </p>
+            <div id="family-profiles-list"></div>
+            <p id="family-profiles-empty" class="settings-section-note" style="display:none;"></p>
           </div>
 
           <div id="settings-view-usage" class="settings-subview" style="display: none;">
@@ -5390,6 +5416,78 @@ app.post('/settings/me/palette', requireHousehold, requireAuth, requireNotImpers
     const palette = normalizePalette(req.body?.palette);
     await updateHouseholdUserPalette(req.householdId, req.userId, palette);
     return res.json({ ok: true, palette });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Family food profiles — visible + editable by any household member (collaborative, not owner-gated).
+// The brain's person.profile.* tools and this UI write to the same person_profiles store.
+const FAMILY_PROFILE_FIELDS = new Set(['acceptedFoods', 'rejectedFoods', 'allergies', 'notes']);
+
+app.get('/family/profiles', requireHousehold, requireAuth, async (req, res) => {
+  try {
+    const [users, profiles] = await Promise.all([
+      listHouseholdUsers(req.householdId).catch(() => []),
+      listPersonProfiles(req.householdId).catch(() => []),
+    ]);
+    const norm = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const byKey = new Map();
+    const order = [];
+    const ensure = (name) => {
+      const display = String(name ?? '').trim();
+      const key = norm(display);
+      if (!display || !key) return null;
+      if (!byKey.has(key)) {
+        byKey.set(key, { person: display, acceptedFoods: [], rejectedFoods: [], allergies: [], notes: [] });
+        order.push(key);
+      }
+      return byKey.get(key);
+    };
+    for (const u of users) ensure(u.display_name);
+    for (const p of profiles) {
+      const entry = ensure(p.person);
+      if (entry) {
+        entry.acceptedFoods = p.acceptedFoods || [];
+        entry.rejectedFoods = p.rejectedFoods || [];
+        entry.allergies = p.allergies || [];
+        entry.notes = p.notes || [];
+      }
+    }
+    return res.json({ profiles: order.map((k) => byKey.get(k)) });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/family/profiles/add', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
+  try {
+    const person = String(req.body?.person ?? '').trim();
+    const field = String(req.body?.field ?? '').trim();
+    const value = String(req.body?.value ?? '').trim();
+    if (!person || !FAMILY_PROFILE_FIELDS.has(field) || !value) {
+      return res.status(400).json({ error: 'person, field, and value are required' });
+    }
+    const profile = await updatePersonProfile(req.householdId, person, { [field]: [value] });
+    return res.json({ ok: true, profile });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/family/profiles/remove', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
+  try {
+    const person = String(req.body?.person ?? '').trim();
+    const field = String(req.body?.field ?? '').trim();
+    const value = String(req.body?.value ?? '').trim();
+    if (!person || !FAMILY_PROFILE_FIELDS.has(field) || !value) {
+      return res.status(400).json({ error: 'person, field, and value are required' });
+    }
+    const profile = await removePersonProfileValue(req.householdId, person, field, value);
+    return res.json({ ok: true, profile });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'Server error' });

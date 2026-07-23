@@ -36,6 +36,7 @@
         const settingsPanel = document.getElementById('settings-panel');
         const tabChat = document.getElementById('tab-chat');
         const tabGroceries = document.getElementById('tab-groceries');
+        const tabSettings = document.getElementById('tab-settings');
         const inputArea = document.getElementById('input-area');
         const groceryRefreshButton = document.getElementById('grocery-refresh');
         const groceryClearButton = document.getElementById('grocery-clear');
@@ -808,6 +809,7 @@
           clearEntityMemoryUiMessage();
           tabChat.classList.toggle('tab-active', tab === 'chat');
           tabGroceries.classList.toggle('tab-active', tab === 'groceries');
+          if (tabSettings) tabSettings.classList.toggle('tab-active', tab === 'settings');
           chat.style.display = tab === 'chat' ? 'flex' : 'none';
           groceryPanel.style.display = tab === 'groceries' ? 'flex' : 'none';
           if (settingsPanel) settingsPanel.style.display = tab === 'settings' ? 'flex' : 'none';
@@ -1439,15 +1441,22 @@
         }
 
         async function loadSettingsPanel() {
-          await loadMyHouseholdView();
+          await loadMyHouseholdView(); // sets isCurrentUserOwner from /settings/household
           await refreshOwnerAnthropicUsageView();
           const isGa = await loadAnthropicSection();
+          // My preferences + Family food are for everyone; Household + Usage are owner-only;
+          // God Mode is super-admin only.
+          const householdBtn = document.getElementById('settings-subtab-household-btn');
+          if (householdBtn) householdBtn.style.display = isCurrentUserOwner ? 'inline-block' : 'none';
           const usageBtn = document.getElementById('settings-subtab-usage-btn');
-          if (usageBtn) usageBtn.style.display = 'inline-block';
+          if (usageBtn) usageBtn.style.display = isCurrentUserOwner ? 'inline-block' : 'none';
           const subAdminBtn = document.getElementById('settings-subtab-admin-btn');
           if (subAdminBtn) subAdminBtn.style.display = isGa ? 'inline-block' : 'none';
-          if (!isGa) {
-            if (currentSettingsSubView === 'admin') currentSettingsSubView = 'my';
+          if (
+            (currentSettingsSubView === 'admin' && !isGa) ||
+            ((currentSettingsSubView === 'household' || currentSettingsSubView === 'usage') && !isCurrentUserOwner)
+          ) {
+            currentSettingsSubView = 'my';
           }
           if (isGa) {
             await loadGlobalAdminView();
@@ -1460,42 +1469,154 @@
           return refreshAdminHouseholdsList();
         }
 
+        const SETTINGS_SUBVIEWS = {
+          my: { view: 'settings-view-my', btn: 'settings-subtab-my-btn', gated: false },
+          family: { view: 'settings-view-family', btn: 'settings-subtab-family-btn', gated: false },
+          household: { view: 'settings-view-household', btn: 'settings-subtab-household-btn', gated: true },
+          usage: { view: 'settings-view-usage', btn: 'settings-subtab-usage-btn', gated: true },
+          admin: { view: 'settings-view-admin', btn: 'settings-subtab-admin-btn', gated: true },
+        };
+
         function showSettingsSubView(view) {
           clearEntityMemoryUiMessage();
-          const myV = document.getElementById('settings-view-my');
-          const usageV = document.getElementById('settings-view-usage');
-          const adminV = document.getElementById('settings-view-admin');
-          const myBtn = document.getElementById('settings-subtab-my-btn');
-          const usageBtn = document.getElementById('settings-subtab-usage-btn');
-          const adminBtn = document.getElementById('settings-subtab-admin-btn');
-          if (view === 'admin' && adminBtn && adminBtn.style.display === 'none') {
-            view = 'my';
-          }
-          if (view === 'usage' && usageBtn && usageBtn.style.display === 'none') {
-            view = 'my';
-          }
+          if (!SETTINGS_SUBVIEWS[view]) view = 'my';
+          // A gated view whose tab is hidden (not owner/admin) falls back to My preferences.
+          const reqBtn = document.getElementById(SETTINGS_SUBVIEWS[view].btn);
+          if (SETTINGS_SUBVIEWS[view].gated && reqBtn && reqBtn.style.display === 'none') view = 'my';
           currentSettingsSubView = view;
-          if (view === 'admin') {
-            if (myV) myV.style.display = 'none';
-            if (usageV) usageV.style.display = 'none';
-            if (adminV) adminV.style.display = 'block';
-            if (myBtn) myBtn.classList.remove('settings-subtab-active');
-            if (usageBtn) usageBtn.classList.remove('settings-subtab-active');
-            if (adminBtn) adminBtn.classList.add('settings-subtab-active');
-          } else if (view === 'usage') {
-            if (myV) myV.style.display = 'none';
-            if (usageV) usageV.style.display = 'block';
-            if (adminV) adminV.style.display = 'none';
-            if (myBtn) myBtn.classList.remove('settings-subtab-active');
-            if (usageBtn) usageBtn.classList.add('settings-subtab-active');
-            if (adminBtn) adminBtn.classList.remove('settings-subtab-active');
-          } else {
-            if (myV) myV.style.display = 'block';
-            if (usageV) usageV.style.display = 'none';
-            if (adminV) adminV.style.display = 'none';
-            if (myBtn) myBtn.classList.add('settings-subtab-active');
-            if (usageBtn) usageBtn.classList.remove('settings-subtab-active');
-            if (adminBtn) adminBtn.classList.remove('settings-subtab-active');
+          for (const key of Object.keys(SETTINGS_SUBVIEWS)) {
+            const conf = SETTINGS_SUBVIEWS[key];
+            const v = document.getElementById(conf.view);
+            const b = document.getElementById(conf.btn);
+            if (v) v.style.display = key === view ? 'block' : 'none';
+            if (b) b.classList.toggle('settings-subtab-active', key === view);
+          }
+          if (view === 'family') loadFamilyProfiles();
+        }
+
+        async function loadFamilyProfiles() {
+          const listEl = document.getElementById('family-profiles-list');
+          const emptyEl = document.getElementById('family-profiles-empty');
+          if (!listEl) return;
+          let profiles = [];
+          try {
+            const r = await fetch('/family/profiles', { credentials: 'same-origin' });
+            if (r.ok) profiles = (await r.json()).profiles || [];
+          } catch (e) {
+            /* leave empty */
+          }
+          listEl.innerHTML = '';
+          const anyData = profiles.some(
+            (p) => p.acceptedFoods.length || p.rejectedFoods.length || p.allergies.length || p.notes.length
+          );
+          if (emptyEl) {
+            emptyEl.style.display = profiles.length === 0 || !anyData ? 'block' : 'none';
+            emptyEl.textContent =
+              profiles.length === 0
+                ? 'No household members yet.'
+                : 'No food notes yet — add likes, dislikes, or allergies below, or just tell KitchenBot in chat.';
+          }
+          const readOnly = !!godModeReadOnly;
+          const postJson = (url, body) =>
+            fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify(body),
+            });
+          for (const p of profiles) {
+            const card = document.createElement('section');
+            card.className = 'settings-card';
+            const h = document.createElement('h3');
+            h.textContent = p.person;
+            h.style.marginTop = '0';
+            card.appendChild(h);
+            const group = (label, field, values, tone) => {
+              const wrap = document.createElement('div');
+              wrap.style.cssText = 'margin:8px 0;';
+              const lab = document.createElement('div');
+              lab.textContent = label;
+              lab.style.cssText =
+                'font-size:12px;font-weight:700;color:var(--text-soft);text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px;';
+              wrap.appendChild(lab);
+              const chips = document.createElement('div');
+              chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;';
+              if (!values.length) {
+                const none = document.createElement('span');
+                none.textContent = '—';
+                none.style.color = 'var(--text-soft)';
+                chips.appendChild(none);
+              }
+              for (const v of values) {
+                const chip = document.createElement('span');
+                chip.style.cssText =
+                  'display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:999px;font-size:13px;border:1px solid var(--border-subtle);' +
+                  (tone === 'allergy' ? 'background:#fef2f2;color:#b91c1c;border-color:#fecaca;' : 'background:var(--card-bg-2);color:var(--text);');
+                chip.appendChild(document.createTextNode(v));
+                if (!readOnly) {
+                  const x = document.createElement('button');
+                  x.type = 'button';
+                  x.textContent = '×';
+                  x.title = 'Remove';
+                  x.style.cssText = 'border:none;background:none;cursor:pointer;font-size:15px;line-height:1;color:inherit;padding:0;';
+                  x.addEventListener('click', async () => {
+                    await postJson('/family/profiles/remove', { person: p.person, field, value: v });
+                    loadFamilyProfiles();
+                  });
+                  chip.appendChild(x);
+                }
+                chips.appendChild(chip);
+              }
+              wrap.appendChild(chips);
+              return wrap;
+            };
+            card.appendChild(group('Allergies', 'allergies', p.allergies, 'allergy'));
+            card.appendChild(group('Likes', 'acceptedFoods', p.acceptedFoods));
+            card.appendChild(group("Won't eat", 'rejectedFoods', p.rejectedFoods));
+            if (p.notes && p.notes.length) card.appendChild(group('Notes', 'notes', p.notes));
+            if (!readOnly) {
+              const addRow = document.createElement('div');
+              addRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:10px;';
+              const sel = document.createElement('select');
+              sel.style.cssText = 'padding:6px 8px;border-radius:8px;border:1px solid var(--border-subtle);font-size:13px;';
+              [
+                ['acceptedFoods', 'Likes'],
+                ['rejectedFoods', "Won't eat"],
+                ['allergies', 'Allergy'],
+                ['notes', 'Note'],
+              ].forEach(([val, txt]) => {
+                const o = document.createElement('option');
+                o.value = val;
+                o.textContent = txt;
+                sel.appendChild(o);
+              });
+              const inp = document.createElement('input');
+              inp.type = 'text';
+              inp.placeholder = 'Add a food or note…';
+              inp.style.cssText = 'flex:1;min-width:140px;padding:6px 10px;border-radius:8px;border:1px solid var(--border-subtle);font-size:13px;';
+              const btn = document.createElement('button');
+              btn.type = 'button';
+              btn.textContent = 'Add';
+              const submit = async () => {
+                const value = inp.value.trim();
+                if (!value) return;
+                await postJson('/family/profiles/add', { person: p.person, field: sel.value, value });
+                inp.value = '';
+                loadFamilyProfiles();
+              };
+              btn.addEventListener('click', submit);
+              inp.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submit();
+                }
+              });
+              addRow.appendChild(sel);
+              addRow.appendChild(inp);
+              addRow.appendChild(btn);
+              card.appendChild(addRow);
+            }
+            listEl.appendChild(card);
           }
         }
 
@@ -3646,6 +3767,12 @@
           await Promise.all([loadGroceries(), loadPantry(), loadCookbook()]);
         });
 
+        if (tabSettings) {
+          tabSettings.addEventListener('click', () => {
+            setActiveTab('settings');
+          });
+        }
+
         if (grocerySubtabList) {
           grocerySubtabList.addEventListener('click', () => {
             setGroceriesSubview('list');
@@ -3974,6 +4101,18 @@
           settingsSubtabAdminBtn.addEventListener('click', async () => {
             await loadGlobalAdminView();
             showSettingsSubView('admin');
+          });
+        }
+        const settingsSubtabHouseholdBtn = document.getElementById('settings-subtab-household-btn');
+        if (settingsSubtabHouseholdBtn) {
+          settingsSubtabHouseholdBtn.addEventListener('click', () => {
+            showSettingsSubView('household');
+          });
+        }
+        const settingsSubtabFamilyBtn = document.getElementById('settings-subtab-family-btn');
+        if (settingsSubtabFamilyBtn) {
+          settingsSubtabFamilyBtn.addEventListener('click', () => {
+            showSettingsSubView('family');
           });
         }
 
