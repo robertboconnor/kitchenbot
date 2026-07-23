@@ -77,78 +77,12 @@ export function normalizeWorkingContext(raw) {
   };
 }
 
-function pendingCapabilityBucket(proposedNextAction = null) {
-  const capability = safeTrim(proposedNextAction?.action?.capability);
-  if (!capability) return '';
-  if (capability === 'meal.refine') return 'meal';
-  if (capability === 'grocery.write') return 'grocery';
-  if (capability === 'web.search') return 'search';
-  if (capability.startsWith('cookbook.')) return 'cookbook';
-  return 'other';
-}
-
-export function selectContinuationWorkingContext(workingContext, proposedNextAction = null) {
+export function selectContinuationWorkingContext(workingContext) {
   const context = normalizeWorkingContext(workingContext);
   if (!context) return null;
-  const bucket = pendingCapabilityBucket(proposedNextAction);
-  if (!bucket) {
-    return normalizeWorkingContext({
-      offeredIngredients: Array.isArray(context.offeredIngredients) ? context.offeredIngredients : [],
-      offeredSearchTopic: safeTrim(context.offeredSearchTopic),
-      linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
-      linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
-      linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),
-      linkedRecipeFailureReason: safeTrim(context.linkedRecipeFailureReason),
-      linkedRecipeSuggestedRecoveryAction: safeTrim(context.linkedRecipeSuggestedRecoveryAction),
-      linkedRecipeFetchBlocked: !!context.linkedRecipeFetchBlocked,
-      linkedRecipeBlockerKind: safeTrim(context.linkedRecipeBlockerKind),
-      linkedRecipeFailureKind: safeTrim(context.linkedRecipeFailureKind),
-      linkedRecipeHttpStatus: Number(context.linkedRecipeHttpStatus) || 0,
-    });
-  }
-  if (bucket === 'meal') return context;
-  if (bucket === 'grocery') {
-    return normalizeWorkingContext({
-      offeredIngredients: Array.isArray(context.offeredIngredients) ? context.offeredIngredients : [],
-      linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
-      linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
-      linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),
-      linkedRecipeFailureReason: safeTrim(context.linkedRecipeFailureReason),
-      linkedRecipeSuggestedRecoveryAction: safeTrim(context.linkedRecipeSuggestedRecoveryAction),
-      linkedRecipeFetchBlocked: !!context.linkedRecipeFetchBlocked,
-      linkedRecipeBlockerKind: safeTrim(context.linkedRecipeBlockerKind),
-      linkedRecipeFailureKind: safeTrim(context.linkedRecipeFailureKind),
-      linkedRecipeHttpStatus: Number(context.linkedRecipeHttpStatus) || 0,
-    });
-  }
-  if (bucket === 'search') {
-    return normalizeWorkingContext({
-      offeredSearchTopic: safeTrim(context.offeredSearchTopic),
-      linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
-      linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
-      linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),
-      linkedRecipeFailureReason: safeTrim(context.linkedRecipeFailureReason),
-      linkedRecipeSuggestedRecoveryAction: safeTrim(context.linkedRecipeSuggestedRecoveryAction),
-      linkedRecipeFetchBlocked: !!context.linkedRecipeFetchBlocked,
-      linkedRecipeBlockerKind: safeTrim(context.linkedRecipeBlockerKind),
-      linkedRecipeFailureKind: safeTrim(context.linkedRecipeFailureKind),
-      linkedRecipeHttpStatus: Number(context.linkedRecipeHttpStatus) || 0,
-    });
-  }
-  if (bucket === 'cookbook') {
-    return normalizeWorkingContext({
-      linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
-      linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
-      linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),
-      linkedRecipeFailureReason: safeTrim(context.linkedRecipeFailureReason),
-      linkedRecipeSuggestedRecoveryAction: safeTrim(context.linkedRecipeSuggestedRecoveryAction),
-      linkedRecipeFetchBlocked: !!context.linkedRecipeFetchBlocked,
-      linkedRecipeBlockerKind: safeTrim(context.linkedRecipeBlockerKind),
-      linkedRecipeFailureKind: safeTrim(context.linkedRecipeFailureKind),
-      linkedRecipeHttpStatus: Number(context.linkedRecipeHttpStatus) || 0,
-    });
-  }
   return normalizeWorkingContext({
+    offeredIngredients: Array.isArray(context.offeredIngredients) ? context.offeredIngredients : [],
+    offeredSearchTopic: safeTrim(context.offeredSearchTopic),
     linkedRecipeUrl: safeTrim(context.linkedRecipeUrl),
     linkedRecipeTitle: safeTrim(context.linkedRecipeTitle),
     linkedRecipeFetchStatus: safeTrim(context.linkedRecipeFetchStatus),

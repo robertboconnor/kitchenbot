@@ -1735,6 +1735,30 @@ export async function listPersonProfiles(householdId) {
   return rows.map(mapPersonProfileRow);
 }
 
+const PERSON_PROFILE_FIELD_COLUMNS = {
+  acceptedFoods: 'accepted_foods_json',
+  rejectedFoods: 'rejected_foods_json',
+  allergies: 'allergies_json',
+  notes: 'notes_json',
+};
+
+// Remove one value from one list on a person's profile (UI edit). Returns the updated profile.
+export async function removePersonProfileValue(householdId, person, field, value) {
+  const column = PERSON_PROFILE_FIELD_COLUMNS[field];
+  if (!column) return null;
+  const norm = normalizePersonKey(person);
+  const existing = await getPersonProfile(householdId, person);
+  if (!norm || !existing) return existing || null;
+  const target = String(value ?? '').trim().toLowerCase();
+  const next = (existing[field] || []).filter((v) => String(v).trim().toLowerCase() !== target);
+  await run(
+    `UPDATE person_profiles SET ${column} = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE household_id = ? AND normalized_person = ?`,
+    [JSON.stringify(next), householdId, norm]
+  );
+  return await getPersonProfile(householdId, person);
+}
+
 // Append food/allergy/notes facts for a person. Returns the merged profile.
 export async function updatePersonProfile(householdId, person, fields = {}) {
   const name = String(person ?? '').trim();
@@ -1794,18 +1818,16 @@ export async function updatePersonProfile(householdId, person, fields = {}) {
 
 export async function getChatRuntimeState(chatId, householdId) {
   const row = await get(
-    `SELECT chat_id, household_id, mode, proposed_next_action_json, working_context_json, updated_at
+    `SELECT chat_id, household_id, mode, working_context_json, updated_at
      FROM chat_runtime_state
      WHERE chat_id = ? AND household_id = ?
      LIMIT 1`,
     [chatId, householdId]
   );
-  if (!row) return { mode: 'kb', proposedNextAction: null, workingContext: null };
-  const proposed = parseJsonObject(row.proposed_next_action_json, {});
+  if (!row) return { mode: 'kb', workingContext: null };
   const workingContext = parseJsonObject(row.working_context_json, {});
   return {
     mode: row.mode || 'kb',
-    proposedNextAction: proposed && Object.keys(proposed).length > 0 ? proposed : null,
     workingContext: workingContext && Object.keys(workingContext).length > 0 ? workingContext : null,
     updatedAt: row.updated_at,
   };
@@ -1813,24 +1835,22 @@ export async function getChatRuntimeState(chatId, householdId) {
 
 export async function setChatRuntimeState(chatId, householdId, state = {}) {
   const mode = String(state.mode || 'kb');
-  const proposedNextAction =
-    state.proposedNextAction && typeof state.proposedNextAction === 'object' && !Array.isArray(state.proposedNextAction)
-      ? state.proposedNextAction
-      : {};
   const workingContext =
     state.workingContext && typeof state.workingContext === 'object' && !Array.isArray(state.workingContext)
       ? state.workingContext
       : {};
+  // NOTE: the proposed_next_action_json column is retained (NOT NULL DEFAULT '{}') but no longer
+  // read or written — the next-action state machine was removed. Left inert to avoid a migration;
+  // it keeps its '{}' default on every row.
   await run(
-    `INSERT INTO chat_runtime_state (chat_id, household_id, mode, proposed_next_action_json, working_context_json, updated_at)
-     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `INSERT INTO chat_runtime_state (chat_id, household_id, mode, working_context_json, updated_at)
+     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(chat_id) DO UPDATE SET
        household_id = excluded.household_id,
        mode = excluded.mode,
-       proposed_next_action_json = excluded.proposed_next_action_json,
        working_context_json = excluded.working_context_json,
        updated_at = CURRENT_TIMESTAMP`,
-    [chatId, householdId, mode, JSON.stringify(proposedNextAction), JSON.stringify(workingContext)]
+    [chatId, householdId, mode, JSON.stringify(workingContext)]
   );
   return true;
 }

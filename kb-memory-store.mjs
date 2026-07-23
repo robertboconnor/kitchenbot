@@ -5,6 +5,7 @@ import {
   listCookbookEntries,
   listHouseholdUsers,
   listKbMemories,
+  listPersonProfiles,
 } from './db.mjs';
 import {
   buildAppliedCookbookText,
@@ -661,9 +662,59 @@ function selectRelevantItems(items, prompt, entityContext = {}, limit = 6) {
   return scored;
 }
 
+// ALWAYS-INCLUDED household roster + food profiles. This deliberately bypasses
+// selectRelevantItems (which prunes to the active speaker), so the brain sees EVERY
+// member — names, allergies (hard constraints), and a few likes/dislikes — on every turn.
+// That's what lets "plan our family's dinners" reason about Elle and Bizzy, not just the typist.
+function normalizePersonNameKey(raw) {
+  return String(raw ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function buildHouseholdPeopleText(householdUsers = [], allItems = [], personProfiles = []) {
+  const names = new Map(); // key -> display name (first seen wins)
+  const remember = (raw) => {
+    const display = String(raw ?? '').trim();
+    const key = normalizePersonNameKey(display);
+    if (display && key && !names.has(key)) names.set(key, display);
+  };
+  for (const u of Array.isArray(householdUsers) ? householdUsers : []) remember(u?.display_name ?? u?.displayName);
+  for (const item of Array.isArray(allItems) ? allItems : []) {
+    if (item?.memoryType === 'person') remember(item?.label);
+  }
+  for (const p of Array.isArray(personProfiles) ? personProfiles : []) remember(p?.person);
+  if (names.size === 0) return '';
+
+  const profileByKey = new Map(
+    (Array.isArray(personProfiles) ? personProfiles : []).map((p) => [normalizePersonNameKey(p?.person), p])
+  );
+  const memoByKey = new Map();
+  for (const item of Array.isArray(allItems) ? allItems : []) {
+    if (item?.memoryType === 'person') memoByKey.set(normalizePersonNameKey(item?.label), item);
+  }
+
+  const lines = [];
+  for (const [key, name] of names) {
+    const parts = [];
+    const prof = profileByKey.get(key);
+    if (prof) {
+      if (prof.allergies?.length) parts.push(`ALLERGIC to ${prof.allergies.join(', ')}`);
+      if (prof.acceptedFoods?.length) parts.push(`likes ${prof.acceptedFoods.slice(0, 4).join(', ')}`);
+      if (prof.rejectedFoods?.length) parts.push(`won't eat ${prof.rejectedFoods.slice(0, 4).join(', ')}`);
+      if (prof.notes?.length) parts.push(prof.notes.slice(0, 1).join('; '));
+    }
+    if (parts.length === 0) {
+      const summary = String(memoByKey.get(key)?.summary ?? '').trim();
+      if (summary) parts.push(summary.slice(0, 140));
+    }
+    lines.push(parts.length ? `- ${name} — ${parts.join('; ')}` : `- ${name}`);
+  }
+  return lines.join('\n');
+}
+
 export async function buildKbContextPacket(householdId, prompt = '', opts = {}) {
   const allItems = await listKbMemories(householdId);
   const householdUsers = await listHouseholdUsers(householdId).catch(() => []);
+  const personProfiles = await listPersonProfiles(householdId).catch(() => []);
   const includeDefaults = opts.includeDefaults !== false;
   const includePantry = opts.includePantry !== false;
   const includeGrocery = opts.includeGrocery !== false;
@@ -718,6 +769,8 @@ export async function buildKbContextPacket(householdId, prompt = '', opts = {}) 
   return {
     allItems,
     householdUsers,
+    personProfiles,
+    householdPeopleText: buildHouseholdPeopleText(householdUsers, allItems, personProfiles),
     pantryItems,
     pantryContextStatus,
     pantryContextAvailable: pantryContextStatus === 'available' || pantryContextStatus === 'empty',

@@ -76,7 +76,10 @@ test('public app runtime includes cookbook display helpers used by cookbook rend
 test('root page template uses the extracted external client runtime hook', async () => {
   const source = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../kitchenbot.mjs'), 'utf8');
   assert.match(source, /renderClientBootTags\(\{ cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS \}\)/);
-  assert.match(source, /<script src="https:\/\/cdn\.jsdelivr\.net\/npm\/marked\/marked\.min\.js"><\/script>/);
+  // marked + DOMPurify are vendored locally (no unpinned CDN), and a hash-based CSP is set.
+  assert.match(source, /<script src="\/vendor\/marked\.min\.js"><\/script>/);
+  assert.match(source, /<script src="\/vendor\/purify\.min\.js"><\/script>/);
+  assert.match(source, /Content-Security-Policy/);
   assert.match(source, /scriptSrc: '\/recipe-importer\.js'/);
   assert.match(source, /Kitchen workspace/);
   assert.match(source, /Recipe library/);
@@ -97,7 +100,7 @@ test('root page template uses the extracted external client runtime hook', async
   assert.match(source, /importer-conflict-state/);
   assert.match(source, /\.importer-action-state\[data-state-visible="true"\]\s*\{\s*display: flex !important;/);
   assert.doesNotMatch(source, /\.cookbook-card-mobile-body/);
-  assert.doesNotMatch(source, /id="tab-settings"/);
+  assert.match(source, /id="tab-settings"/);
 });
 
 test('main app runtime treats #cookbook as a first-class route into the cookbook subview', async () => {

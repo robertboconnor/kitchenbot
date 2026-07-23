@@ -1139,7 +1139,7 @@ test('executeCookbookSave fetches linked recipe details before saving when exact
         anthropic,
         memoryContext: { capabilities: { webSearchEnabled: true } },
         workingContext: null,
-        deps: { fetch },
+        deps: { fetch, lookup: async () => [{ address: '93.184.216.34', family: 4 }] },
       }
     );
     const entries = await db.listCookbookEntries(created.householdId);
@@ -1197,7 +1197,7 @@ test('executeCookbookSave does not save linked recipes when only web search-styl
         anthropic,
         memoryContext: { capabilities: { webSearchEnabled: true } },
         workingContext: null,
-        deps: { fetch },
+        deps: { fetch, lookup: async () => [{ address: '93.184.216.34', family: 4 }] },
       }
     );
     const entries = await db.listCookbookEntries(created.householdId);
@@ -1214,9 +1214,6 @@ test('executeCookbookSave does not save linked recipes when only web search-styl
   assert.equal(parsed.outcome.fetchPerformed, true);
   assert.equal(parsed.outcome.fetchedExactUrl, false);
   assert.equal(parsed.outcome.sourceKind, 'server_fetch');
-  assert.equal(parsed.outcome.proposedNextAction?.type, 'choice');
-  assert.equal(parsed.outcome.proposedNextAction?.defaultChoiceId, 'retry_fetch');
-  assert.equal(parsed.outcome.proposedNextAction?.choices?.[0]?.capability, 'cookbook.save');
   assert.equal(parsed.count, 0);
 
   await fs.rm(tempDir, { recursive: true, force: true });
@@ -1259,6 +1256,7 @@ test('executeCookbookSave classifies bot-blocked linked recipe fetches and pivot
             headers,
             text: async () => '<html><head><title>Just a moment...</title></head><body>Enable JavaScript and cookies to continue</body></html>',
           }),
+          lookup: async () => [{ address: '93.184.216.34', family: 4 }],
         },
       }
     );
@@ -1276,7 +1274,6 @@ test('executeCookbookSave classifies bot-blocked linked recipe fetches and pivot
   assert.equal(parsed.outcome.fetchBlocked, true);
   assert.equal(parsed.outcome.blockerKind, 'cloudflare');
   assert.equal(parsed.outcome.failureKind, 'blocked');
-  assert.equal(parsed.outcome.proposedNextAction?.type, 'clarify_action');
   assert.match(parsed.outcome.error, /blocked automated page access/i);
   assert.equal(parsed.count, 0);
 
@@ -1340,6 +1337,7 @@ test('executeCookbookSave distinguishes fetched-page extraction failure from fet
             headers: { get: () => 'text/html; charset=utf-8' },
             text: async () => '<html><head><title>White Chicken Chili</title></head><body><p>This page talks about why white chicken chili is comforting, but does not provide a full ingredient list or full instructions.</p></body></html>',
           }),
+          lookup: async () => [{ address: '93.184.216.34', family: 4 }],
         },
       }
     );
@@ -1404,87 +1402,8 @@ test('executeCookbookSave refuses linked recipe saves when web search is disable
   assert.equal(parsed.count, 0);
   assert.equal(parsed.outcome.workingContext.linkedRecipeUrl, 'https://example.com/beef-stew');
   assert.equal(parsed.outcome.workingContext.linkedRecipeFetchStatus, 'unavailable');
-  assert.equal(parsed.outcome.proposedNextAction?.type, 'clarify_action');
 
   await fs.rm(tempDir, { recursive: true, force: true });
-});
-
-test('cookbook skill owns pasted recipe follow-up after linked save failure', async () => {
-  const module = await import(new URL(`../kb-skills.mjs?cookbook-followup=${Date.now()}`, import.meta.url).href);
-  const nextAction = {
-    active: true,
-    type: 'clarify_action',
-    action: {
-      capability: 'cookbook.save',
-      input: {
-        request: '',
-        preferredTitle: 'our favorite beef stew',
-        sourceUrl: 'https://www.seriouseats.com/all-american-beef-stew-recipe?print',
-        recoveryMode: 'manual_paste',
-      },
-    },
-    question: 'Paste the ingredients and directions for our favorite beef stew, and I will save it manually.',
-  };
-  const turn = module.interpretKbSkillFollowUp(
-    `All-American Beef Stew
-
-Ingredients
-2 pounds beef chuck
-4 carrots
-2 potatoes
-
-Directions
-Brown the beef.
-Simmer until tender.`,
-    nextAction,
-    {
-      workingContext: {
-        linkedRecipeTitle: 'our favorite beef stew',
-        linkedRecipeUrl: 'https://www.seriouseats.com/all-american-beef-stew-recipe?print',
-      },
-    }
-  );
-
-  assert.equal(turn.kind, 'execute_action');
-  assert.equal(turn.actions[0].capability, 'cookbook.save');
-  assert.equal(turn.actions[0].input.preferredTitle, 'our favorite beef stew');
-  assert.equal(turn.actions[0].input.sourceUrl, 'https://www.seriouseats.com/all-american-beef-stew-recipe?print');
-  assert.equal(turn.actions[0].input.recoveryMode, 'manual_paste');
-});
-
-test('cookbook skill owns generic recipe-choice follow-up after cookbook save clarification', async () => {
-  const module = await import(new URL(`../cookbook-executor.mjs?cookbook-choice=${Date.now()}`, import.meta.url).href);
-  const nextAction = {
-    active: true,
-    type: 'clarify_action',
-    action: {
-      capability: 'cookbook.save',
-      input: {
-        request: 'can you add this recipe to our cookbook?',
-      },
-    },
-    question:
-      'Which recipe would you like me to save to your cookbook? The Mexican Street Corn Pasta we just discussed, or one of the other dinners from the plan?',
-    unresolvedFields: ['recipe'],
-    candidateOptions: [
-      { id: '1', label: 'Mexican Street Corn Pasta' },
-      { id: '2', label: 'Bacon Cheeseburger Night' },
-      { id: '3', label: 'Fancy Sandwich' },
-    ],
-  };
-
-  const turn = module.interpretCookbookSaveFollowUp('street corn pasta', nextAction, {
-    workingContext: {
-      topicSummary: 'Three dinner ideas for the week',
-      mealIdeas: ['Bacon Cheeseburger Night', 'Mexican Street Corn Pasta', 'Fancy Sandwich'],
-      subjectItems: ['Mexican Street Corn Pasta'],
-    },
-  });
-
-  assert.equal(turn.kind, 'execute_action');
-  assert.equal(turn.actions[0].capability, 'cookbook.save');
-  assert.equal(turn.actions[0].input.request, 'can you add this recipe to our cookbook?');
-  assert.equal(turn.actions[0].input.preferredTitle, 'street corn pasta');
 });
 
 test('executeCookbookUpdate replaces recipe body fields without merging duplicates and preserves source metadata', async () => {

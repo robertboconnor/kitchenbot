@@ -1,20 +1,8 @@
 import { getGroceryItems } from './db.mjs';
 import { resolveInventoryItems } from './inventory-classification.mjs';
-import { buildClarifyActionState } from './kb-next-action.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
-}
-
-function buildGroceryAddNextStep({ question, visibleReplySummary = '', input = {} }) {
-  return buildClarifyActionState({
-    capability: 'grocery.write',
-    input,
-    question,
-    contextSummary: 'Continue the pending grocery add using the current chat context.',
-    unresolvedFields: [],
-    visibleReplySummary: String(visibleReplySummary || question || '').trim().slice(0, 400),
-  });
 }
 
 function buildExistingGroceryKey(item, normalizeInventoryNameKey) {
@@ -141,17 +129,6 @@ export async function previewGroceryListFromConversation(runtimeAction, context)
     hasExistingList: draft.existingGroceryItems.length > 0,
     optionModes: [explicitReplace ? 'replace' : 'append'],
     question,
-    proposedNextAction:
-      draft.normalizedItems.length > 0
-        ? buildGroceryAddNextStep({
-            question,
-            visibleReplySummary: question,
-            input: {
-              source: 'draft_chat_offer',
-              ...(explicitReplace ? { mode: 'replace' } : {}),
-            },
-          })
-        : null,
   };
 }
 

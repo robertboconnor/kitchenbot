@@ -55,7 +55,6 @@ test('respondWithKbReply does not persist meal-only working context when there i
       },
       outcomes: [],
       userMessageAlreadyPersisted: false,
-      proposedNextAction: null,
       deps: {
         incrementUserMessageCountForSender: async () => {},
         buildKbContextPacket: async () => ({
@@ -77,7 +76,6 @@ test('respondWithKbReply does not persist meal-only working context when there i
   });
 
   const parsed = JSON.parse(stdout.trim());
-  assert.equal(parsed.state?.proposedNextAction ?? null, null);
   assert.equal(parsed.state?.workingContext ?? null, null);
 
   await fs.rm(tempDir, { recursive: true, force: true });
