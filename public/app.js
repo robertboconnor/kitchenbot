@@ -3478,13 +3478,20 @@
             checkbox.style.accentColor = 'var(--accent-strong)';
             checkbox.title = item.status === 'cooked' ? 'Mark as still to cook' : 'Mark as cooked';
             checkbox.addEventListener('change', async () => {
+              const nowCooked = checkbox.checked;
               await fetch('/plan/' + item.id, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'same-origin',
-                body: JSON.stringify({ chatId: currentChatId, status: checkbox.checked ? 'cooked' : 'planned' }),
+                body: JSON.stringify({ chatId: currentChatId, status: nowCooked ? 'cooked' : 'planned' }),
               }).catch(() => {});
-              loadThisWeek();
+              if (nowCooked) {
+                // one small celebratory beat, then refresh
+                li.classList.add('kb-joy');
+                setTimeout(() => loadThisWeek(), 480);
+              } else {
+                loadThisWeek();
+              }
             });
             li.appendChild(checkbox);
 

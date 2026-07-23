@@ -3839,6 +3839,15 @@ app.get('/', (req, res) => {
           border-color: var(--accent-soft);
         }
 
+        /* Joy-pop: the reserved warm accent (Sundress yellow / Egg Yolk) gets ONE small
+           celebratory beat on a genuine win — e.g. a meal ticked off as cooked. Scalpel, not decor. */
+        @keyframes kb-joy-pop {
+          0% { transform: scale(1); box-shadow: 0 0 0 0 transparent; }
+          35% { transform: scale(1.03); box-shadow: 0 0 0 3px var(--accent-warm); }
+          100% { transform: scale(1); box-shadow: 0 0 0 0 transparent; }
+        }
+        .kb-joy { animation: kb-joy-pop 0.5s ease-out; border-radius: var(--radius-md); }
+
         .g-delete.g-move-to-pantry-ready {
           border-color: var(--border-subtle);
           background: var(--card-bg-2);
