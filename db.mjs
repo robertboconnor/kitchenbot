@@ -355,6 +355,20 @@ async function initializeSchema() {
 
     CREATE INDEX IF NOT EXISTS idx_meal_plan_items_household_chat
       ON meal_plan_items(household_id, chat_id, position ASC, id ASC);
+
+    CREATE TABLE IF NOT EXISTS person_profiles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+      person TEXT NOT NULL,
+      normalized_person TEXT NOT NULL,
+      accepted_foods_json TEXT NOT NULL DEFAULT '[]',
+      rejected_foods_json TEXT NOT NULL DEFAULT '[]',
+      allergies_json TEXT NOT NULL DEFAULT '[]',
+      notes_json TEXT NOT NULL DEFAULT '[]',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(household_id, normalized_person)
+    );
   `);
 
   const chatColumns = await all(`PRAGMA table_info(chats)`);
@@ -1652,6 +1666,130 @@ export async function deleteMealPlanItem(householdId, chatId, id) {
 export async function clearMealPlan(householdId, chatId) {
   const result = await run(`DELETE FROM meal_plan_items WHERE household_id = ? AND chat_id = ?`, [householdId, chatId]);
   return Number(result.changes) || 0;
+}
+
+// ── Structured per-person profiles ──────────────────────────────────────────────
+// First-class, queryable food/allergy data for a household member (distinct from the
+// freeform memory bucket). The brain appends via person.profile.update and reads via
+// person.profile.get. Foods accumulate + dedupe; accepting a food removes it from
+// rejected (and vice versa) so a kid's flipping tastes stay consistent over time.
+function normalizePersonKey(raw) {
+  return String(raw ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function toStringList(raw) {
+  const source = Array.isArray(raw) ? raw : raw == null || raw === '' ? [] : [raw];
+  return source.map((v) => String(v ?? '').trim()).filter(Boolean);
+}
+
+function dedupeStrings(values, limit = 60) {
+  const seen = new Set();
+  const out = [];
+  for (const v of Array.isArray(values) ? values : []) {
+    const t = String(v ?? '').trim();
+    if (!t) continue;
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function mapPersonProfileRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    householdId: row.household_id,
+    person: row.person,
+    normalizedPerson: row.normalized_person,
+    acceptedFoods: parseJsonArray(row.accepted_foods_json, []),
+    rejectedFoods: parseJsonArray(row.rejected_foods_json, []),
+    allergies: parseJsonArray(row.allergies_json, []),
+    notes: parseJsonArray(row.notes_json, []),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function getPersonProfile(householdId, person) {
+  const norm = normalizePersonKey(person);
+  if (!norm) return null;
+  const row = await get(
+    `SELECT id, household_id, person, normalized_person, accepted_foods_json, rejected_foods_json,
+            allergies_json, notes_json, created_at, updated_at
+     FROM person_profiles WHERE household_id = ? AND normalized_person = ? LIMIT 1`,
+    [householdId, norm]
+  );
+  return mapPersonProfileRow(row);
+}
+
+export async function listPersonProfiles(householdId) {
+  const rows = await all(
+    `SELECT id, household_id, person, normalized_person, accepted_foods_json, rejected_foods_json,
+            allergies_json, notes_json, created_at, updated_at
+     FROM person_profiles WHERE household_id = ? ORDER BY lower(person) ASC`,
+    [householdId]
+  );
+  return rows.map(mapPersonProfileRow);
+}
+
+// Append food/allergy/notes facts for a person. Returns the merged profile.
+export async function updatePersonProfile(householdId, person, fields = {}) {
+  const name = String(person ?? '').trim();
+  const norm = normalizePersonKey(name);
+  if (!norm) return null;
+  const existing = await getPersonProfile(householdId, name);
+  const base = existing || { acceptedFoods: [], rejectedFoods: [], allergies: [], notes: [] };
+
+  const addedAccepted = toStringList(fields.acceptedFoods);
+  const addedRejected = toStringList(fields.rejectedFoods);
+  const newlyAccepted = new Set(addedAccepted.map((f) => f.toLowerCase()));
+  const newlyRejected = new Set(addedRejected.map((f) => f.toLowerCase()));
+
+  let acceptedFoods = dedupeStrings([...base.acceptedFoods, ...addedAccepted]);
+  let rejectedFoods = dedupeStrings([...base.rejectedFoods, ...addedRejected]);
+  // A food can't be both. The most recent statement wins.
+  rejectedFoods = rejectedFoods.filter((f) => !newlyAccepted.has(f.toLowerCase()));
+  acceptedFoods = acceptedFoods.filter((f) => !newlyRejected.has(f.toLowerCase()));
+
+  const allergies = dedupeStrings([...base.allergies, ...toStringList(fields.allergies)]);
+  const notes = dedupeStrings([...base.notes, ...toStringList(fields.notes ?? fields.note)]);
+
+  if (existing) {
+    await run(
+      `UPDATE person_profiles
+       SET person = ?, accepted_foods_json = ?, rejected_foods_json = ?, allergies_json = ?, notes_json = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE household_id = ? AND normalized_person = ?`,
+      [
+        name || existing.person,
+        JSON.stringify(acceptedFoods),
+        JSON.stringify(rejectedFoods),
+        JSON.stringify(allergies),
+        JSON.stringify(notes),
+        householdId,
+        norm,
+      ]
+    );
+  } else {
+    await run(
+      `INSERT INTO person_profiles
+         (household_id, person, normalized_person, accepted_foods_json, rejected_foods_json, allergies_json, notes_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        householdId,
+        name,
+        norm,
+        JSON.stringify(acceptedFoods),
+        JSON.stringify(rejectedFoods),
+        JSON.stringify(allergies),
+        JSON.stringify(notes),
+      ]
+    );
+  }
+  return await getPersonProfile(householdId, name);
 }
 
 export async function getChatRuntimeState(chatId, householdId) {

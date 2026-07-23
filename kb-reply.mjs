@@ -17,10 +17,6 @@ function safeTrim(text) {
   return String(text ?? '').trim();
 }
 
-function promptMentionsGrocerySurface(prompt = '') {
-  return /\b(grocery list|groceries|shopping list|shopping)\b/i.test(safeTrim(prompt));
-}
-
 function chunkReplyForStreaming(text, maxChunkLength = 160) {
   const source = String(text ?? '');
   if (!source) return [];
@@ -186,37 +182,6 @@ export function rewriteUngroundedActionOfferReply(replyText, proposedNextAction 
   return next;
 }
 
-export function rewriteUngroundedMutationClaimReply(
-  replyText,
-  { outcomes = [], groundedTurn = null, routePrompt = '', proposedNextAction = null } = {}
-) {
-  const reply = safeTrim(replyText);
-  if (!reply || proposedNextAction) return reply;
-  const list = Array.isArray(outcomes) ? outcomes.filter(Boolean) : [];
-  const hasGroceryWrite = list.some((outcome) => safeTrim(outcome?.capability || outcome?.narrationType) === 'grocery.write');
-  const currentObjectType = safeTrim(groundedTurn?.currentObject?.objectType);
-  if (
-    !['meal_set', 'meal_set_selection', 'grocery_proposal', 'chat_recipe'].includes(currentObjectType)
-  ) return reply;
-
-  if (!hasGroceryWrite && promptMentionsGrocerySurface(routePrompt)) {
-    if (
-      /\b(i(?:'ve| have)? added|i added|i updated the grocery list|all set! you can find .*grocery list|the list is ready whenever you want to head to the store)\b/i
-        .test(reply)
-    ) {
-      return 'If you want me to add the ingredients from that to the Grocery List tab, ask me to add them.';
-    }
-  }
-
-  const hasCookbookMutation = list.some((outcome) => String(outcome?.capability || outcome?.narrationType || '').startsWith('cookbook.'));
-  if (!hasCookbookMutation && /\b(cookbook|saved recipes?|saved meals?|favorites?)\b/i.test(routePrompt)) {
-    if (/\b(i(?:'ve| have)? saved|i saved|i(?:'ve| have)? added .* to your cookbook|you(?:'ll| will) find .* in your cookbook)\b/i.test(reply)) {
-      return 'If you want me to save that to your cookbook, ask me to save it.';
-    }
-  }
-  return reply;
-}
-
 export async function respondWithKbErrorReply({
   req,
   res,
@@ -285,13 +250,10 @@ export async function respondWithKbReply({
   // the loop's system prompt keeps streamed replies clean by construction instead.
   if (!suppressStreaming) {
     finalReply = rewriteUngroundedActionOfferReply(finalReply, finalProposedNextAction);
-    finalReply = rewriteUngroundedMutationClaimReply(finalReply, {
-      outcomes,
-      groundedTurn,
-      routePrompt,
-      proposedNextAction: finalProposedNextAction,
-    });
   }
+  // NOTE: unbacked "I saved it" claims are now caught in the agent loop itself
+  // (kb-claim-guard.mjs), which cross-checks the reply against the real tool trace —
+  // superseding the old grounded-turn mutation-claim rewrite that this replaced.
 
   await addMessage(chatId, req.householdId, 'assistant', assistantName, finalReply);
   // ONE BRAIN: no post-reply working-context sub-model. The loop reads the full conversation

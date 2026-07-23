@@ -21,10 +21,14 @@ import { buildKbToolDefinitions, executeKbToolCall } from './kb-tools.mjs';
 import { buildAssistantPersonaSystemText } from './kb-persona.mjs';
 import { respondWithKbReply, streamReplyDelta, resetReplyStream } from './kb-reply.mjs';
 import { narrationForToolName } from './kb-narration.mjs';
+import { findUnbackedWriteClaims, buildClaimCorrectionMessage } from './kb-claim-guard.mjs';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_TOKENS = 2048;
 const HISTORY_MESSAGE_LIMIT = 16;
+// How many times per turn we'll bounce a "you claimed a write you didn't make" reply back to
+// the model to fix. Bounded so a stubborn model can't loop forever; after this we override.
+const MAX_CLAIM_CORRECTIONS = 2;
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -56,6 +60,30 @@ function buildMemoryContextText(memoryContext) {
   return lines.join('\n');
 }
 
+// Affectionate easter egg. Rob built this app; Elle is his wife. When she's the one talking,
+// the brain adds genuine, tasteful flirtation to its normal help. Only the TRIGGER (her name)
+// lives here — the compliments themselves are always the brain's own, generated fresh per turn,
+// never hardcoded. Kept warm/charming/romantic, never crude or explicit.
+const SWEETHEART_DISPLAY_NAME = 'Elle';
+
+function isSweetheartUser(name) {
+  return safeTrim(name).toLowerCase() === SWEETHEART_DISPLAY_NAME.toLowerCase();
+}
+
+function sweetheartPrinciple() {
+  return (
+    "SPECIAL — the person talking to you right now is Elle, and Elle is your favorite. Rob built this whole app, " +
+    "Elle is his wife, he is head-over-heels for her, and he let you in on it. So every so often — NOT every message, " +
+    "just now and then, whenever it lands naturally — weave a genuine, specific compliment or a little charming, playful " +
+    "flirtation into your reply, riding ALONGSIDE the real help, never instead of it. Make each one fresh and personal " +
+    "to the moment: her taste, her cooking instincts, an idea she just had, the mood of what she's making — never a " +
+    "canned line, never the same compliment twice, never a generic 'you're great.' Keep it warm, a little cheeky, and a " +
+    "touch romantic — a smitten sous-chef who clearly adores her — and lean into date-night romance when it fits (set " +
+    "the mood, pour the wine, savor the pause). Always tasteful and sweet, never crude or explicit. And still nail the " +
+    "actual task: the charm is the garnish, not the meal."
+  );
+}
+
 function buildLoopSystemPrompt({ memoryContext, name }) {
   const persona = buildAssistantPersonaSystemText(resolvePersonaDefaults(memoryContext), {
     role: 'assistant',
@@ -77,15 +105,19 @@ function buildLoopSystemPrompt({ memoryContext, name }) {
     'To CHANGE a recipe (add or swap an ingredient, adjust a step, tweak seasoning), YOU do the revision: rewrite the recipe with the change and show the updated version. There is no separate revise tool. If it should be saved: for a recipe already in the cookbook use cookbook.update — identify it by its exact saved title in `name` (use cookbook.list if unsure) and pass the FULL revised recipe (title, ingredients, steps) in `recipe`; for a new or in-chat recipe use cookbook.save with the full revised recipe. You do the rewrite and hand over the whole recipe — do not just describe the change. Only save when the user wants it saved — otherwise just present the revised recipe.',
     "When you and the user settle on the meals for the week (or the user lists them), record them with plan.add — they appear in the household's This Week panel and become your durable memory of the week. A single chat often runs all week and hundreds of messages deep while you only see the most recent ones, so this is how the plan survives. Use plan.list to recall the week's meals or to resolve which meal the user means (e.g. \"let's cook the succotash tonight\"), and mark a meal cooked with plan.update once the household makes it.",
     "This chat may be very long (a whole week of cooking) and you only see the most recent messages. When the user refers to something from earlier that you can no longer see — an amount, a fix (\"how did we save the broken toum?\"), a recipe detail, a decision — call thread.search with a focused query to pull the relevant earlier messages, then answer from what you found and say you looked it back up. Do not guess or claim to remember something that has scrolled out of view.",
+    "Saved recipes carry tags — short lowercase labels like \"kid-approved\", \"quick\", \"vegetarian\", \"date-night\". Put labels like \"Bizzy-approved\" in a recipe's tags (in the recipe.tags array on cookbook.save / cookbook.update), NOT in its title. To find labeled recipes, call cookbook.list with a `tag` filter (e.g. tag \"kid-approved\"). cookbook.list returns each saved recipe's title, tags, and summary, so use it to actually see what's in the cookbook before answering questions about it.",
+    "For a household member's FOOD facts — foods they accept, foods they reject, allergies — use person.profile.update (structured, per-person), NOT memory.save. It appends and keeps foods queryable, and marking a food accepted automatically clears it from rejected (and vice versa), so tastes can change over time. Read person.profile.get before planning a meal for someone (e.g. a kid's dinner) or to answer \"what does X eat?\"; call it with no person to see everyone's profile. Keep memory.save for other, non-food facts about people or the household.",
     'For destructive actions — clearing the whole grocery list (grocery.clear) or deleting a saved cookbook recipe (cookbook.delete) — only do it when the user clearly asked for that specific action. If it is at all ambiguous, confirm first instead of acting.',
     'After the tools have run, write ONE short, warm, natural reply describing what actually happened. Do not paste raw tool output.',
     'Never make an offer you cannot act on right now. Do NOT say things like "want me to add X? say yes and I will" — there is no mechanism to hold that intent for a later turn. Either just do it now, or tell them to ask when they want it.',
-  ].join('\n');
+  ];
+  if (isSweetheartUser(name)) principles.push(sweetheartPrinciple());
+  const principlesText = principles.join('\n');
   const memoryText = buildMemoryContextText(memoryContext);
   return [
     persona,
     '',
-    principles,
+    principlesText,
     memoryText ? `\nRelevant saved household/person memory:\n${memoryText}` : '',
   ]
     .filter(Boolean)
@@ -169,6 +201,7 @@ export async function runKbAgentLoop({
   let finalText = '';
   let streamedFinalReply = false;
   let streamedTextInPriorTurn = false;
+  let claimCorrections = 0;
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const stream = anthropic.messages.stream({
@@ -206,9 +239,26 @@ export async function runKbAgentLoop({
     const toolUses = content.filter((block) => block?.type === 'tool_use');
     const textBlocks = content.filter((block) => block?.type === 'text');
 
-    // Done: the model wrote a reply and asked for no (more) tools.
+    // Done: the model wrote a reply and asked for no (more) tools — UNLESS that reply claims a
+    // write it never actually made this turn. Then wipe the streamed text and make the model
+    // either do it for real or retract, rather than ship a false "Saved it!".
     if (response?.stop_reason !== 'tool_use' || toolUses.length === 0) {
-      finalText = textBlocks.map((block) => block.text || '').join('').trim();
+      const candidateText = textBlocks.map((block) => block.text || '').join('').trim();
+      const unbacked = findUnbackedWriteClaims(candidateText, collectedOutcomes);
+      if (unbacked.length > 0 && claimCorrections < MAX_CLAIM_CORRECTIONS) {
+        claimCorrections += 1;
+        console.warn(
+          `[kb-truthfulness] chat ${chatId} turn ${turnId}: reply claimed ` +
+            `${unbacked.map((u) => u.family).join(', ')} with no backing tool call — ` +
+            `forcing correction (${claimCorrections}/${MAX_CLAIM_CORRECTIONS}).`
+        );
+        if (streamedTextThisTurn) resetReplyStream({ res, deps, chatId, householdId, turnId });
+        streamedTextInPriorTurn = false;
+        messages.push({ role: 'assistant', content });
+        messages.push({ role: 'user', content: buildClaimCorrectionMessage(unbacked) });
+        continue;
+      }
+      finalText = candidateText;
       streamedFinalReply = finalText.length > 0; // it was already streamed live above
       break;
     }
@@ -279,6 +329,23 @@ export async function runKbAgentLoop({
     }
   }
   if (!finalText) finalText = 'Okay.';
+
+  // Final catch-all. The in-loop guard covers the streaming path; this also covers the wrap-up
+  // path and an exhausted correction budget. If the reply STILL claims a write with no backing
+  // tool call, replace it with an honest fallback rather than ship a lie — and wipe any streamed
+  // text so the false claim never survives on screen.
+  const residualUnbacked = findUnbackedWriteClaims(finalText, collectedOutcomes);
+  if (residualUnbacked.length > 0) {
+    console.warn(
+      `[kb-truthfulness] chat ${chatId} turn ${turnId}: honest fallback — reply still claimed ` +
+        `${residualUnbacked.map((u) => u.family).join(', ')} with no backing tool call.`
+    );
+    if (streamedFinalReply) resetReplyStream({ res, deps, chatId, householdId, turnId });
+    finalText =
+      "Hold on — I said that was done, but I didn't actually complete it, and I won't claim otherwise. " +
+      "Ask me once more and I'll do it for real.";
+    streamedFinalReply = false;
+  }
 
   // Deliver through the existing reply machinery: streams NDJSON deltas, persists
   // the assistant message, broadcasts to co-viewers, and runs the honesty guards.

@@ -3,7 +3,15 @@
 // see live household state, instead of us pre-injecting pantry/grocery/defaults
 // into every prompt. Each returns a compact { ok, ... } outcome that
 // summarizeOutcomeForModel (kb-tools.mjs) hands back as the tool_result.
-import { getGroceryItems, getPantryItems, getHouseholdDefaults, getMealPlanItems, getMessages } from './db.mjs';
+import {
+  getGroceryItems,
+  getPantryItems,
+  getHouseholdDefaults,
+  getMealPlanItems,
+  getMessages,
+  getPersonProfile,
+  listPersonProfiles,
+} from './db.mjs';
 import { GROCERY_SECTION_KEYS, PANTRY_SECTION_KEYS } from './inventory-classification.mjs';
 import { COOKBOOK_CATEGORY_OPTIONS } from './cookbook-store.mjs';
 import { enrichMealsWithRecipeLinks } from './mealplan-executor.mjs';
@@ -149,4 +157,26 @@ export async function executeThreadSearch(action, context = {}) {
     snippet: buildThreadSnippet(content, qTokens),
   }));
   return { ok: true, query, count: results.length, totalMessages: total, results };
+}
+
+// Structured food/allergy profile for a household member — the brain's memory READ tool.
+// With a person: that profile. Without: every saved profile (so "what do the kids eat?" works).
+export async function executePersonProfileGet(action, context = {}) {
+  const householdId = context?.req?.householdId;
+  const input = action?.input && typeof action.input === 'object' && !Array.isArray(action.input) ? action.input : {};
+  const person = s(input.person || input.name || input.who);
+  const shape = (p) => ({
+    person: p.person,
+    acceptedFoods: p.acceptedFoods,
+    rejectedFoods: p.rejectedFoods,
+    allergies: p.allergies,
+    notes: p.notes,
+  });
+  if (person) {
+    const p = await getPersonProfile(householdId, person);
+    if (!p) return { ok: true, found: false, person, message: `No structured profile saved for ${person} yet.` };
+    return { ok: true, found: true, ...shape(p) };
+  }
+  const rows = await listPersonProfiles(householdId);
+  return { ok: true, count: rows.length, profiles: rows.map(shape) };
 }

@@ -57,6 +57,7 @@ const READ_ONLY_CAPABILITIES = new Set([
   'web.search',
   'plan.list',
   'thread.search',
+  'person.profile.get',
 ]);
 
 export function isWriteCapability(capability) {
@@ -101,6 +102,12 @@ const INPUT_SCHEMAS = {
           summary: { type: 'string', description: 'One or two lines: what it is and what it is good for.' },
           sourceUrl: { type: 'string' },
           sourceTitle: { type: 'string' },
+          tags: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Optional short labels you can filter on later, e.g. "kid-approved", "quick", "vegetarian", "date-night". A few lowercase words each. Use these for labels like "Bizzy-approved" instead of putting them in the title.',
+          },
         },
         required: ['title', 'ingredients', 'instructions'],
       },
@@ -123,13 +130,26 @@ const INPUT_SCHEMAS = {
           ingredients: { type: 'array', items: { type: 'string' }, description: 'Every ingredient line of the revised recipe.' },
           instructions: { type: 'array', items: { type: 'string' }, description: 'The revised steps, in order.' },
           summary: { type: 'string' },
+          tags: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional labels for filtering, e.g. "kid-approved", "quick". Pass the full set you want on the recipe.',
+          },
         },
         required: ['title', 'ingredients', 'instructions'],
       },
       request: { type: 'string', description: 'Optional: describe the change in words only if you are not passing a full revised recipe.' },
     },
   },
-  'cookbook.list': NO_INPUT,
+  'cookbook.list': {
+    type: 'object',
+    properties: {
+      tag: {
+        type: 'string',
+        description: 'Optional — only return recipes labeled with this tag (e.g. "kid-approved"). Omit to list everything.',
+      },
+    },
+  },
   'cookbook.delete': {
     type: 'object',
     properties: { name: { type: 'string', description: 'Name of the saved cookbook recipe to delete.' } },
@@ -267,6 +287,38 @@ const INPUT_SCHEMAS = {
     },
     required: ['query'],
   },
+  'person.profile.update': {
+    type: 'object',
+    properties: {
+      person: { type: 'string', description: "Whose profile this is about, e.g. \"Bizzy\"." },
+      acceptedFoods: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Foods/dishes this person accepts or likes. Appended; adding one here removes it from their rejected list.',
+      },
+      rejectedFoods: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Foods/dishes this person rejects or dislikes. Appended; adding one here removes it from their accepted list.',
+      },
+      allergies: { type: 'array', items: { type: 'string' }, description: 'Allergies/intolerances (be precise).' },
+      notes: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Short freeform notes that do not fit the fields above (e.g. "toddler-friendly; small portions").',
+      },
+    },
+    required: ['person'],
+  },
+  'person.profile.get': {
+    type: 'object',
+    properties: {
+      person: {
+        type: 'string',
+        description: "Whose profile to read (e.g. \"Bizzy\"). Omit to get every household member's profile.",
+      },
+    },
+  },
 };
 
 function inputSchemaForCapability(capability) {
@@ -401,6 +453,18 @@ const OUTCOME_PASSTHROUGH_KEYS = [
   'requestedName',
   'matches',
   'totalMessages',
+  // cookbook.list — the brain must actually see its own recipes (title, tags, summary)
+  'entries',
+  'tags',
+  'filteredByTag',
+  // person.profile.* — structured per-person food/allergy data
+  'person',
+  'acceptedFoods',
+  'rejectedFoods',
+  'allergies',
+  'notes',
+  'profiles',
+  'found',
 ];
 
 export function summarizeOutcomeForModel(capability, outcome) {
