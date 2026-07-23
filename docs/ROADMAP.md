@@ -1,7 +1,7 @@
 # KitchenBot — Roadmap & Working State
 
 The living "where we are / what's next" doc. Read this first when picking up on a new device or a
-fresh session. **Update it at the end of a work session.** Last updated: **2026-07-20**.
+fresh session. **Update it at the end of a work session.** Last updated: **2026-07-23**.
 
 ## The goal
 
@@ -31,6 +31,27 @@ The whole overnight body of work is now **deployed**, not just on `dev`. In prod
 
 **149 tests green.** Rollback tags: `pre-oneb-plan-2026-07-20`, `pre-trust-profiles-2026-07-20`.
 `dev` == `main` right now. Everything below marked "on dev / not merged" is now **live**.
+
+## 2026-07-23 — Phases 1 / 2 / 4 pass (on `dev`, NOT yet deployed)
+
+A big pass across the roadmap. Shipped to `dev` (149 tests green, browser-verified):
+- **Phase 1 (looks-legit):** top nav is now **Chat · Kitchen · Settings** with a real, member-reachable
+  Settings tab (was owner-only behind a sidebar button); **self-hosted Nunito** (variable woff2) so every
+  platform gets the rounded voice; **stored-XSS closed** (DOMPurify-sanitized markdown, marked + DOMPurify
+  vendored locally) + a **hash-based CSP** and security headers; Move-to-pantry no longer wears the red
+  delete base; the reserved **warm accent is a "joy-pop"** on marking a meal cooked.
+- **Phase 2 (family) — COMPLETE:** the brain now **always sees every household member + their food profiles**
+  (not just the person typing), and there's a visible, editable **Family food** surface in Settings.
+- **Phase 4 — Settings split done:** Settings is now **My preferences (all) · Family food (all) · Household
+  (owners) · Anthropic usage (owners) · God Mode (super-admin)**, role-gated; God-Mode gating untouched.
+
+**Deferred (deliberate, with rationale):**
+- **Fold Recipe Importer into Cookbook** — it's an app-merge (`recipe-importer.js` is a separate ~400-line
+  client with its own page); that's Phase-5-scale (frontend re-plumb). The importer already works and
+  returns to Cookbook. Better done as part of Phase 5.
+- **Remove the dead next-action state machine** — verified triply-dead (Job-1 audit), but it's a large,
+  zero-user-value removal threaded through core files (`kb-skills`, executors, a db column) where a slip
+  breaks a live executor. Deserves its own focused pass (keep `question`/`matches` — those ARE live).
 
 ## Where we are now (working branch: `dev`)
 
