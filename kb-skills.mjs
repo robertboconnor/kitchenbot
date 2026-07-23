@@ -392,13 +392,6 @@ function normalizeWebSearchActionInput(input, context = {}) {
   return query ? { query } : null;
 }
 
-function isAffirmativeFollowUp(prompt) {
-  const text = safeTrim(prompt).toLowerCase();
-  if (!text) return false;
-  return /^(yes|yeah|yep|sure|ok|okay|do it|go ahead|all|that|just that|search it|search that|add them|add it|those)$/i.test(text) ||
-    /\b(search the web|look it up|look that up|add them|add those|add all|all of them)\b/.test(text);
-}
-
 function buildIngredientItemsFromWorkingContext(workingContext) {
   const context = normalizeWorkingContext(workingContext);
   return (Array.isArray(context?.offeredIngredients) ? context.offeredIngredients : [])
