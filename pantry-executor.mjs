@@ -9,7 +9,6 @@ import {
 } from './db.mjs';
 import { resolveInventoryItems, PANTRY_SECTION_KEYS } from './inventory-classification.mjs';
 import { resolveInventoryItemMatch } from './inventory-item-resolver.mjs';
-import { buildClarifyActionState } from './kb-next-action.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -70,15 +69,6 @@ function buildResolveResult(capability, resolution) {
         checked: !!item?.checked,
       })),
       question,
-      proposedNextAction: buildClarifyActionState({
-        capability,
-        input: { name: safeTrim(resolution.requestedName) },
-        question,
-        contextSummary: `Continue the pending ${capability} action for a Pantry item once the user identifies the right match.`,
-        unresolvedFields: ['name'],
-        candidateOptions,
-        visibleReplySummary: question,
-      }),
     };
   }
   if (resolution?.status === 'missing') {

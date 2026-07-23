@@ -7,7 +7,6 @@ import {
   saveCookbookEntry,
 } from './db.mjs';
 import { getMessages } from './db.mjs';
-import { buildChoiceActionState, buildClarifyActionState } from './kb-next-action.mjs';
 import {
   buildCookbookRecordForStorage,
   extractCookbookRecordFromFetchedPage,
@@ -62,15 +61,6 @@ function buildCookbookDeleteClarify(matches, requestedName) {
   return {
     status: 'ambiguous',
     question,
-    proposedNextAction: buildClarifyActionState({
-      capability: 'cookbook.delete',
-      input: {},
-      question,
-      unresolvedFields: ['name'],
-      candidateOptions: choices,
-      contextSummary: 'Continue the pending cookbook deletion once the user picks the saved recipe.',
-      visibleReplySummary: question,
-    }),
   };
 }
 
@@ -86,15 +76,6 @@ function buildCookbookUpdateClarify(matches, requestedName) {
   return {
     status: 'ambiguous',
     question,
-    proposedNextAction: buildClarifyActionState({
-      capability: 'cookbook.update',
-      input: {},
-      question,
-      unresolvedFields: ['name'],
-      candidateOptions: choices,
-      contextSummary: 'Continue the pending cookbook update once the user picks the saved recipe.',
-      visibleReplySummary: question,
-    }),
   };
 }
 
@@ -174,66 +155,6 @@ function buildLinkedRecipeWorkingContext({
   };
 }
 
-function buildLinkedRecipeRecoveryNextAction({ preferredTitle = '', sourceUrl = '', webSearchEnabled = false, blocked = false }) {
-  const title = safeTrim(preferredTitle) || 'that recipe';
-  const url = safeTrim(sourceUrl);
-  if (!url) return null;
-  const recoveryInput = {
-    request: `save this linked recipe ${url}`,
-    preferredTitle: title,
-    sourceUrl: url,
-    recoveryMode: 'linked_recipe_recovery',
-  };
-  if (blocked) {
-    return buildClarifyActionState({
-      capability: 'cookbook.save',
-      input: {
-        request: '',
-        preferredTitle: title,
-        sourceUrl: url,
-        recoveryMode: 'manual_paste',
-      },
-      question: `That site blocked automated access. Paste the ingredients and directions for ${title}, and I'll save it manually.`,
-      contextSummary: 'Continue the blocked linked recipe save once the user pastes the recipe text manually.',
-      unresolvedFields: ['recipe_text'],
-      visibleReplySummary: `That site blocked automated access, so paste the recipe text for ${title} and I'll save it manually.`,
-    });
-  }
-  if (webSearchEnabled) {
-    return buildChoiceActionState({
-      capability: 'cookbook.save',
-      input: recoveryInput,
-      defaultChoiceId: 'retry_fetch',
-      question: `I couldn't save ${title} from the link directly. I can retry the exact link fetch, or search for recipe details separately.`,
-      visibleReplySummary: `I couldn't read enough recipe detail from the link to save ${title} directly. You can retry the exact link fetch, search for recipe details separately, or paste the recipe text and I'll save it manually.`,
-      choices: [
-        {
-          id: 'retry_fetch',
-          label: 'retry the exact linked recipe fetch',
-          capability: 'cookbook.save',
-          actionInput: recoveryInput,
-        },
-        {
-          id: 'search_now',
-          label: 'search for recipe details now',
-          capability: 'web.search',
-          actionInput: {
-            query: url,
-          },
-        },
-      ],
-    });
-  }
-  return buildClarifyActionState({
-    capability: 'cookbook.save',
-    input: recoveryInput,
-    question: `I couldn't read ${title} from the link, and live web access is disabled here. Paste the recipe ingredients and steps and I'll save it manually.`,
-    contextSummary: 'Continue the failed linked recipe save once the user provides recipe text manually.',
-    unresolvedFields: ['recipe_text'],
-    visibleReplySummary: `I couldn't read enough recipe detail from the link to save ${title} directly. Paste the recipe text and I'll save it manually.`,
-  });
-}
-
 function buildLinkedRecipeFailureReply({ preferredTitle = '', status = '', webSearchEnabled = false }) {
   const title = safeTrim(preferredTitle) || 'that linked recipe';
   if (status === 'disabled' || !webSearchEnabled) {
@@ -259,19 +180,6 @@ function buildManualRecoveryClarify({ preferredTitle = '', sourceUrl = '' }) {
   return {
     status: 'invalid',
     error: `I still need a cleaner recipe paste before I can save ${title}. Include the ingredients and directions or instructions, and I'll save it under that title.`,
-    proposedNextAction: buildClarifyActionState({
-      capability: 'cookbook.save',
-      input: {
-        request: '',
-        preferredTitle: safeTrim(preferredTitle),
-        sourceUrl: safeTrim(sourceUrl),
-        recoveryMode: 'manual_paste',
-      },
-      question: `Paste the ingredients and directions for ${title}, and I'll save it manually.`,
-      contextSummary: 'Continue the pending cookbook save once the user pastes enough recipe text to parse.',
-      unresolvedFields: ['recipe_text'],
-      visibleReplySummary: `I need the recipe text for ${title} before I can save it manually.`,
-    }),
   };
 }
 
@@ -280,18 +188,6 @@ function buildManualCookbookClarify({ preferredTitle = '' }) {
   return {
     status: 'invalid',
     error: `I need the actual recipe text before I can save ${title}. Paste the ingredients and directions, and I'll store it cleanly.`,
-    proposedNextAction: buildClarifyActionState({
-      capability: 'cookbook.save',
-      input: {
-        request: '',
-        preferredTitle: safeTrim(preferredTitle),
-        recoveryMode: 'manual_paste',
-      },
-      question: `Paste the ingredients and directions for ${title}, and I'll save it.`,
-      contextSummary: 'Continue the pending cookbook save once the user provides the actual recipe text.',
-      unresolvedFields: ['recipe_text'],
-      visibleReplySummary: `I need the recipe text for ${title} before I can save it.`,
-    }),
   };
 }
 
@@ -445,12 +341,6 @@ export async function executeCookbookSave(runtimeAction, context) {
             : fetched.status === 'fetched'
               ? 'fetch_failed'
               : fetched.status;
-      const proposedNextAction = buildLinkedRecipeRecoveryNextAction({
-        preferredTitle,
-        sourceUrl: linkedUrl,
-        webSearchEnabled,
-        blocked: failedStatus === 'blocked',
-      });
       return {
         capability: 'cookbook.save',
         status: failedStatus,
@@ -471,21 +361,14 @@ export async function executeCookbookSave(runtimeAction, context) {
         extractionSucceeded: false,
         sourceKind: 'server_fetch',
         failureReason,
-        suggestedRecoveryAction:
-          proposedNextAction?.type === 'choice'
-            ? String(proposedNextAction.defaultChoiceId || '')
-            : 'manual_paste',
-        proposedNextAction,
+        suggestedRecoveryAction: 'manual_paste',
         workingContext: buildLinkedRecipeWorkingContext({
           preferredTitle,
           sourceUrl: linkedUrl,
           sourceTitle: safeTrim(fetched.pageTitle),
           status: failedStatus,
           error: failureReason,
-          suggestedRecoveryAction:
-            proposedNextAction?.type === 'choice'
-              ? String(proposedNextAction.defaultChoiceId || '')
-              : 'manual_paste',
+          suggestedRecoveryAction: 'manual_paste',
           fetchBlocked: !!fetched.fetchBlocked,
           blockerKind: safeTrim(fetched.blockerKind),
           failureKind: safeTrim(fetched.failureKind || (failedStatus === 'blocked' ? 'blocked' : 'fetch_failed')),
@@ -528,12 +411,6 @@ export async function executeCookbookSave(runtimeAction, context) {
       const failureReason =
         safeTrim(extracted.failureReason) ||
         'I fetched the page, but I could not reliably extract a full recipe from it.';
-      const proposedNextAction = buildLinkedRecipeRecoveryNextAction({
-        preferredTitle,
-        sourceUrl: linkedUrl,
-        webSearchEnabled,
-        blocked: false,
-      });
       return {
         capability: 'cookbook.save',
         status: extracted.status === 'parse_failed' ? 'parse_failed' : 'extraction_failed',
@@ -554,21 +431,14 @@ export async function executeCookbookSave(runtimeAction, context) {
         extractionSucceeded: false,
         sourceKind: 'server_fetch',
         failureReason,
-        suggestedRecoveryAction:
-          proposedNextAction?.type === 'choice'
-            ? String(proposedNextAction.defaultChoiceId || '')
-            : 'manual_paste',
-        proposedNextAction,
+        suggestedRecoveryAction: 'manual_paste',
         workingContext: buildLinkedRecipeWorkingContext({
           preferredTitle,
           sourceUrl: linkedUrl,
           sourceTitle: safeTrim(fetched.pageTitle),
           status: extracted.status === 'parse_failed' ? 'parse_failed' : 'extraction_failed',
           error: failureReason,
-          suggestedRecoveryAction:
-            proposedNextAction?.type === 'choice'
-              ? String(proposedNextAction.defaultChoiceId || '')
-              : 'manual_paste',
+          suggestedRecoveryAction: 'manual_paste',
           failureKind: safeTrim(extracted.status === 'parse_failed' ? 'parse_failed' : 'extraction_failed'),
           existingWorkingContext: workingContext,
         }),
@@ -1024,113 +894,4 @@ export function normalizeCookbookUpdateInput(input, context = {}) {
       : {}),
   };
   return Object.keys(normalized).length > 0 ? normalized : null;
-}
-
-export function interpretCookbookSaveFollowUp(prompt, nextAction, context = {}) {
-  const text = safeTrim(prompt);
-  const action = nextAction?.action;
-  if (!text || !action || String(action.capability || '').trim() !== 'cookbook.save') return null;
-  const actionInput = action.input && typeof action.input === 'object' && !Array.isArray(action.input) ? action.input : {};
-  const loweredText = text.toLowerCase();
-  const candidateOptions = Array.isArray(nextAction?.candidateOptions) ? nextAction.candidateOptions : [];
-  const matchingCandidate = candidateOptions.find((option) => {
-    const label = safeTrim(option?.label);
-    return label && label.toLowerCase() === loweredText;
-  });
-  const recipeDisambiguationPending =
-    nextAction?.type === 'clarify_action' &&
-    (Array.isArray(nextAction?.unresolvedFields) ? nextAction.unresolvedFields : []).some((field) =>
-      ['name', 'title', 'recipe'].includes(safeTrim(field).toLowerCase())
-    );
-  if (recipeDisambiguationPending) {
-    return {
-      kind: 'execute_action',
-      actions: [{
-        capability: 'cookbook.save',
-        input: {
-          ...actionInput,
-          request: safeTrim(actionInput.request) || text,
-          preferredTitle: safeTrim(matchingCandidate?.label || text),
-        },
-      }],
-      routePrompt: prompt,
-    };
-  }
-
-  const sourceUrl = safeTrim(actionInput.sourceUrl || context.workingContext?.linkedRecipeUrl);
-  if (!sourceUrl) return null;
-
-  if (looksLikeRecipeText(text)) {
-    return {
-      kind: 'execute_action',
-      actions: [{
-        capability: 'cookbook.save',
-        input: {
-          request: text,
-          preferredTitle: safeTrim(actionInput.preferredTitle || context.workingContext?.linkedRecipeTitle),
-          sourceUrl,
-          sourceTitle: safeTrim(actionInput.sourceTitle),
-          recoveryMode: 'manual_paste',
-        },
-      }],
-      routePrompt: prompt,
-    };
-  }
-
-  if (nextAction?.type === 'clarify_action' || safeTrim(actionInput.recoveryMode).toLowerCase() === 'manual_paste') {
-    return {
-      kind: 'clarify',
-      routePrompt: prompt,
-      question:
-        safeTrim(nextAction?.question) ||
-        `Paste the ingredients and directions for ${safeTrim(actionInput.preferredTitle) || 'that recipe'}, and I'll save it manually.`,
-      proposedNextAction: nextAction,
-    };
-  }
-
-  return null;
-}
-
-export function interpretCookbookUpdateFollowUp(prompt, nextAction) {
-  const text = safeTrim(prompt);
-  const action = nextAction?.action;
-  if (!text || !action || String(action.capability || '').trim() !== 'cookbook.update') return null;
-  const lowered = text.toLowerCase();
-  const candidateOptions = Array.isArray(nextAction?.candidateOptions) ? nextAction.candidateOptions : [];
-  const matchingCandidate = candidateOptions.find((option) => safeTrim(option?.label).toLowerCase() === lowered);
-  const recipeDisambiguationPending =
-    nextAction?.type === 'clarify_action' &&
-    (Array.isArray(nextAction?.unresolvedFields) ? nextAction.unresolvedFields : []).some((field) =>
-      ['name', 'title', 'recipe'].includes(safeTrim(field).toLowerCase())
-    );
-  if (recipeDisambiguationPending && matchingCandidate) {
-    return {
-      kind: 'execute_action',
-      actions: [{
-        capability: 'cookbook.update',
-        input: {
-          ...(action.input && typeof action.input === 'object' && !Array.isArray(action.input) ? action.input : {}),
-          name: safeTrim(matchingCandidate.label),
-        },
-      }],
-      routePrompt: prompt,
-    };
-  }
-  if (/^(no|nope|cancel|stop|never mind|nevermind)$/i.test(text)) {
-    return { kind: 'reply_only', routePrompt: prompt, replyText: 'Okay, I left the saved cookbook recipe alone.' };
-  }
-  if (
-    /^(yes|yeah|yep|sure|ok|okay|do it|go ahead|replace it|replace that|update it|update that|save it|save that)$/i.test(text) ||
-    /\b(replace|update|save)\b/.test(lowered)
-  ) {
-    return {
-      kind: 'execute_action',
-      actions: [{
-        capability: 'cookbook.update',
-        input: action.input && typeof action.input === 'object' && !Array.isArray(action.input) ? action.input : {},
-      }],
-      routePrompt: prompt,
-    };
-  }
-  return null;
 }

@@ -4,8 +4,6 @@ import {
   executeCookbookList,
   executeCookbookSave,
   executeCookbookUpdate,
-  interpretCookbookSaveFollowUp,
-  interpretCookbookUpdateFollowUp,
   normalizeCookbookDeleteInput,
   normalizeCookbookSaveInput,
   normalizeCookbookUpdateInput,
@@ -27,45 +25,6 @@ import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet, exe
 
 function safeTrim(text) {
   return String(text ?? '').trim();
-}
-
-function progressTextForNarrationType(narrationType) {
-  switch (String(narrationType ?? '').trim()) {
-    case 'memory.save':
-      return 'Saving memory…';
-    case 'cookbook.save':
-      return 'Saving to cookbook…';
-    case 'cookbook.update':
-      return 'Updating cookbook…';
-    case 'cookbook.list':
-      return 'Looking through cookbook…';
-    case 'cookbook.delete':
-      return 'Updating cookbook…';
-    case 'chat.rename':
-      return 'Renaming chat…';
-    case 'grocery.write':
-      return 'Updating the grocery list…';
-    case 'grocery.preview':
-      return 'Planning the grocery list…';
-    case 'grocery.remove':
-    case 'grocery.check':
-    case 'grocery.uncheck':
-    case 'grocery.update_item':
-    case 'grocery.clear':
-      return 'Checking grocery list…';
-    case 'household.defaults.update':
-      return 'Updating household defaults…';
-    case 'pantry.add':
-    case 'pantry.remove':
-      return 'Updating pantry…';
-    case 'pantry.move_to_grocery':
-    case 'grocery.move_to_pantry':
-      return 'Updating pantry and grocery list…';
-    case 'web.search':
-      return 'Searching the web…';
-    default:
-      return '';
-  }
 }
 
 function normalizeMemorySaveActionInput(input) {
@@ -447,86 +406,6 @@ function buildIngredientItemsFromWorkingContext(workingContext) {
     .filter((item) => item.name);
 }
 
-function interpretWebSearchFollowUp(prompt, nextAction, context = {}) {
-  const action = nextAction?.action;
-  if (safeTrim(action?.capability) !== 'web.search') return null;
-  const existingQuery = safeTrim(action?.input?.query);
-  if (!existingQuery) return null;
-  if (/^(no|nope|cancel|stop|never mind|nevermind)$/i.test(safeTrim(prompt))) {
-    return { kind: 'reply_only', routePrompt: prompt, replyText: 'Okay, I will leave that search alone.' };
-  }
-  if (!isAffirmativeFollowUp(prompt)) return null;
-  const normalizedAction = normalizeKbSkillAction(
-    {
-      capability: 'web.search',
-      input: action?.input || {},
-    },
-    {
-      webSearchEnabled: !!context.memoryContext?.capabilities?.webSearchEnabled,
-      workingContext: context.workingContext,
-      memoryContext: context.memoryContext,
-      originalPrompt: prompt,
-    }
-  );
-  if (!normalizedAction) return null;
-  return {
-    kind: 'execute_action',
-    actions: [normalizedAction],
-    routePrompt: prompt,
-  };
-}
-
-function interpretGroceryWriteFollowUp(prompt, nextAction, context = {}) {
-  const action = nextAction?.action;
-  if (safeTrim(action?.capability) !== 'grocery.write') return null;
-  const actionInput = action?.input && typeof action.input === 'object' && !Array.isArray(action.input) ? action.input : {};
-  const source = safeTrim(actionInput.source).toLowerCase();
-  if (!['offered_items', 'draft_chat_offer'].includes(source)) return null;
-  if (/^(no|nope|cancel|stop|never mind|nevermind)$/i.test(safeTrim(prompt))) {
-    return { kind: 'reply_only', routePrompt: prompt, replyText: 'Okay, I left the Grocery List tab alone.' };
-  }
-  const text = safeTrim(prompt).toLowerCase();
-  if (source === 'draft_chat_offer') {
-    if (!isAffirmativeFollowUp(prompt) && !/\b(add|write|put|get|buy|go ahead|do it)\b/.test(text)) return null;
-    return {
-      kind: 'execute_action',
-      actions: [{
-        capability: 'grocery.write',
-        input: {
-          source: 'draft_chat_offer',
-          ...(safeTrim(actionInput.mode) ? { mode: safeTrim(actionInput.mode).toLowerCase() } : {}),
-        },
-      }],
-      routePrompt: prompt,
-    };
-  }
-  const offeredItems = Array.isArray(actionInput.items) && actionInput.items.length > 0
-    ? actionInput.items
-    : buildIngredientItemsFromWorkingContext(context.workingContext || context.memoryContext?.workingContext);
-  if (offeredItems.length === 0) return null;
-  const names = offeredItems.map((item) => safeTrim(item?.name).toLowerCase()).filter(Boolean);
-  const explicitlyRefersToSet = /\b(all|them|those|these|ingredients?)\b/.test(text);
-  const explicitGroceryIntent = promptClearlyRequestsDirectGroceryWrite(prompt);
-  const mentionsNamedItemWithGroceryIntent = explicitGroceryIntent && names.some((name) => text.includes(name));
-  const refersToOfferedSet =
-    isAffirmativeFollowUp(prompt) ||
-    explicitlyRefersToSet ||
-    explicitGroceryIntent ||
-    mentionsNamedItemWithGroceryIntent;
-  if (!refersToOfferedSet) return null;
-  return {
-    kind: 'execute_action',
-    actions: [{
-      capability: 'grocery.write',
-      input: {
-        source: 'offered_items',
-        items: offeredItems,
-      },
-    }],
-    routePrompt: prompt,
-  };
-}
-
 export const KB_SKILLS = {
   'memory.save': {
     id: 'memory.save',
@@ -565,7 +444,6 @@ export const KB_SKILLS = {
       },
     },
     normalizeActionInput: normalizeCookbookSaveInput,
-    interpretFollowUp: interpretCookbookSaveFollowUp,
     execute: executeCookbookSave,
   },
   'cookbook.update': {
@@ -583,7 +461,6 @@ export const KB_SKILLS = {
       input: { request: 'replace that saved recipe with the revised version' },
     },
     normalizeActionInput: normalizeCookbookUpdateInput,
-    interpretFollowUp: interpretCookbookUpdateFollowUp,
     execute: executeCookbookUpdate,
   },
   'cookbook.list': {
@@ -650,7 +527,6 @@ export const KB_SKILLS = {
       input: {},
     },
     normalizeActionInput: normalizeGroceryWriteActionInput,
-    interpretFollowUp: interpretGroceryWriteFollowUp,
     execute: writeGroceryListFromConversation,
   },
   'grocery.preview': {
@@ -867,7 +743,6 @@ export const KB_SKILLS = {
       input: { query: 'Masters Champions Dinner menu traditions' },
     },
     normalizeActionInput: normalizeWebSearchActionInput,
-    interpretFollowUp: interpretWebSearchFollowUp,
     execute: executeWebSearch,
   },
   'grocery.list': {
@@ -1165,98 +1040,4 @@ export function buildKbHelpText() {
     '',
     'I do not silently change the app. If I changed memory or the grocery list, I will say so plainly.',
   ].join('\n');
-}
-
-export function interpretKbSkillFollowUp(prompt, nextAction, context = {}) {
-  const action = nextAction?.action;
-  const capability = safeTrim(action?.capability);
-  if (!capability) return null;
-  const skill = getKbSkill(capability);
-  if (!skill?.interpretFollowUp) return null;
-  return skill.interpretFollowUp(prompt, nextAction, context) || null;
-}
-
-export async function executeKbActions(actions, context) {
-  const list = Array.isArray(actions) ? actions : [];
-  const outcomes = [];
-  let nextWorkingContext = null;
-  const seenActionKeys = new Set();
-
-  await context.deps.addMessage(context.chatId, context.req.householdId, 'user', context.name, context.prompt);
-  await context.deps.incrementUserMessageCountForSender?.(context.req);
-  context.deps.broadcastToChat?.(context.chatId, {
-    type: 'chat_updated',
-    householdId: context.req.householdId,
-    chatId: context.chatId,
-    user: context.name,
-  });
-
-  for (const action of list) {
-    const id = String(action?.capability ?? '').trim();
-    if (id === 'web.search') {
-      const queryKey = safeTrim(action?.input?.query).toLowerCase().replace(/\s+/g, ' ');
-      const dedupeKey = `web.search:${queryKey}`;
-      if (queryKey && seenActionKeys.has(dedupeKey)) {
-        continue;
-      }
-      if (queryKey) seenActionKeys.add(dedupeKey);
-    }
-    const skill = getKbSkill(id);
-    if (!skill) {
-      return {
-        replyText: "I couldn't turn that into one of my available actions.",
-        outcomes,
-        userMessageAlreadyPersisted: true,
-      };
-    }
-    const progressText = progressTextForNarrationType(skill.narrationType || skill.id);
-    if (progressText) {
-      await context.deps.emitKbProgress?.({
-        chatId: context.chatId,
-        householdId: context.req.householdId,
-        turnId: context.turnId,
-        text: progressText,
-        phase: skill.narrationType || skill.id,
-        senderRes: context.res,
-      });
-    }
-    const outcome = await skill.execute(action, {
-      ...context,
-      userMessageAlreadyPersisted: true,
-      runtimeManagedResponse: true,
-      kbModeEnabled: true,
-    });
-    if (outcome && typeof outcome === 'object' && !Array.isArray(outcome) && !outcome.narrationType) {
-      outcome.narrationType = skill.narrationType || skill.id;
-    }
-    if (outcome?.workingContext && typeof outcome.workingContext === 'object' && !Array.isArray(outcome.workingContext)) {
-      nextWorkingContext = outcome.workingContext;
-    }
-    outcomes.push(outcome);
-    if (outcome?.proposedNextAction) {
-      return {
-        replyPlan: {
-          kind: 'skill_outcomes',
-          outcomes,
-        },
-        proposedNextAction: outcome.proposedNextAction,
-        workingContext: nextWorkingContext,
-        outcomes,
-        userMessageAlreadyPersisted: true,
-      };
-    }
-  }
-
-  const lastOutcome = outcomes[outcomes.length - 1];
-  return {
-    replyPlan: lastOutcome
-      ? {
-          kind: 'skill_outcomes',
-          outcomes,
-        }
-      : null,
-    workingContext: nextWorkingContext,
-    outcomes,
-    userMessageAlreadyPersisted: true,
-  };
 }

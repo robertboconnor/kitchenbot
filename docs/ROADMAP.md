@@ -44,14 +44,21 @@ A big pass across the roadmap. Shipped to `dev` (149 tests green, browser-verifi
   (not just the person typing), and there's a visible, editable **Family food** surface in Settings.
 - **Phase 4 — Settings split done:** Settings is now **My preferences (all) · Family food (all) · Household
   (owners) · Anthropic usage (owners) · God Mode (super-admin)**, role-gated; God-Mode gating untouched.
+- **Phase 4 — dead next-action state machine REMOVED (2026-07-23):** the whole orphaned
+  deterministic-follow-up / next-action machine is gone — the interpreters (`interpretKbSkillFollowUp`,
+  `interpretWebSearchFollowUp`, `interpretGroceryWriteFollowUp`, `interpretCookbook*FollowUp`,
+  `executeKbActions`), every `proposedNextAction` producer across the executors, the `kb-reply` /
+  `kb-working-context` / `db` threading, and the whole `kb-next-action.mjs` module. Verified the brain's
+  clarify behavior was **always** driven by the live `question`/`matches` passthrough fields, not by
+  `proposedNextAction` (never a passthrough key) — so the removal is behavior-neutral. The
+  `proposed_next_action_json` DB column is retained-but-inert (no migration; always `'{}'`). 144 tests
+  green; server boots clean; a live ambiguous-grocery-remove smoke still surfaces `question` + `matches`
+  with no `proposedNextAction`. **On `dev`, not yet deployed.**
 
 **Deferred (deliberate, with rationale):**
 - **Fold Recipe Importer into Cookbook** — it's an app-merge (`recipe-importer.js` is a separate ~400-line
   client with its own page); that's Phase-5-scale (frontend re-plumb). The importer already works and
   returns to Cookbook. Better done as part of Phase 5.
-- **Remove the dead next-action state machine** — verified triply-dead (Job-1 audit), but it's a large,
-  zero-user-value removal threaded through core files (`kb-skills`, executors, a db column) where a slip
-  breaks a live executor. Deserves its own focused pass (keep `question`/`matches` — those ARE live).
 
 ## Where we are now (working branch: `dev`)
 
@@ -156,10 +163,10 @@ tests added).
 - **Phase 3 — Recipe robustness.** Real **SSRF** in the chat fetch path (`recipe-url-ingestion.mjs`
   `fetchRecipePage` — no private-IP guard); no input caps / timeouts; two divergent import pipelines
   to unify. ~S–M each.
-- **Phase 4 — Delete dead weight + split Settings.** Remove the orphaned deterministic follow-up /
-  next-action state machine (elaborate, tested, unreachable). Split the Settings "disaster" (4
-  audiences — your prefs / household admin / billing / God-Mode super-admin with plaintext PINs —
-  in one panel) into sane surfaces. ~Medium.
+- **Phase 4 — Delete dead weight + split Settings. ✅ DONE (2026-07-23).** The orphaned
+  deterministic-follow-up / next-action state machine is removed (see the dated pass above), and the
+  Settings "disaster" is split into role-gated surfaces (My preferences / Family food / Household /
+  Anthropic usage / God Mode).
 - **Phase 5 — Frontend re-plumb (the long pole, Large).** The entire client is template strings
   inside the 212 KB `kitchenbot.mjs` + a 4,580-line global-scope `public/app.js`. Lift HTML/CSS out
   into real files/components, move JS off global scope, real responsive + a11y. Framework TBD

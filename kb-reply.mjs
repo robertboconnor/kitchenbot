@@ -149,9 +149,9 @@ async function maybeAutoTitleChat({ anthropic, req, chatId, routePrompt, deps })
   await updateChatTitle(chatId, req.householdId, nextTitle).catch(() => {});
 }
 
-export function rewriteUngroundedActionOfferReply(replyText, proposedNextAction = null) {
+export function rewriteUngroundedActionOfferReply(replyText) {
   const reply = safeTrim(replyText);
-  if (!reply || proposedNextAction) return reply;
+  if (!reply) return reply;
   let next = reply;
   next = next.replace(
     /\b(?:Would you like|Do you want|Want)\s+me\s+to\s+search(?: the web)?\s+for\s+(.+?)\?/i,
@@ -211,7 +211,6 @@ export async function respondWithKbErrorReply({
     workingContext,
     outcomes: [],
     userMessageAlreadyPersisted,
-    proposedNextAction: null,
     deps,
   });
 }
@@ -230,7 +229,6 @@ export async function respondWithKbReply({
   workingContext = null,
   outcomes = [],
   userMessageAlreadyPersisted = false,
-  proposedNextAction = null,
   suppressStreaming = false,
   deps,
 }) {
@@ -243,13 +241,12 @@ export async function respondWithKbReply({
   }
   const assistantName = await resolveAssistantName({ req, routePrompt, memoryContext, deps });
 
-  const finalProposedNextAction = proposedNextAction || null;
   let finalReply = safeTrim(replyText) || 'Okay.';
   // Pre-send proofread of the CURRENT reply (never an already-sent message). Skipped
   // when the reply was streamed live — you can't rewrite text already on the wire, so
   // the loop's system prompt keeps streamed replies clean by construction instead.
   if (!suppressStreaming) {
-    finalReply = rewriteUngroundedActionOfferReply(finalReply, finalProposedNextAction);
+    finalReply = rewriteUngroundedActionOfferReply(finalReply);
   }
   // NOTE: unbacked "I saved it" claims are now caught in the agent loop itself
   // (kb-claim-guard.mjs), which cross-checks the reply against the real tool trace —
@@ -264,7 +261,6 @@ export async function respondWithKbReply({
   await persistKbRuntimeState({
     chatId,
     householdId: req.householdId,
-    proposedNextAction: finalProposedNextAction,
     workingContext: refreshedWorkingContext,
   });
 
@@ -287,22 +283,19 @@ export async function respondWithKbReply({
 }
 
 
-async function persistKbRuntimeState({ chatId, householdId, proposedNextAction, workingContext }) {
+async function persistKbRuntimeState({ chatId, householdId, workingContext }) {
   const normalizedWorkingContext = normalizeWorkingContext(workingContext);
-  const hasProposedNextAction =
-    proposedNextAction && typeof proposedNextAction === 'object' && !Array.isArray(proposedNextAction);
-  const persistedWorkingContext = selectPersistentWorkingContext(normalizedWorkingContext, proposedNextAction);
-  if (!hasProposedNextAction && !persistedWorkingContext) {
+  const persistedWorkingContext = selectPersistentWorkingContext(normalizedWorkingContext);
+  if (!persistedWorkingContext) {
     await clearChatRuntimeState(chatId, householdId).catch(() => {});
     return;
   }
   await setChatRuntimeState(chatId, householdId, {
     mode: 'kb',
-    proposedNextAction: hasProposedNextAction ? proposedNextAction : null,
     workingContext: persistedWorkingContext,
   }).catch(() => {});
 }
 
-function selectPersistentWorkingContext(workingContext, proposedNextAction = null) {
-  return selectContinuationWorkingContext(workingContext, proposedNextAction);
+function selectPersistentWorkingContext(workingContext) {
+  return selectContinuationWorkingContext(workingContext);
 }

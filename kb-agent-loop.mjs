@@ -172,8 +172,8 @@ export async function runKbAgentLoop({
     })
     .catch(() => null);
 
-  // Persist the user message once, up front (mirrors executeKbActions). The reply
-  // path is told the user message is already persisted so it does not double-write.
+  // Persist the user message once, up front. The reply path is told the user
+  // message is already persisted so it does not double-write.
   await deps.addMessage(chatId, householdId, 'user', name, promptText);
   req.kbUserMessagePersisted = true;
   await deps.incrementUserMessageCountForSender?.(req);
@@ -367,7 +367,6 @@ export async function runKbAgentLoop({
     workingContext: null,
     outcomes: collectedOutcomes.map((r) => r?.outcome).filter(Boolean),
     userMessageAlreadyPersisted: true,
-    proposedNextAction: null,
     suppressStreaming: streamedFinalReply,
     deps,
   });
