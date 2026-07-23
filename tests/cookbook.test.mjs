@@ -1139,7 +1139,7 @@ test('executeCookbookSave fetches linked recipe details before saving when exact
         anthropic,
         memoryContext: { capabilities: { webSearchEnabled: true } },
         workingContext: null,
-        deps: { fetch },
+        deps: { fetch, lookup: async () => [{ address: '93.184.216.34', family: 4 }] },
       }
     );
     const entries = await db.listCookbookEntries(created.householdId);
@@ -1197,7 +1197,7 @@ test('executeCookbookSave does not save linked recipes when only web search-styl
         anthropic,
         memoryContext: { capabilities: { webSearchEnabled: true } },
         workingContext: null,
-        deps: { fetch },
+        deps: { fetch, lookup: async () => [{ address: '93.184.216.34', family: 4 }] },
       }
     );
     const entries = await db.listCookbookEntries(created.householdId);
@@ -1256,6 +1256,7 @@ test('executeCookbookSave classifies bot-blocked linked recipe fetches and pivot
             headers,
             text: async () => '<html><head><title>Just a moment...</title></head><body>Enable JavaScript and cookies to continue</body></html>',
           }),
+          lookup: async () => [{ address: '93.184.216.34', family: 4 }],
         },
       }
     );
@@ -1336,6 +1337,7 @@ test('executeCookbookSave distinguishes fetched-page extraction failure from fet
             headers: { get: () => 'text/html; charset=utf-8' },
             text: async () => '<html><head><title>White Chicken Chili</title></head><body><p>This page talks about why white chicken chili is comforting, but does not provide a full ingredient list or full instructions.</p></body></html>',
           }),
+          lookup: async () => [{ address: '93.184.216.34', family: 4 }],
         },
       }
     );

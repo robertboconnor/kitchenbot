@@ -54,8 +54,27 @@ A big pass across the roadmap. Shipped to `dev` (149 tests green, browser-verifi
   `proposed_next_action_json` DB column is retained-but-inert (no migration; always `'{}'`). 144 tests
   green; server boots clean; a live ambiguous-grocery-remove smoke still surfaces `question` + `matches`
   with no `proposedNextAction`. **On `dev`, not yet deployed.**
+- **Phase 3 — Recipe-fetch SSRF closed + fetch hardened (2026-07-23):** the "save this linked recipe"
+  chat path is the one place our server fetches a **user-supplied** URL, and it did so with no guard. New
+  shared `safe-fetch.mjs` (`safeFetch` / `assertAllowedUrl`) now refuses any URL that resolves to a
+  private / loopback / link-local / reserved address (incl. the `169.254.169.254` cloud-metadata
+  endpoint), re-validates **every redirect hop** (so a public page can't 302 to an internal one), bounds
+  the request with an always-on timeout, and **caps the body read** with a streaming byte limit so a
+  hostile/huge response can't exhaust memory. `fetchRecipePage` routes through it and returns a clean
+  "that link points to a private/internal address" outcome instead of fetching. 18 new tests
+  (`safe-fetch` + `recipe-url-ingestion`), 162 green total; server boots clean. The other two outbound
+  fetches are **not** SSRF vectors and were left alone: the standalone importer hands the URL to a
+  third-party scraper (`api.riveterhq.com`, fixed host), and `web.search` runs on Anthropic's servers.
+  **On `dev`, not yet deployed.**
 
 **Deferred (deliberate, with rationale):**
+- **Unify the two recipe-import pipelines — NOT a security fix; needs a product call (deferred).** The
+  chat path (direct free fetch + local JSON-LD/semantic extraction) and the standalone importer
+  (Riveter-backed paid scraper that handles JS/bot-blocked sites) genuinely do different jobs. "Unifying"
+  them means either routing chat saves through Riveter (costs money per fetch + needs `RIVETER_API_KEY`,
+  which the chat path currently works without) or dropping one — a product decision, and it overlaps the
+  already-deferred **W2 fold-importer-into-Cookbook** front-end merge. Both belong with Phase 5. The
+  *security* half of Phase 3 (above) is done and did not require unifying them.
 - **Fold Recipe Importer into Cookbook** — it's an app-merge (`recipe-importer.js` is a separate ~400-line
   client with its own page); that's Phase-5-scale (frontend re-plumb). The importer already works and
   returns to Cookbook. Better done as part of Phase 5.
@@ -160,9 +179,10 @@ tests added).
   (c) the cooked checkbox now uses the palette accent (`--accent-strong`), not browser blue.
   **Remaining polish:** a persisted meal→recipe pointer when the brain saves a recipe for a planned
   meal (today it's title-resolved on read, which is usually enough).
-- **Phase 3 — Recipe robustness.** Real **SSRF** in the chat fetch path (`recipe-url-ingestion.mjs`
-  `fetchRecipePage` — no private-IP guard); no input caps / timeouts; two divergent import pipelines
-  to unify. ~S–M each.
+- **Phase 3 — Recipe robustness. ✅ SSRF + fetch hardening DONE (2026-07-23; see the dated pass above).**
+  Private-IP/redirect guard, timeout, and streaming body cap now live in shared `safe-fetch.mjs`, used by
+  `fetchRecipePage`. **Remaining (deferred, deliberately):** unifying the two import pipelines is a
+  product call, not a security fix — see the Deferred note above (overlaps W2 / Phase 5).
 - **Phase 4 — Delete dead weight + split Settings. ✅ DONE (2026-07-23).** The orphaned
   deterministic-follow-up / next-action state machine is removed (see the dated pass above), and the
   Settings "disaster" is split into role-gated surfaces (My preferences / Family food / Household /

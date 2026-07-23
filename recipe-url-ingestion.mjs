@@ -1,4 +1,5 @@
 import { load } from 'cheerio';
+import { safeFetch, SsrfError } from './safe-fetch.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -276,19 +277,56 @@ export async function fetchRecipePage({
     };
   }
 
+  let fetchResult;
   try {
-    const response = await fetchImpl(sourceUrl, {
-      redirect: 'follow',
+    fetchResult = await safeFetch(sourceUrl, {
+      fetchImpl,
+      lookup: deps.lookup,
       headers: {
         'user-agent': 'KitchenBot/1.0 (+recipe import)',
         accept: 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8',
       },
-      signal: AbortSignal.timeout?.(12000),
+      maxBytes: deps.maxFetchBytes || undefined,
+      timeoutMs: deps.fetchTimeoutMs || undefined,
     });
+  } catch (guardError) {
+    // We refused before (or during) the network call because the URL resolved to a
+    // private/internal address, used a bad scheme, or redirected somewhere it shouldn't.
+    if (guardError instanceof SsrfError || guardError?.code === 'ssrf_blocked') {
+      const refusedBeforeFetch = guardError.reason !== 'too_many_redirects';
+      return {
+        status: 'unavailable',
+        error: 'That recipe link points to a private or internal network address, so I did not fetch it.',
+        fetchPerformed: !refusedBeforeFetch,
+        fetchSucceeded: false,
+        fetchBlocked: false,
+        blockerKind: '',
+        failureKind: 'refused',
+        sourceUrl,
+        sourceKind: 'server_fetch',
+        failureReason: safeTrim(guardError.message) || 'Refused to fetch a private or internal address.',
+      };
+    }
+    // Any other error (timeout / DNS / socket) falls through to the generic handler below.
+    return {
+      status: 'unavailable',
+      error: 'I could not fetch that linked recipe right now.',
+      fetchPerformed: true,
+      fetchSucceeded: false,
+      fetchBlocked: false,
+      blockerKind: '',
+      failureKind: 'fetch_failed',
+      sourceUrl,
+      sourceKind: 'server_fetch',
+      failureReason: safeTrim(guardError?.message) || 'The server-side fetch failed.',
+    };
+  }
+
+  try {
+    const { response, bodyText, finalUrl: resolvedFinalUrl } = fetchResult;
     const contentType = safeTrim(response.headers?.get?.('content-type') || '');
     const responseHeaders = collectResponseHeaders(response.headers);
-    const finalUrl = normalizeUrl(response.url || sourceUrl) || sourceUrl;
-    const bodyText = await response.text();
+    const finalUrl = normalizeUrl(resolvedFinalUrl || response.url || sourceUrl) || sourceUrl;
     const pageTitle = /html|xml/i.test(contentType)
       ? safeTrim(load(bodyText)('title').first().text()) || safeTrim(load(bodyText)('meta[property="og:title"]').attr('content'))
       : '';
