@@ -113,12 +113,16 @@ function buildLoopSystemPrompt({ memoryContext, name }) {
   ];
   if (isSweetheartUser(name)) principles.push(sweetheartPrinciple());
   const principlesText = principles.join('\n');
+  const peopleText = safeTrim(memoryContext?.householdPeopleText);
   const memoryText = buildMemoryContextText(memoryContext);
   return [
     persona,
     '',
     principlesText,
-    memoryText ? `\nRelevant saved household/person memory:\n${memoryText}` : '',
+    peopleText
+      ? `\nEveryone in this household — consider ALL of them when planning food, not only whoever is typing. Allergies are hard constraints. For deeper detail on anyone's tastes call person.profile.get:\n${peopleText}`
+      : '',
+    memoryText ? `\nOther relevant saved household/person memory:\n${memoryText}` : '',
   ]
     .filter(Boolean)
     .join('\n');
