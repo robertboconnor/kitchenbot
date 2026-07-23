@@ -75,18 +75,24 @@ A big pass across the roadmap, now **deployed** (`dev` == `main`; 165 tests gree
   hit-rate note: reliably reaches the physical register; "cute butt" verbatim stays its rarest note.
   **Deployed to prod 2026-07-23 (PR #5).** ⚠️ Fires only for a user named exactly "Elle" — verify her
   real account name in prod.
-- **HOTFIX — claim-guard false-positive on "list your tools" (2026-07-23, post-PR-#5).** Real prod
-  bug found in live use: asking KB what it can do / to list its tools (e.g. "list all your tools like
-  `person.profile.update`") made the truthfulness guard (`kb-claim-guard.mjs`) read the tool
-  *description's* completion vocabulary ("adds to your list", "I'll remember it") as a false claim of a
-  completed write — it wiped the streamed reply, retried, and shipped the canned "I said that was done
-  but didn't actually complete it" message. Root cause: the guard couldn't distinguish *describing* a
-  capability from *claiming* a completed action. Fix: `findUnbackedWriteClaims` now suppresses the check
-  when the turn is a description — the reply names ≥2 distinct dotted tool identifiers
-  (`looksLikeToolRundown`), or the user asked what KB can do (`isCapabilityQuestion`); both loop call
-  sites pass `{ userPrompt }`. Core claim-matching is untouched — genuine false claims (incl. one-tool-name
-  mentions) still flag. 169 tests green (4 new). ⚠️ *The claim-guard remains a heuristic text-matcher; if
-  new false-positives surface, prefer widening the description-suppression over weakening claim detection.*
+- **Truthfulness guard — REBUILT STRUCTURALLY (2026-07-23, post-PR-#5).** A "list your tools" prod bug
+  exposed the guard as a contract violation: it was a regex text-matcher scanning the reply for
+  "lie-shaped" verbs (`WRITE_FAMILIES` patterns), which can't tell *describing* a capability ("grocery.write
+  adds items to your list") from *claiming* a completed write — so an honest tool rundown got wiped and
+  replaced with the canned "I didn't actually complete it". Per the brain contract, "heuristics that infer
+  meaning from prose" are forbidden — the guard WAS a second brain made of regex. **First shipped a regex
+  band-aid (description-suppression), then replaced the whole thing with the structural design it should
+  have been:** `kb-claim-guard.mjs` now builds the turn's ACTUAL tool trace (`summarizeToolTrace` — ground
+  truth of what ran + persisted) and hands reply + trace to a verifier model (`verifyReplyClaims`,
+  `kb_truthfulness_check` → main model, forced-tool output) that judges whether the reply asserts any change
+  the trace doesn't support. Intelligence over facts, not pattern-matching over prose. Fails OPEN on error
+  (a flaky check must never block a truthful reply). ALL regex (`WRITE_FAMILIES`, `BARE_COMPLETION_PATTERNS`,
+  `looksLikeToolRundown`, `isCapabilityQuestion`) deleted. **Live-verified 9/9** scenarios incl. the bug
+  (tool rundown → clean), genuine lies (flagged), reads/offers/duplicates (clean), and a partial over-claim
+  ("added milk *and eggs*" when only milk was added → flags *eggs* specifically — item-level, which the old
+  family-level regex could never do). 162 tests green (structural unit tests + mocked verifier); server boots
+  clean. Cost: one verifier call per completed turn (runs AFTER streaming, so latency is a background commit;
+  token-max is fine per Rob). Deployed via PR #7.
 
 **Deferred (deliberate, with rationale):**
 - **Unify the two recipe-import pipelines — NOT a security fix; needs a product call (deferred).** The

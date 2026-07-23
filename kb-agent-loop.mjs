@@ -21,7 +21,7 @@ import { buildKbToolDefinitions, executeKbToolCall } from './kb-tools.mjs';
 import { buildAssistantPersonaSystemText } from './kb-persona.mjs';
 import { respondWithKbReply, streamReplyDelta, resetReplyStream } from './kb-reply.mjs';
 import { narrationForToolName } from './kb-narration.mjs';
-import { findUnbackedWriteClaims, buildClaimCorrectionMessage } from './kb-claim-guard.mjs';
+import { verifyReplyClaims, buildClaimCorrectionMessage } from './kb-claim-guard.mjs';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_TOKENS = 2048;
@@ -216,6 +216,7 @@ export async function runKbAgentLoop({
 
   const collectedOutcomes = [];
   let finalText = '';
+  let finalClaims = null; // null = reply text not yet verified; array = verifier's result
   let streamedFinalReply = false;
   let streamedTextInPriorTurn = false;
   let claimCorrections = 0;
@@ -261,21 +262,29 @@ export async function runKbAgentLoop({
     // either do it for real or retract, rather than ship a false "Saved it!".
     if (response?.stop_reason !== 'tool_use' || toolUses.length === 0) {
       const candidateText = textBlocks.map((block) => block.text || '').join('').trim();
-      const unbacked = findUnbackedWriteClaims(candidateText, collectedOutcomes, { userPrompt: promptText });
-      if (unbacked.length > 0 && claimCorrections < MAX_CLAIM_CORRECTIONS) {
+      const verdict = await verifyReplyClaims({
+        anthropic,
+        replyText: candidateText,
+        collectedOutcomes,
+        ids: { householdId, chatId, turnId },
+        prompt: promptText,
+      });
+      const claims = verdict.unsupportedClaims;
+      if (claims.length > 0 && claimCorrections < MAX_CLAIM_CORRECTIONS) {
         claimCorrections += 1;
         console.warn(
-          `[kb-truthfulness] chat ${chatId} turn ${turnId}: reply claimed ` +
-            `${unbacked.map((u) => u.family).join(', ')} with no backing tool call — ` +
-            `forcing correction (${claimCorrections}/${MAX_CLAIM_CORRECTIONS}).`
+          `[kb-truthfulness] chat ${chatId} turn ${turnId}: reply made ${claims.length} unsupported ` +
+            `claim(s) not backed by the tool trace — forcing correction ` +
+            `(${claimCorrections}/${MAX_CLAIM_CORRECTIONS}). e.g. ${claims[0]}`
         );
         if (streamedTextThisTurn) resetReplyStream({ res, deps, chatId, householdId, turnId });
         streamedTextInPriorTurn = false;
         messages.push({ role: 'assistant', content });
-        messages.push({ role: 'user', content: buildClaimCorrectionMessage(unbacked) });
+        messages.push({ role: 'user', content: buildClaimCorrectionMessage(claims) });
         continue;
       }
       finalText = candidateText;
+      finalClaims = claims; // verified (may be non-empty if the correction budget is exhausted)
       streamedFinalReply = finalText.length > 0; // it was already streamed live above
       break;
     }
@@ -347,20 +356,29 @@ export async function runKbAgentLoop({
   }
   if (!finalText) finalText = 'Okay.';
 
-  // Final catch-all. The in-loop guard covers the streaming path; this also covers the wrap-up
-  // path and an exhausted correction budget. If the reply STILL claims a write with no backing
-  // tool call, replace it with an honest fallback rather than ship a lie — and wipe any streamed
-  // text so the false claim never survives on screen.
-  const residualUnbacked = findUnbackedWriteClaims(finalText, collectedOutcomes, { userPrompt: promptText });
-  if (residualUnbacked.length > 0) {
+  // Final catch-all. The in-loop path already verified its reply (finalClaims set); this covers the
+  // wrap-up path (finalClaims still null) and an exhausted correction budget. If the reply STILL
+  // claims a change the tool trace doesn't support, replace it with an honest fallback rather than
+  // ship a lie — and wipe any streamed text so the false claim never survives on screen.
+  if (finalClaims === null && finalText && finalText !== 'Okay.') {
+    const verdict = await verifyReplyClaims({
+      anthropic,
+      replyText: finalText,
+      collectedOutcomes,
+      ids: { householdId, chatId, turnId },
+      prompt: promptText,
+    });
+    finalClaims = verdict.unsupportedClaims;
+  }
+  if (Array.isArray(finalClaims) && finalClaims.length > 0) {
     console.warn(
-      `[kb-truthfulness] chat ${chatId} turn ${turnId}: honest fallback — reply still claimed ` +
-        `${residualUnbacked.map((u) => u.family).join(', ')} with no backing tool call.`
+      `[kb-truthfulness] chat ${chatId} turn ${turnId}: honest fallback — reply still made ` +
+        `${finalClaims.length} unsupported claim(s) not backed by the tool trace. e.g. ${finalClaims[0]}`
     );
     if (streamedFinalReply) resetReplyStream({ res, deps, chatId, householdId, turnId });
     finalText =
-      "Hold on — I said that was done, but I didn't actually complete it, and I won't claim otherwise. " +
-      "Ask me once more and I'll do it for real.";
+      "Hold on — I started to say that was done, but I didn't actually complete it, so I won't claim it. " +
+      "Tell me to go ahead and I'll do it for real.";
     streamedFinalReply = false;
   }
 
