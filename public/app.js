@@ -1792,7 +1792,7 @@
                 for (const row of rows) {
                   html +=
                     '<li>' +
-                    (row.displayName || '—') +
+                    escapeAdminHtml(row.displayName || '—') +
                     ': ' +
                     (row.count != null ? row.count : 0) +
                     '</li>';
@@ -2172,15 +2172,21 @@
         );
 
         function renderMarkdown(text) {
-          if (typeof marked === 'undefined') return document.createTextNode(text);
+          // Assistant replies, imported-recipe text, and web-search results all flow here.
+          // We ALWAYS sanitize marked's HTML with DOMPurify before innerHTML; if either lib
+          // is missing we degrade to plain text rather than ever inject unsanitized HTML.
+          if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+            return document.createTextNode(String(text));
+          }
           try {
             const html = marked.parse(String(text), { gfm: true, breaks: true });
+            const clean = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
             const wrap = document.createElement('span');
             wrap.className = 'md-wrap';
-            wrap.innerHTML = html;
+            wrap.innerHTML = clean;
             return wrap;
           } catch (e) {
-            return document.createTextNode(text);
+            return document.createTextNode(String(text));
           }
         }
 
@@ -2331,7 +2337,7 @@
               actions.className = 'g-actions';
 
               const moveBtn = document.createElement('button');
-              moveBtn.className = 'g-delete';
+              moveBtn.className = 'g-delete g-move';
               setGroceryMoveToPantryReadyState(moveBtn, {
                 checked: !!item.checked,
                 probablyPantryItem,
@@ -2485,7 +2491,7 @@
               actions.className = 'g-actions';
 
               const moveBtn = document.createElement('button');
-              moveBtn.className = 'g-delete';
+              moveBtn.className = 'g-delete g-move';
               setInventoryMoveButtonState(moveBtn, {
                 disabled: godModeReadOnly,
                 inFlight: isInventoryMoveInFlight('pantry', item.id),

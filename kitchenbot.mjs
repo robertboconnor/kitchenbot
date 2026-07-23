@@ -1322,6 +1322,30 @@ function parseThreadGrocerySummaryKeys(summaryText) {
   return keys;
 }
 
+// Security headers. Hash-based CSP with NO 'unsafe-inline' for scripts: the only inline
+// script is the static palette no-flash bootstrap (whitelisted by its sha256), and marked +
+// DOMPurify are vendored under /vendor (script-src 'self'), so no CDN origin is trusted.
+// If the inline palette-boot script changes, recompute this hash.
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' 'sha256-2WlGCYkFT0X36gYjviA+w6amZw2frQQIyYL0r90p5SE='",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+].join('; ');
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  next();
+});
+
 app.use(express.json());
 app.use(express.static('public'));
 
@@ -1785,10 +1809,20 @@ app.get('/', (req, res) => {
            Base = palette-independent tokens + the default (sweetwater) so the pre-login
            screen is themed; each [data-palette] block overrides the color tokens.
            ============================================================ */
+        /* Self-hosted Nunito (variable, weights 400–800) so the rounded display voice is
+           identical on every device — not just Apple's ui-rounded. OFL, served from /fonts. */
+        @font-face {
+          font-family: "Nunito";
+          src: url("/fonts/nunito-variable-latin.woff2") format("woff2");
+          font-weight: 400 800;
+          font-style: normal;
+          font-display: swap;
+        }
         :root {
           color-scheme: light;
-          /* Rounded display voice + clean UI sans — NO serifs, ever */
-          --font-display: ui-rounded, "SF Pro Rounded", "Nunito", "Quicksand", system-ui, sans-serif;
+          /* Rounded display voice + clean UI sans — NO serifs, ever. Nunito first (self-hosted,
+             so all platforms match); Apple's ui-rounded as a graceful alt if the font fails. */
+          --font-display: "Nunito", ui-rounded, "SF Pro Rounded", "Quicksand", system-ui, sans-serif;
           --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
           --radius-sm: 9px;
           --radius-md: 12px;
@@ -3788,8 +3822,19 @@ app.get('/', (req, res) => {
           background: #fee2e2;
         }
 
-        /* Scalpel: "Move to pantry" is a secondary utility — keep it neutral/quiet,
-           a hint of candy only on hover. Don't spend accent on routine actions. */
+        /* Scalpel: "Move to pantry" is a MOVE, not a delete — never red. Neutral/quiet in
+           every state (it borrows .g-delete only for button shape), a hint of candy on hover. */
+        .g-delete.g-move {
+          border-color: var(--border-subtle);
+          background: var(--card-bg-2);
+          color: var(--text-soft);
+        }
+        .g-delete.g-move:hover {
+          background: var(--accent-soft);
+          color: var(--accent-strong);
+          border-color: var(--accent-soft);
+        }
+
         .g-delete.g-move-to-pantry-ready {
           border-color: var(--border-subtle);
           background: var(--card-bg-2);
@@ -5247,7 +5292,8 @@ app.get('/', (req, res) => {
         </div>
       </div>
 
-      <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+      <script src="/vendor/marked.min.js"></script>
+      <script src="/vendor/purify.min.js"></script>
       ${renderClientBootTags({ cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS })}
     </body>
   </html>
