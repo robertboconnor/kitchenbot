@@ -15,6 +15,7 @@ import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, execute
 import { executeHouseholdDefaultsUpdate } from './household-defaults-executor.mjs';
 import { executeGroceryMoveToPantry, executePantryAdd, executePantryMoveToGrocery, executePantryRecategorize, executePantryRemove } from './pantry-executor.mjs';
 import { executePlanAdd, executePlanUpdate, executePlanRemove } from './mealplan-executor.mjs';
+import { executePersonProfileUpdate } from './person-profile-executor.mjs';
 import { executeWebSearch } from './web-search-executor.mjs';
 import { executeChatRename, normalizeChatRenameActionInput } from './chat-executor.mjs';
 import {
@@ -22,7 +23,7 @@ import {
   normalizeMemoryValue,
 } from './kb-memory-policy.mjs';
 import { normalizeWorkingContext } from './kb-working-context.mjs';
-import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet, executeInventorySections, executePlanList, executeThreadSearch } from './kb-read-executors.mjs';
+import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet, executeInventorySections, executePlanList, executeThreadSearch, executePersonProfileGet } from './kb-read-executors.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
@@ -364,6 +365,32 @@ function normalizeThreadSearchActionInput(input, context = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const query = safeTrim(raw.query || raw.q || raw.text || context.originalPrompt);
   return query ? { query } : null;
+}
+
+function normalizePersonProfileUpdateActionInput(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const person = safeTrim(raw.person || raw.name || raw.who);
+  if (!person) return null;
+  const list = (v) => {
+    const source = Array.isArray(v) ? v : v == null || v === '' ? [] : [v];
+    return source.map((x) => safeTrim(x)).filter(Boolean);
+  };
+  const out = { person };
+  const accepted = list(raw.acceptedFoods || raw.accepts || raw.likes);
+  const rejected = list(raw.rejectedFoods || raw.rejects || raw.dislikes);
+  const allergies = list(raw.allergies || raw.allergicTo);
+  const notes = list(raw.notes ?? raw.note);
+  if (accepted.length) out.acceptedFoods = accepted;
+  if (rejected.length) out.rejectedFoods = rejected;
+  if (allergies.length) out.allergies = allergies;
+  if (notes.length) out.notes = notes;
+  return out;
+}
+
+function normalizePersonProfileGetActionInput(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const person = safeTrim(raw.person || raw.name || raw.who);
+  return person ? { person } : {};
 }
 
 function normalizeGroceryUpdateItemActionInput(input) {
@@ -943,6 +970,31 @@ export const KB_SKILLS = {
     exampleAction: { capability: 'thread.search', input: { query: 'lemon juice amount' } },
     normalizeActionInput: normalizeThreadSearchActionInput,
     execute: executeThreadSearch,
+  },
+  'person.profile.update': {
+    id: 'person.profile.update',
+    description: "Record structured food facts about a household member (accepted/rejected foods, allergies, notes).",
+    narrationType: 'person.profile.update',
+    contextProfile: {},
+    interpreterDescription:
+      "Record structured facts about a specific person's eating: foods they accept or reject, allergies, or a short note. Use THIS (not memory.save) for a household member's food preferences and allergies so it stays queryable. Foods accumulate; marking a food accepted removes it from rejected and vice versa.",
+    exampleAction: {
+      capability: 'person.profile.update',
+      input: { person: 'Bizzy', acceptedFoods: ['creamy lemon rice with hot dog'], allergies: ['peanuts'] },
+    },
+    normalizeActionInput: normalizePersonProfileUpdateActionInput,
+    execute: executePersonProfileUpdate,
+  },
+  'person.profile.get': {
+    id: 'person.profile.get',
+    description: "Read a household member's structured food profile (accepted/rejected foods, allergies, notes).",
+    narrationType: 'person.profile.get',
+    contextProfile: {},
+    interpreterDescription:
+      "Read a person's structured food profile — what they accept, reject, are allergic to, and notes — to plan meals that work for them or answer \"what does X eat?\". Omit person to see every household member's profile.",
+    exampleAction: { capability: 'person.profile.get', input: { person: 'Bizzy' } },
+    normalizeActionInput: normalizePersonProfileGetActionInput,
+    execute: executePersonProfileGet,
   },
 };
 

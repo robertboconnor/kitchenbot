@@ -71,11 +71,20 @@ const WRITE_FAMILIES = [
   },
   {
     family: 'memory',
-    prefixes: ['memory.', 'person.'],
+    prefixes: ['memory.'],
     patterns: [
       /\b(saved|noted|stored|recorded)\b[^.!?\n]{0,40}\b(?:to memory|that down|for (?:later|next time)|in (?:my )?memory)\b/i,
       /\bi'?ll (?:remember|keep that in mind|note that)\b/i,
       /\bgot it[,—-]?\s*(?:i'?ve )?(?:saved|noted|recorded)\b/i,
+    ],
+  },
+  {
+    family: 'profile',
+    prefixes: ['person.'],
+    patterns: [
+      /\b(updated|added to|saved|recorded|noted)\b[^.!?\n]{0,40}\b(profile|accepted foods?|rejected foods?|allerg(?:y|ies))\b/i,
+      /\b(?:it'?s|that'?s|they'?re) (?:now )?(?:in|on|off) (?:her|his|their|the)[^.!?\n]{0,30}\b(profile|accepted|rejected)\b/i,
+      /\b(added|moved)\b[^.!?\n]{0,40}\b(?:to |into |onto )?(?:her|his|their|the)?[^.!?\n]{0,15}\b(accepted|rejected)\b[^.!?\n]{0,15}\b(?:foods?|list)\b/i,
     ],
   },
 ];
@@ -150,6 +159,7 @@ const FAMILY_TOOL_HINT = {
   pantry: 'pantry.add',
   plan: 'plan.add / plan.update',
   memory: 'memory.save',
+  profile: 'person.profile.update',
 };
 
 // The corrective message fed back to the model when it claimed a write it didn't make.

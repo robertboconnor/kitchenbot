@@ -68,6 +68,19 @@ test('pantry move backs a pantry claim (grocery.move_to_pantry maps to pantry, n
   assert.equal(unbacked.length, 0);
 });
 
+test('claiming a profile update with no person.profile.update is flagged (profile family)', () => {
+  const reply = "I've updated her profile — roasted broccoli is now in her accepted foods and off the rejected list.";
+  const unbacked = findUnbackedWriteClaims(reply, []);
+  assert.equal(unbacked.length, 1);
+  assert.equal(unbacked[0].family, 'profile');
+});
+
+test('a real person.profile.update backs the profile claim', () => {
+  const reply = "Updated her profile — roasted broccoli is now accepted.";
+  const unbacked = findUnbackedWriteClaims(reply, [write('person.profile.update', 'updated')]);
+  assert.equal(unbacked.length, 0);
+});
+
 test('buildClaimCorrectionMessage names the right tool and forbids the false claim', () => {
   const msg = buildClaimCorrectionMessage([{ family: 'cookbook', phrase: 'saved it' }]);
   assert.match(msg, /cookbook\.save/);

@@ -57,6 +57,7 @@ const READ_ONLY_CAPABILITIES = new Set([
   'web.search',
   'plan.list',
   'thread.search',
+  'person.profile.get',
 ]);
 
 export function isWriteCapability(capability) {
@@ -286,6 +287,38 @@ const INPUT_SCHEMAS = {
     },
     required: ['query'],
   },
+  'person.profile.update': {
+    type: 'object',
+    properties: {
+      person: { type: 'string', description: "Whose profile this is about, e.g. \"Bizzy\"." },
+      acceptedFoods: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Foods/dishes this person accepts or likes. Appended; adding one here removes it from their rejected list.',
+      },
+      rejectedFoods: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Foods/dishes this person rejects or dislikes. Appended; adding one here removes it from their accepted list.',
+      },
+      allergies: { type: 'array', items: { type: 'string' }, description: 'Allergies/intolerances (be precise).' },
+      notes: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Short freeform notes that do not fit the fields above (e.g. "toddler-friendly; small portions").',
+      },
+    },
+    required: ['person'],
+  },
+  'person.profile.get': {
+    type: 'object',
+    properties: {
+      person: {
+        type: 'string',
+        description: "Whose profile to read (e.g. \"Bizzy\"). Omit to get every household member's profile.",
+      },
+    },
+  },
 };
 
 function inputSchemaForCapability(capability) {
@@ -424,6 +457,14 @@ const OUTCOME_PASSTHROUGH_KEYS = [
   'entries',
   'tags',
   'filteredByTag',
+  // person.profile.* — structured per-person food/allergy data
+  'person',
+  'acceptedFoods',
+  'rejectedFoods',
+  'allergies',
+  'notes',
+  'profiles',
+  'found',
 ];
 
 export function summarizeOutcomeForModel(capability, outcome) {

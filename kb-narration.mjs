@@ -37,6 +37,8 @@ export const WHIMSY_BY_CAPABILITY = {
   'plan.update': "Updating this week's plan…",
   'plan.remove': 'Taking that off this week…',
   'thread.search': 'Looking back through this chat…',
+  'person.profile.update': 'Noting that down for them…',
+  'person.profile.get': 'Checking what they eat…',
 };
 
 // Non-tool beats.
