@@ -131,11 +131,48 @@ function firstMatch(reply, patterns) {
   return null;
 }
 
+// --- Description-context suppression --------------------------------------------------------
+// The guard hunts for completion vocabulary ("added to your list", "saved it"). But DESCRIBING a
+// capability reuses the exact same verbs — "grocery.write adds items to your list" reads like
+// "added it to your list". So when the user asks "what can you do" / "list your tools", an honest
+// answer trips the guard, gets wiped, and the loop emits a bogus "I didn't actually complete it"
+// message. (Real prod bug, 2026-07-23.) These detectors recognize the description case and skip
+// the check for that turn — the core claim-matching stays fully active for real action requests.
+const TOOL_IDENTIFIER_RE = /\b(?:cookbook|grocery|pantry|plan|memory|web|thread|person)\.[a-z_]+(?:\.[a-z_]+)?\b/gi;
+
+// True when the reply names two or more DISTINCT tool identifiers — i.e. it is enumerating tools,
+// not reporting one action. One incidental mention does not disarm the guard; a rundown does.
+function looksLikeToolRundown(reply) {
+  const found = new Set();
+  for (const m of String(reply ?? '').matchAll(TOOL_IDENTIFIER_RE)) {
+    found.add(m[0].toLowerCase());
+    if (found.size >= 2) return true;
+  }
+  return false;
+}
+
+// True when the user's turn is asking what KB can do / to list its tools — a description request,
+// not an action request, so nothing in the reply should be read as a completed-write claim.
+function isCapabilityQuestion(prompt) {
+  const p = String(prompt ?? '').toLowerCase();
+  if (!p.trim()) return false;
+  return (
+    /\bwhat (?:can|do|could|all can|else can) you (?:do|help|offer|handle)\b/.test(p) ||
+    /\b(?:what|which)\b[^.?!]{0,20}\b(?:your|you)\b[^.?!]{0,24}\b(?:tools?|features?|capabilit(?:y|ies)|commands?|functions?)\b/.test(p) ||
+    /\b(?:list|show|tell me|explain|enumerate|name)\b[^.?!]{0,30}\b(?:tools?|features?|capabilit(?:y|ies)|commands?|functions?|everything you can)\b/.test(p) ||
+    /\bhow (?:do|does) (?:you|kb|kitchenbot|this app) work\b/.test(p) ||
+    /\bwhat (?:does|do)\b[^.?!]{0,30}\.[a-z_]+[^.?!]{0,20}\bdo\b/.test(p)
+  );
+}
+
 // Returns [] when the reply is honest. Otherwise returns [{ family, phrase }] for each
 // completed-write claim that has no matching successful tool call this turn.
-export function findUnbackedWriteClaims(replyText, collectedOutcomes = []) {
+export function findUnbackedWriteClaims(replyText, collectedOutcomes = [], context = {}) {
   const reply = String(replyText ?? '');
   if (!reply.trim()) return [];
+  // Description-context suppression: if the reply is a tool rundown, or the user asked what KB can
+  // do, the completion vocabulary is descriptive — do not read it as a false claim.
+  if (looksLikeToolRundown(reply) || isCapabilityQuestion(context.userPrompt)) return [];
   const { backed, anyBackedWrite } = backedFamiliesFromOutcomes(collectedOutcomes);
 
   const unbacked = [];

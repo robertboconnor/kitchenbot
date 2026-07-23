@@ -261,7 +261,7 @@ export async function runKbAgentLoop({
     // either do it for real or retract, rather than ship a false "Saved it!".
     if (response?.stop_reason !== 'tool_use' || toolUses.length === 0) {
       const candidateText = textBlocks.map((block) => block.text || '').join('').trim();
-      const unbacked = findUnbackedWriteClaims(candidateText, collectedOutcomes);
+      const unbacked = findUnbackedWriteClaims(candidateText, collectedOutcomes, { userPrompt: promptText });
       if (unbacked.length > 0 && claimCorrections < MAX_CLAIM_CORRECTIONS) {
         claimCorrections += 1;
         console.warn(
@@ -351,7 +351,7 @@ export async function runKbAgentLoop({
   // path and an exhausted correction budget. If the reply STILL claims a write with no backing
   // tool call, replace it with an honest fallback rather than ship a lie — and wipe any streamed
   // text so the false claim never survives on screen.
-  const residualUnbacked = findUnbackedWriteClaims(finalText, collectedOutcomes);
+  const residualUnbacked = findUnbackedWriteClaims(finalText, collectedOutcomes, { userPrompt: promptText });
   if (residualUnbacked.length > 0) {
     console.warn(
       `[kb-truthfulness] chat ${chatId} turn ${turnId}: honest fallback — reply still claimed ` +

@@ -86,3 +86,38 @@ test('buildClaimCorrectionMessage names the right tool and forbids the false cla
   assert.match(msg, /cookbook\.save/);
   assert.match(msg, /did NOT successfully call/i);
 });
+
+// --- Regression: describing/listing tools must NOT be read as a false claim (prod bug 2026-07-23) ---
+
+test('a tool RUNDOWN (listing tools by name) is not flagged, even with completion vocab', () => {
+  const reply = [
+    'Here are my tools:',
+    '- `grocery.write` — adds items to your grocery list',
+    '- `cookbook.save` — saves a recipe to your cookbook',
+    "- `memory.save` — records a household fact; I'll remember it for next time",
+    "- `person.profile.update` — saves a person's foods and allergies to their profile",
+  ].join('\n');
+  assert.deepEqual(findUnbackedWriteClaims(reply, []), []);
+});
+
+test('a prose capability answer is not flagged when the user asked what KB can do', () => {
+  const reply = "I can add things to your grocery list, save recipes to your cookbook, and I'll remember household facts for next time.";
+  assert.deepEqual(findUnbackedWriteClaims(reply, [], { userPrompt: 'what can you do?' }), []);
+  assert.deepEqual(findUnbackedWriteClaims(reply, [], { userPrompt: 'list all your tools and what they do' }), []);
+});
+
+test('one incidental tool mention does NOT disarm the guard (only a real rundown does)', () => {
+  // A single dotted name in an otherwise-false claim must still be caught.
+  const unbacked = findUnbackedWriteClaims('Saved it to your cookbook via cookbook.save!', []);
+  assert.equal(unbacked.length, 1);
+  assert.equal(unbacked[0].family, 'cookbook');
+});
+
+test('description suppression does not leak into real action turns', () => {
+  // Normal action request + false claim (no meta prompt, no rundown) is still flagged.
+  const unbacked = findUnbackedWriteClaims('Done — I added milk and eggs to your grocery list.', [], {
+    userPrompt: 'add milk and eggs',
+  });
+  assert.equal(unbacked.length, 1);
+  assert.equal(unbacked[0].family, 'grocery');
+});
