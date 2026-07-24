@@ -118,7 +118,7 @@ test('thread.search retrieves an older message past the recent window, determini
     process.stdout.write(JSON.stringify({ ok: r.ok, count: r.count, total: r.totalMessages, topHasFix: /rescue a broken toum|egg white/i.test(r.results[0] ? r.results[0].snippet : '') }));
   `);
   assert.equal(parsed.ok, true);
-  assert.ok(parsed.total > 32, 'thread is well past the 16-message window');
+  assert.ok(parsed.total > 32, 'thread is well past the recent-message window (30)');
   assert.ok(parsed.count > 0, 'found matching older messages');
   assert.equal(parsed.topHasFix, true, 'the toum-rescue message is the top hit');
 });
