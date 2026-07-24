@@ -25,7 +25,11 @@ import { verifyReplyClaims, buildClaimCorrectionMessage } from './kb-claim-guard
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_TOKENS = 2048;
-const HISTORY_MESSAGE_LIMIT = 16;
+// The immediate conversation window sent every turn (~15 back-and-forths). Older context is reached
+// via the always-visible This Week plan + thread.search, so this only needs to be big enough that a
+// single sitting's task doesn't silently scroll out of view. Bumped 16 → 30 (2026-07-23): cost isn't
+// a constraint here and 16 was losing mid-task continuity the brain wouldn't know to search for.
+const HISTORY_MESSAGE_LIMIT = 30;
 // How many times per turn we'll bounce a "you claimed a write you didn't make" reply back to
 // the model to fix. Bounded so a stubborn model can't loop forever; after this we override.
 const MAX_CLAIM_CORRECTIONS = 2;
