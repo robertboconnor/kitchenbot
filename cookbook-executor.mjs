@@ -19,28 +19,11 @@ import {
   parseCookbookRecipeText,
   shapeCookbookRecordForStorage,
 } from './cookbook-store.mjs';
-import {
-  buildExplicitCookbookReplacement,
-  reviseStructuredRecipe,
-} from './recipe-executor.mjs';
+import { buildExplicitCookbookReplacement } from './recipe-executor.mjs';
 import { extractRecipeFromPageContent, fetchRecipePage } from './recipe-url-ingestion.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
-}
-
-function extractExplicitCookbookUpdateName(request = '') {
-  const text = safeTrim(request);
-  if (!text) return '';
-  const patterns = [
-    /^(?:please\s+)?(?:update|replace|revise|edit)\s+(.+?)\s+(?:in|from)\s+(?:our|my|the)\s+cookbook\b/i,
-    /^(?:please\s+)?(?:update|replace|revise|edit)\s+(.+?)\s+recipe\b/i,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) return safeTrim(match[1]).replace(/^["']|["']$/g, '');
-  }
-  return '';
 }
 
 function buildCookbookListReply(entries = []) {
@@ -203,10 +186,6 @@ function buildRecoveryMetadata(runtimeAction = {}, workingContext = null) {
   };
 }
 
-function looksLikeReferentialCookbookTitle(title = '') {
-  return /^(?:it|that|this|recipe|that recipe|this recipe)$/i.test(safeTrim(title));
-}
-
 function requestExplicitlyNamesCookbookTitle(request = '') {
   const text = safeTrim(request);
   if (!text) return false;
@@ -264,9 +243,7 @@ export async function executeCookbookSave(runtimeAction, context) {
     recovery.preferredTitle ||
     explicitRequestedTitle ||
     (linkedUrl ? extractPreferredCookbookLabel(requestedSave, linkedUrl) : '');
-  const preferredTitle = looksLikeReferentialCookbookTitle(preferredTitleRaw)
-    ? safeTrim(explicitTargetRecipe?.title || explicitTargetRecipe?.label)
-    : preferredTitleRaw;
+  const preferredTitle = preferredTitleRaw;
   const webSearchEnabled =
     !!memoryContext?.capabilities?.webSearchEnabled ||
     !!context?.webSearchEnabled ||
@@ -704,7 +681,10 @@ export async function executeCookbookUpdate(runtimeAction, context) {
     ? runtimeAction.input
     : {};
   const revisionRequest = safeTrim(input.request || input.payload || input.text || prompt);
-  const requestedName = safeTrim(input.name || input.title || input.recipe) || extractExplicitCookbookUpdateName(revisionRequest);
+  // ONE BRAIN: the brain names the recipe (it can resolve "that recipe" via cookbook.list first).
+  // The executor does NOT regex a name out of the raw request; if none is given and the target is
+  // ambiguous, the flow below asks which recipe rather than guessing.
+  const requestedName = safeTrim(input.name || input.title || input.recipe);
   let existing = null;
 
   if (Number.isFinite(Number(input.id))) {
@@ -794,25 +774,17 @@ export async function executeCookbookUpdate(runtimeAction, context) {
     replacementRecord = normalizeUpdatedCookbookInputRecord(parsed, existing);
   }
 
-  if (!replacementRecord && revisionRequest) {
-    const revised = await reviseStructuredRecipe({
-      anthropic,
-      householdId: req.householdId,
-      chatId,
-      request: revisionRequest,
-      recipeRecord: existing,
-      recentConversation: await getMessages(chatId, req.householdId).then((messages) => messages.slice(-16)),
-      latestAssistantText: '',
-      memoryContext,
-    });
-    replacementRecord = normalizeUpdatedCookbookInputRecord(revised, existing);
-  }
-
+  // ONE BRAIN: the brain rewrites the recipe and hands over the FULL revised version (in `recipe`,
+  // `revisedRecord`, `targetRecipe`, or as pasted recipe text, all handled above). The executor does
+  // NOT run a side-model to re-derive the edit from a bare request. If we still have no full recipe,
+  // ask for it rather than guessing.
   if (!replacementRecord) {
     return {
       capability: 'cookbook.update',
       status: 'invalid',
-      error: 'I could not build a clean updated cookbook recipe from that request yet.',
+      error:
+        `To update "${existing.title}", rewrite it with your change and hand me the FULL revised recipe ` +
+        `(title, ingredients, and steps) — I don't reconstruct the edit from the request text alone.`,
     };
   }
 
@@ -877,9 +849,7 @@ export function normalizeCookbookUpdateInput(input, context = {}) {
       : null;
   const recipe = raw.recipe && typeof raw.recipe === 'object' && !Array.isArray(raw.recipe) ? raw.recipe : null;
   const request = safeTrim(raw.request || raw.payload || raw.text || context.originalPrompt);
-  const explicitName =
-    safeTrim(raw.name || raw.title || (typeof raw.recipe === 'string' ? raw.recipe : '')) ||
-    extractExplicitCookbookUpdateName(request);
+  const explicitName = safeTrim(raw.name || raw.title || (typeof raw.recipe === 'string' ? raw.recipe : ''));
   const normalized = {
     ...(Number.isFinite(Number(raw.id)) ? { id: Number(raw.id) } : {}),
     ...(explicitName ? { name: explicitName } : {}),

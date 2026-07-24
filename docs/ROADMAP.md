@@ -93,6 +93,28 @@ A big pass across the roadmap, now **deployed** (`dev` == `main`; 165 tests gree
   family-level regex could never do). 162 tests green (structural unit tests + mocked verifier); server boots
   clean. Cost: one verifier call per completed turn (runs AFTER streaming, so latency is a background commit;
   token-max is fine per Rob). Deployed via PR #7.
+- **Text-pattern-artifact sweep — killed the last 4 "second brain made of regex" violations (2026-07-23).**
+  After the truthfulness rebuild, audited every heuristic-shaped function against the brain contract
+  ("executors must NOT run regex/heuristics that select an action or infer intent") and removed the four
+  live violations: (1) `rewriteUngroundedActionOfferReply` — a regex that rewrote the brain's own reply
+  prose (deleted; the system prompt already forbids ungrounded offers); (2) cookbook name/referential
+  regex (`extractExplicitCookbookUpdateName`, `looksLikeReferentialCookbookTitle`) — the executor now uses
+  the brain-provided name and asks which recipe rather than regexing one out of the request; (3) the
+  `kb-skills` prompt-regex WRITE fallbacks (`inferExplicitGroceryItemsFromPrompt` / pantry / defaults) —
+  the executor no longer re-derives a grocery/pantry/defaults payload from the user's words; if the brain
+  passes no items, `grocery.write` returns a clean "enumerate them and call again" (this also matched the
+  code to the system prompt, which already promised the executor wouldn't derive items); (4) the whole
+  `reviseStructuredRecipe` side-model recipe-revision loop + its regex additive-classifier — the brain
+  rewrites the recipe and hands over the full revised version; `recipe-executor.mjs` went 549 → 54 lines.
+  Also deleted 3 orphaned intent-inference heuristics (`isMealGroceryRelevantTurn` etc.). **Live-verified**
+  the load-bearing assumption through the real model: grocery/pantry/defaults writes all pass explicit
+  payloads (e.g. `grocery.write {items:[milk(dairy), eggs(dairy)], source:"explicit_items"}`), and cookbook
+  update passes the full recipe. ~−676 lines net; 163 tests green (cookbook update tests repointed to the
+  one-brain contract + a new "refuses to reconstruct from a bare request" test); server boots clean.
+  **KEPT (contract-legal — mechanical parse/shape of external content or the sanctioned section-guess
+  fallback):** recipe-text parsers, `looksLikeBotBlockPage`, OCR/doc-AI parsers, API-response parsers,
+  `inventory-classification` section fallbacks. Deployed via PR #8. *(Borderline `cookbook-store` metadata
+  auto-derivation — `inferCookbookCategory` etc. — left for a later audit; lower priority.)*
 
 **Deferred (deliberate, with rationale):**
 - **Unify the two recipe-import pipelines — NOT a security fix; needs a product call (deferred).** The
