@@ -2144,7 +2144,6 @@ app.get('/', (req, res) => {
           gap: 8px;
         }
 
-        #sidebar-household,
         #logout {
           padding: 6px 12px;
           font-size: 12px;
@@ -2154,7 +2153,6 @@ app.get('/', (req, res) => {
           color: var(--text-main);
         }
 
-        #sidebar-household:hover,
         #logout:hover {
           background: var(--accent-blue-soft);
           border-color: var(--accent-blue);
@@ -4637,7 +4635,6 @@ app.get('/', (req, res) => {
         <div id="sidebar-footer">
           <div>Logged in as: <strong id="speaker-name"></strong></div>
           <div id="sidebar-footer-actions">
-            <button id="sidebar-household" type="button" style="display: none;">Household</button>
             <button id="logout">Logout</button>
           </div>
         </div>

@@ -86,7 +86,6 @@
         const promptInput = document.getElementById('prompt');
         const sendButton = document.getElementById('send');
         const logoutButton = document.getElementById('logout');
-        const sidebarHouseholdButton = document.getElementById('sidebar-household');
         const typingIndicator = document.getElementById('typing-indicator');
         const chatNewMessageButton = document.getElementById('chat-new-message');
         let cachedAdminHouseholds = null;
@@ -801,7 +800,6 @@
           appArea.style.display = 'none';
           headerEl.classList.add('hide-tabs');
           showLoginFormOnly();
-          if (sidebarHouseholdButton) sidebarHouseholdButton.style.display = 'none';
           setActiveTab('chat');
         }
 
@@ -845,11 +843,6 @@
 
         function closeSidebarAndGoToChatTab() {
           setActiveTab('chat');
-          closeSidebar();
-        }
-
-        function closeSidebarAndGoToSettingsTab() {
-          setActiveTab('settings');
           closeSidebar();
         }
 
@@ -2237,16 +2230,6 @@
             return !!d.isGlobalAdmin;
           } catch (e) {
             return false;
-          }
-        }
-
-        async function refreshOwnerSettingsTab() {
-          if (!sidebarHouseholdButton) return;
-          try {
-            const r = await fetch('/settings/household');
-            sidebarHouseholdButton.style.display = r.ok ? '' : 'none';
-          } catch (e) {
-            sidebarHouseholdButton.style.display = 'none';
           }
         }
 
@@ -3790,7 +3773,6 @@
             await loadCookbook();
           }
           connectTypingWs();
-          refreshOwnerSettingsTab();
         }
 
         tabChat.addEventListener('click', () => {
@@ -3909,12 +3891,6 @@
             syncCookbookWorkspaceLayout();
             if (!cookbookList) return;
             renderCookbook();
-          });
-        }
-
-        if (sidebarHouseholdButton) {
-          sidebarHouseholdButton.addEventListener('click', () => {
-            closeSidebarAndGoToSettingsTab();
           });
         }
 

@@ -91,7 +91,6 @@ test('root page template uses the extracted external client runtime hook', async
   assert.match(source, /\.cookbook-detail-actions/);
   assert.match(source, /id="tab-chat"/);
   assert.match(source, /id="tab-groceries"/);
-  assert.match(source, /id="sidebar-household"/);
   assert.match(source, /max-height: calc\(100vh - 118px\)/);
   assert.match(source, /app\.get\('\/recipe-importer', requireHousehold, requireAuth/);
   assert.match(source, /You can also type one in by hand\./);
@@ -113,10 +112,8 @@ test('main app runtime treats #cookbook as a first-class route into the cookbook
   assert.match(source, /const KITCHEN_SECTION_STORAGE_KEY = 'kb_kitchen_active_section'/);
   assert.match(source, /let currentGroceriesSubview = readKitchenSectionPreference\(\)/);
   assert.match(source, /function syncCookbookWorkspaceLayout\(/);
-  assert.match(source, /const sidebarHouseholdButton = document\.getElementById\('sidebar-household'\)/);
-  assert.match(source, /function closeSidebarAndGoToSettingsTab\(/);
-  assert.match(source, /sidebarHouseholdButton\.style\.display = r\.ok \? '' : 'none'/);
-  assert.match(source, /closeSidebarAndGoToSettingsTab\(\)/);
+  // The old sidebar "Household" settings button was removed (Settings is a first-class tab now).
+  assert.doesNotMatch(source, /sidebar-household/);
   assert.match(source, /window\.addEventListener\('pageshow', \(\) => \{\s*reapplyVisibleAppTab\(\);/);
 });
 
