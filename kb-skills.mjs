@@ -45,18 +45,9 @@ function normalizeMemorySaveActionInput(input) {
   return out;
 }
 
-function promptClearlyRequestsDirectGroceryWrite(promptRaw) {
-  const text = safeTrim(promptRaw).toLowerCase();
-  if (!text) return false;
-  const mentionsList = /\b(grocery list|groceries|shopping list|shopping)\b/.test(text);
-  const wantsMutation = /\b(add|buy|get|put|write|update|build|make|create|append|replace|clear|remove|take off|need)\b/.test(text);
-  return mentionsList && wantsMutation;
-}
-
 function normalizeGroceryWriteActionInput(input, context = {}) {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const out = {};
-  const groundedCurrentObjectType = safeTrim(context.groundedTurn?.currentObject?.objectType);
   const mode = safeTrim(raw.mode).toLowerCase();
   if (mode && ['append', 'replace'].includes(mode)) out.mode = mode;
   const source = safeTrim(raw.source).toLowerCase();
@@ -94,62 +85,15 @@ function normalizeGroceryWriteActionInput(input, context = {}) {
       if (!safeTrim(out.source)) out.source = 'explicit_items';
     }
   }
-  const hasStructuredSource =
-    !!out.sourceMealSet ||
-    !!out.sourceMealSetSelection ||
-    !!out.sourceGroceryProposal ||
-    !!out.sourceRecipe ||
-    ['meal_set', 'meal_set_selection', 'grocery_proposal', 'chat_recipe'].includes(groundedCurrentObjectType);
-  if ((!Array.isArray(out.items) || out.items.length === 0) && !hasStructuredSource) {
-    const inferredItems = inferExplicitGroceryItemsFromPrompt(context.originalPrompt);
-    if (inferredItems.length > 0) {
-      out.items = inferredItems;
-      out.source = out.source || 'explicit_items';
-    }
-  }
-  const originalPrompt = safeTrim(context.originalPrompt);
-  const followUpLooksReferential =
-    /\b(all|them|those|these|ingredients?)\b/i.test(originalPrompt) ||
-    promptClearlyRequestsDirectGroceryWrite(originalPrompt);
-  if ((!Array.isArray(out.items) || out.items.length === 0) && !hasStructuredSource && followUpLooksReferential) {
-    const inferredItems = buildIngredientItemsFromWorkingContext(context.workingContext || context.memoryContext?.workingContext);
-    if (inferredItems.length > 0) {
-      out.items = inferredItems;
-      out.source = out.source || 'offered_items';
-    }
-  }
-  if ((!Array.isArray(out.items) || out.items.length === 0) && !safeTrim(out.source) && !promptClearlyRequestsDirectGroceryWrite(originalPrompt)) {
-    return null;
-  }
+  // ONE BRAIN: the brain enumerates the items and passes them explicitly (or a structured source).
+  // The executor does NOT re-derive items from the prompt or working context. If none are given,
+  // grocery.write returns a clean "no items" outcome telling the brain to enumerate them and call
+  // again — we never regex a shopping list out of the user's words here.
   return out;
 }
 
 function normalizeGroceryPreviewActionInput() {
   return {};
-}
-
-function inferExplicitGroceryItemsFromPrompt(promptRaw) {
-  const prompt = safeTrim(promptRaw)
-    .replace(/[.!?]+$/, '')
-    .replace(/\s+/g, ' ');
-  if (!prompt) return [];
-  const lower = prompt.toLowerCase();
-  if (!/\b(grocery list|groceries|shopping list)\b/.test(lower)) return [];
-  const match =
-    prompt.match(/\b(?:add|buy|get|put|grab|pick up)\s+(.+?)\s+(?:to|on|onto|in)\s+(?:our|my|the)\s+(?:grocery list|groceries|shopping list)\b/i) ||
-    prompt.match(/\b(?:add|buy|get|put|grab|pick up)\s+(.+?)\s+(?:to|on|onto|in)\s+(?:the\s+)?list\b/i);
-  if (!match) return [];
-  const payload = safeTrim(match[1]);
-  if (!payload) return [];
-  if (/\b(this|that|those|these|it|them|ingredients?|recipe|meal|everything|all of it|all of them|necessary items|needed items)\b/i.test(payload)) {
-    return [];
-  }
-  return payload
-    .split(/\s*,\s*|\s+\band\b\s+/i)
-    .map((item) => safeTrim(item))
-    .filter(Boolean)
-    .map((name) => ({ name, amount: '', section: '' }))
-    .slice(0, 12);
 }
 
 function normalizeEmptyActionInput() {
@@ -162,23 +106,6 @@ function normalizeCookbookListActionInput(input) {
   return tag ? { tag } : {};
 }
 
-function normalizePantryItems(raw) {
-  const source = Array.isArray(raw)
-    ? raw
-    : String(raw ?? '')
-        .split(/,|\band\b/gi)
-        .map((part) => part.trim());
-  const seen = new Set();
-  const items = [];
-  for (const entry of source) {
-    const text = safeTrim(entry).toLowerCase().replace(/\s+/g, ' ');
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    items.push(text);
-  }
-  return items.slice(0, 80);
-}
-
 function normalizeWeeknightStyle(raw) {
   const text = safeTrim(raw).toLowerCase();
   if (!text) return null;
@@ -187,33 +114,6 @@ function normalizeWeeknightStyle(raw) {
   if (/(ambitious|elaborate|project)/.test(text)) return 'ambitious';
   if (/(normal|balanced|standard)/.test(text)) return 'normal';
   return null;
-}
-
-export function inferHouseholdDefaultsUpdateFromPrompt(payloadRaw) {
-  const payload = safeTrim(payloadRaw)
-    .replace(/^(?:please\s+)?remember\s+that\s+/i, '')
-    .replace(/^(?:please\s+)?remember\s+/i, '')
-    .replace(/^(?:please\s+)?save\s+(?:this|it|that)\s+to\s+memory\b[.:\s-]*/i, '')
-    .replace(/[.!?]+$/, '');
-  if (!payload) return null;
-  const update = {};
-
-  let match =
-    payload.match(/^(?:that\s+)?(?:we|our household)\s+(?:usually\s+)?cook\s+(\d{1,2})\s+portions?(?:\s+for dinner)?$/i) ||
-    payload.match(/^(?:that\s+)?(?:we|our household)\s+(?:usually\s+)?make\s+(\d{1,2})\s+portions?(?:\s+for dinner)?$/i);
-  if (match) {
-    update.defaultDinnerPortions = Math.max(1, Math.min(24, Number(match[1]) || 0)) || null;
-  }
-
-  match =
-    payload.match(/^(?:on\s+weeknights?,?\s*)?(?:we|our household)\s+(?:prefer|like|want|do)\s+(.+)$/i) ||
-    payload.match(/^weeknights?\s+(?:are|should be)\s+(.+)$/i);
-  if (match) {
-    const style = normalizeWeeknightStyle(match[1]);
-    if (style) update.weeknightCookingStyle = style;
-  }
-
-  return Object.keys(update).length > 0 ? update : null;
 }
 
 function normalizeHouseholdDefaultsActionInput(input) {
@@ -232,29 +132,9 @@ function normalizeHouseholdDefaultsActionInput(input) {
   );
   if (style) update.weeknightCookingStyle = style;
 
-  const payload = safeTrim(raw.payload || raw.text || raw.note || raw.summary || raw.fact || raw.memory);
-  if (payload) {
-    const inferred = inferHouseholdDefaultsUpdateFromPrompt(payload);
-    if (inferred) {
-      if (inferred.defaultDinnerPortions) update.defaultDinnerPortions = inferred.defaultDinnerPortions;
-      if (inferred.weeknightCookingStyle) update.weeknightCookingStyle = inferred.weeknightCookingStyle;
-    }
-  }
-
+  // ONE BRAIN: the brain passes structured defaults (defaultDinnerPortions / weeknightCookingStyle),
+  // handled above. The executor does not regex a defaults update out of the raw prompt.
   return Object.keys(update).length > 0 ? update : null;
-}
-
-export function inferPantryAddItemsFromPrompt(payloadRaw) {
-  const payload = safeTrim(payloadRaw)
-    .replace(/^(?:please\s+)?remember\s+that\s+/i, '')
-    .replace(/^(?:please\s+)?remember\s+/i, '')
-    .replace(/[.!?]+$/, '');
-  if (!payload) return [];
-  const match =
-    payload.match(/^(?:that\s+)?(?:we|our household|our kitchen)\s+always\s+have\s+(.+)$/i) ||
-    payload.match(/^(?:that\s+)?(?:we|our household|our kitchen)\s+always\s+keep\s+(.+)$/i) ||
-    payload.match(/^(?:that\s+)?(?:we|our kitchen)\s+(?:usually\s+)?have\s+(.+)\s+on hand$/i);
-  return match ? normalizePantryItems(match[1]).map((name) => ({ name, amount: '' })) : [];
 }
 
 function normalizePantryAddActionInput(input) {
@@ -269,10 +149,9 @@ function normalizePantryAddActionInput(input) {
         .filter((item) => item.name)
     : [];
   if (directItems.length > 0) return { items: directItems };
-
-  const payload = safeTrim(raw.payload || raw.text || raw.note || raw.summary || raw.fact || raw.memory);
-  const inferredItems = inferPantryAddItemsFromPrompt(payload);
-  return inferredItems.length > 0 ? { items: inferredItems } : null;
+  // ONE BRAIN: the brain passes the pantry items explicitly; the executor does not regex them out
+  // of the prompt. No items → null, and pantry.add tells the brain to provide them.
+  return null;
 }
 
 function normalizeNameOnlyActionInput(input, context = {}) {
@@ -390,20 +269,6 @@ function normalizeWebSearchActionInput(input, context = {}) {
       : fallbackPrompt)
   );
   return query ? { query } : null;
-}
-
-function isAffirmativeFollowUp(prompt) {
-  const text = safeTrim(prompt).toLowerCase();
-  if (!text) return false;
-  return /^(yes|yeah|yep|sure|ok|okay|do it|go ahead|all|that|just that|search it|search that|add them|add it|those)$/i.test(text) ||
-    /\b(search the web|look it up|look that up|add them|add those|add all|all of them)\b/.test(text);
-}
-
-function buildIngredientItemsFromWorkingContext(workingContext) {
-  const context = normalizeWorkingContext(workingContext);
-  return (Array.isArray(context?.offeredIngredients) ? context.offeredIngredients : [])
-    .map((name) => ({ name: safeTrim(name), amount: '', section: '' }))
-    .filter((item) => item.name);
 }
 
 export const KB_SKILLS = {

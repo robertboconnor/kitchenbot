@@ -167,29 +167,3 @@ export function formatAppliedWorkingContextText(workingContext) {
   return parts.join('\n');
 }
 
-function isReferentialFollowUp(prompt) {
-  const text = safeTrim(prompt).toLowerCase();
-  if (!text) return false;
-  return /\b(this|that|those|these|it|them)\b/.test(text) || /\bone of those\b/.test(text);
-}
-
-export function isMealGroceryRelevantTurn({ prompt = '', outcomes = [], workingContext = null } = {}) {
-  const text = safeTrim(prompt).toLowerCase();
-  const hasRelevantOutcome = (Array.isArray(outcomes) ? outcomes : []).some((outcome) => {
-    const capability = safeTrim(outcome?.capability || outcome?.narrationType);
-    return capability === 'grocery.preview' || capability === 'grocery.write' || capability === 'meal.refine' || capability === 'web.search';
-  });
-  if (hasRelevantOutcome) return true;
-  if (!text) return false;
-
-  const broadCulinaryIntent =
-    /\b(grocery|groceries|shopping list|grocery list|pantry|cookbook|recipe|recipes|ingredients|instructions|directions|cook|cooking|meal|meals|dinner|dinners|lunch|breakfast|dish|dishes|menu|menus|drink|drinks|cocktail|cocktails)\b/;
-  if (broadCulinaryIntent.test(text)) return true;
-
-  if (normalizeWorkingContext(workingContext) && isReferentialFollowUp(text)) return true;
-  if (normalizeWorkingContext(workingContext) && /\b(show me|make it|make one|add them|search that|just that)\b/.test(text)) {
-    return true;
-  }
-  return false;
-}
-

@@ -149,39 +149,6 @@ async function maybeAutoTitleChat({ anthropic, req, chatId, routePrompt, deps })
   await updateChatTitle(chatId, req.householdId, nextTitle).catch(() => {});
 }
 
-export function rewriteUngroundedActionOfferReply(replyText) {
-  const reply = safeTrim(replyText);
-  if (!reply) return reply;
-  let next = reply;
-  next = next.replace(
-    /\b(?:Would you like|Do you want|Want)\s+me\s+to\s+search(?: the web)?\s+for\s+(.+?)\?/i,
-    'If you want me to search for $1, ask me to search for it.'
-  );
-  next = next.replace(
-    /\bShould I search(?: the web)?\s+for\s+(.+?)\?/i,
-    'If you want me to search for $1, ask me to search for it.'
-  );
-  next = next.replace(
-    /\b(?:Would you like|Do you want|Want)\s+me\s+to\s+add\s+(.+?)\s+to\s+your\s+Grocery List(?: tab)?\?/i,
-    'If you want me to add $1 to the Grocery List tab, ask me to add it.'
-  );
-  next = next.replace(
-    /\b(?:Would you like|Do you want|Want)\s+me\s+to\s+save\s+(.+?)\?/i,
-    'If you want me to save $1, ask me to save it.'
-  );
-  next = next.replace(
-    /\bShould I\s+save\s+(.+?)\?/i,
-    'If you want me to save $1, ask me to save it.'
-  );
-  next = next.replace(
-    /\bIf you(?:'d| would)\s+like\s+me\s+to\s+save\s+(.+?),\s+just let me know\.?/i,
-    'If you want me to save $1, ask me to save it.'
-  );
-  next = next.replace(/\bSay yes and I(?:'|’)ll\s+/gi, 'If you want that, ask me to ');
-  next = next.replace(/\bGot it[—-]I(?:'|’)ll\s+/gi, 'If you want that, ask me to ');
-  return next;
-}
-
 export async function respondWithKbErrorReply({
   req,
   res,
@@ -242,15 +209,10 @@ export async function respondWithKbReply({
   const assistantName = await resolveAssistantName({ req, routePrompt, memoryContext, deps });
 
   let finalReply = safeTrim(replyText) || 'Okay.';
-  // Pre-send proofread of the CURRENT reply (never an already-sent message). Skipped
-  // when the reply was streamed live — you can't rewrite text already on the wire, so
-  // the loop's system prompt keeps streamed replies clean by construction instead.
-  if (!suppressStreaming) {
-    finalReply = rewriteUngroundedActionOfferReply(finalReply);
-  }
-  // NOTE: unbacked "I saved it" claims are now caught in the agent loop itself
-  // (kb-claim-guard.mjs), which cross-checks the reply against the real tool trace —
-  // superseding the old grounded-turn mutation-claim rewrite that this replaced.
+  // NOTE: both ungrounded-offer phrasing and unbacked "I saved it" claims are handled where
+  // they belong — the loop's system prompt keeps offers honest by construction, and
+  // kb-claim-guard verifies completion claims against the real tool trace. We do NOT run a
+  // post-hoc regex over the brain's own words to "fix" them.
 
   await addMessage(chatId, req.householdId, 'assistant', assistantName, finalReply);
   // ONE BRAIN: no post-reply working-context sub-model. The loop reads the full conversation

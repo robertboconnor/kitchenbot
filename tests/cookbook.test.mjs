@@ -1441,28 +1441,18 @@ test('executeCookbookUpdate replaces recipe body fields without merging duplicat
       sourceChatId: chatId,
     });
 
-    const anthropic = {
-      messages: {
-        create: async () => ({
-          model: 'claude-haiku-4-5',
-          usage: { input_tokens: 10, output_tokens: 10 },
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              title: 'Poblano White Chicken Chili',
-              summary: 'A creamy white chili with poblanos, chicken, beans, and cream cheese stirred in at the end.',
-              ingredients: ['2 poblano peppers', '1 1/2 lbs chicken', '2 cans white beans', '1 block cream cheese'],
-              instructions: ['Roast the poblanos.', 'Simmer the chili.', 'Stir in the cream cheese at the end and serve.'],
-              tags: ['chili', 'poblano'],
-              notes: [],
-            }),
-          }],
-        }),
-      },
-    };
+    // ONE BRAIN: the brain rewrites the recipe and passes the FULL revised version in \`recipe\`.
+    const anthropic = null;
 
     const outcome = await executor.executeCookbookUpdate(
-      { capability: 'cookbook.update', input: { id: cookbookId, request: 'add a block of cream cheese at the end' } },
+      { capability: 'cookbook.update', input: { id: cookbookId, recipe: {
+        title: 'Poblano White Chicken Chili',
+        summary: 'A creamy white chili with poblanos, chicken, beans, and cream cheese stirred in at the end.',
+        ingredients: ['2 poblano peppers', '1 1/2 lbs chicken', '2 cans white beans', '1 block cream cheese'],
+        instructions: ['Roast the poblanos.', 'Simmer the chili.', 'Stir in the cream cheese at the end and serve.'],
+        tags: ['chili', 'poblano'],
+        notes: [],
+      } } },
       {
         req: { householdId: created.householdId },
         chatId,
@@ -1501,7 +1491,7 @@ test('executeCookbookUpdate replaces recipe body fields without merging duplicat
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-test('executeCookbookUpdate can resolve an explicit cookbook title directly from a raw update request', async () => {
+test('executeCookbookUpdate resolves the target by the brain-provided explicit name', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-update-explicit-title-'));
   const dbPath = path.join(tempDir, 'cookbook-update-explicit-title.db');
 
@@ -1536,32 +1526,25 @@ test('executeCookbookUpdate can resolve an explicit cookbook title directly from
       sourceChatId: chatId,
     });
 
-    const anthropic = {
-      messages: {
-        create: async () => ({
-          model: 'claude-haiku-4-5',
-          usage: { input_tokens: 10, output_tokens: 10 },
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              title: 'Live Poblano Chili v2',
-              summary: 'A creamy white chili with poblanos, chicken, beans, and cream cheese stirred in at the end.',
-              ingredients: ['2 poblano peppers', '1 1/2 lbs chicken', '2 cans white beans', '8 oz cream cheese'],
-              instructions: ['Roast the poblanos.', 'Simmer the chili.', 'Stir in 8 oz cream cheese at the end and serve.'],
-              tags: ['chili', 'poblano'],
-              notes: [],
-            }),
-          }],
-        }),
-      },
-    };
+    // ONE BRAIN: the brain names the recipe explicitly and hands over the FULL revised recipe.
+    const anthropic = null;
 
     const outcome = await executor.executeCookbookUpdate(
-      { capability: 'cookbook.update', input: { request: 'Update Live Poblano Chili v2 in our cookbook to add 8 ounces of cream cheese at the end, in both the ingredients and the instructions.' } },
+      { capability: 'cookbook.update', input: {
+        name: 'Live Poblano Chili v2',
+        recipe: {
+          title: 'Live Poblano Chili v2',
+          summary: 'A creamy white chili with poblanos, chicken, beans, and cream cheese stirred in at the end.',
+          ingredients: ['2 poblano peppers', '1 1/2 lbs chicken', '2 cans white beans', '8 oz cream cheese'],
+          instructions: ['Roast the poblanos.', 'Simmer the chili.', 'Stir in 8 oz cream cheese at the end and serve.'],
+          tags: ['chili', 'poblano'],
+          notes: [],
+        },
+      } },
       {
         req: { householdId: created.householdId },
         chatId,
-        prompt: 'Update Live Poblano Chili v2 in our cookbook to add 8 ounces of cream cheese at the end, in both the ingredients and the instructions.',
+        prompt: 'update the poblano chili',
         anthropic,
         memoryContext: {
           applicationText: '',
@@ -1587,6 +1570,39 @@ test('executeCookbookUpdate can resolve an explicit cookbook title directly from
   assert.equal(parsed.updated.instructions.filter((item) => /cream cheese/i.test(item)).length, 1);
   assert.equal(parsed.updated.ingredients.filter((item) => /cream cheese/i.test(item)).length, 1);
 
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('executeCookbookUpdate refuses to reconstruct the edit from a bare request (one brain)', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-cookbook-update-refuse-'));
+  const dbPath = path.join(tempDir, 'cookbook-update-refuse.db');
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const executor = await import(new URL('./cookbook-executor.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    await db.runMigrations();
+    const created = await db.createHouseholdWithInitialOwner({ householdName: 'Home', householdKey: 'home', ownerDisplayName: 'Rob', pin: '1234' });
+    const chatId = await db.createChat(created.householdId, 'Rob', 'Cookbook update refuse');
+    await db.saveCookbookEntry(created.householdId, {
+      title: 'Only Recipe', normalizedTitle: 'only recipe', summary: 'x', category: '', recipeType: 'chat_recipe',
+      ingredients: ['a', 'b'], instructions: ['step 1', 'step 2'], tags: [], sourceTitle: '', sourceUrl: '', notes: [], sourceKind: 'chat', sourceChatId: chatId, lastUsedAt: null,
+    }, { sourceKind: 'chat', sourceChatId: chatId });
+    // Bare request, NO recipe/revisedRecord/targetRecipe. The single saved entry resolves the target,
+    // but the executor must REFUSE to reconstruct the edit and ask for the full recipe instead.
+    const outcome = await executor.executeCookbookUpdate(
+      { capability: 'cookbook.update', input: { request: 'add more salt' } },
+      { req: { householdId: created.householdId }, chatId, prompt: 'add more salt', anthropic: null, memoryContext: { capabilities: { webSearchEnabled: false } } }
+    );
+    const after = await db.getCookbookEntryByNormalizedTitle(created.householdId, 'only recipe');
+    process.stdout.write(JSON.stringify({ outcome, after }));
+  `;
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, DB_PATH: dbPath, KB_TEST_GUARD: '1' },
+  });
+  const parsed = JSON.parse(stdout.trim());
+  assert.equal(parsed.outcome.status, 'invalid');
+  assert.match(parsed.outcome.error, /full revised recipe/i);
+  assert.deepEqual(parsed.after.ingredients, ['a', 'b']); // nothing changed
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
