@@ -1,4 +1,3 @@
-import { executeMemorySave } from './memory-executor.mjs';
 import {
   executeCookbookDelete,
   executeCookbookList,
@@ -16,33 +15,11 @@ import { executePlanAdd, executePlanUpdate, executePlanRemove } from './mealplan
 import { executePersonProfileUpdate } from './person-profile-executor.mjs';
 import { executeWebSearch } from './web-search-executor.mjs';
 import { executeChatRename, normalizeChatRenameActionInput } from './chat-executor.mjs';
-import {
-  normalizeMemoryKey,
-  normalizeMemoryValue,
-} from './kb-memory-policy.mjs';
 import { normalizeWorkingContext } from './kb-working-context.mjs';
 import { executeGroceryList, executePantryList, executeHouseholdDefaultsGet, executeInventorySections, executePlanList, executeThreadSearch, executePersonProfileGet } from './kb-read-executors.mjs';
 
 function safeTrim(text) {
   return String(text ?? '').trim();
-}
-
-function normalizeMemorySaveActionInput(input) {
-  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-  // ONE BRAIN: pass through whatever the brain provided; it owns the scope/person decision.
-  // A value is required; scope/person/key are optional hints the executor resolves.
-  const value = normalizeMemoryValue(
-    raw.value || raw.note || raw.summary || raw.preference || raw.fact || raw.memory || raw.payload || raw.text
-  );
-  if (!value) return null;
-  const out = { value };
-  const scope = safeTrim(raw.scope).toLowerCase();
-  if (scope === 'person' || scope === 'household') out.scope = scope;
-  const person = safeTrim(raw.person || raw.label || raw.entity);
-  if (person) out.person = person;
-  const key = normalizeMemoryKey(raw.key);
-  if (key) out.key = key;
-  return out;
 }
 
 function normalizeGroceryWriteActionInput(input, context = {}) {
@@ -281,20 +258,6 @@ function normalizeWebSearchActionInput(input, context = {}) {
 // kb-agent-loop.mjs) so it never over- or under-sells the app. The intro's technical tier lists the
 // brain's own tools (self-maintaining), but its warm Tier-1 prose is hand-written and can drift.
 export const KB_SKILLS = {
-  'memory.save': {
-    id: 'memory.save',
-    description: 'Save a memory to the right household or person record.',
-    narrationType: 'memory.save',
-    contextProfile: {},
-    interpreterDescription:
-      'Save durable household or person memory when the user clearly wants KitchenBot to remember something.',
-    exampleAction: {
-      capability: 'memory.save',
-      input: { key: 'rob_preferences', value: "doesn't like beets" },
-    },
-    normalizeActionInput: normalizeMemorySaveActionInput,
-    execute: executeMemorySave,
-  },
   'cookbook.save': {
     id: 'cookbook.save',
     description:
@@ -726,7 +689,7 @@ export const KB_SKILLS = {
     narrationType: 'person.profile.update',
     contextProfile: {},
     interpreterDescription:
-      "Record structured facts about a specific person's eating: foods they accept or reject, allergies, or a short note. Use THIS (not memory.save) for a household member's food preferences and allergies so it stays queryable. Foods accumulate; marking a food accepted removes it from rejected and vice versa.",
+      "Record structured facts about a specific person's eating: foods they accept or reject, allergies, or a short note. Use THIS for a household member's food preferences and allergies so it stays queryable. Foods accumulate; marking a food accepted removes it from rejected and vice versa.",
     exampleAction: {
       capability: 'person.profile.update',
       input: { person: 'Bizzy', acceptedFoods: ['creamy lemon rice with hot dog'], allergies: ['peanuts'] },
@@ -878,11 +841,6 @@ function applyGroundedSkillInput(capability, input, context = {}) {
   if (capability.startsWith('pantry.') && !safeTrim(out.targetPantry)) {
     const pantry = findGroundedObject(groundedTurn, (object) => object?.type === 'pantry_item_or_list');
     if (pantry) out.targetPantry = 'household_pantry';
-  }
-
-  if (capability === 'memory.save' && !safeTrim(out.targetEntity)) {
-    const entity = findGroundedObject(groundedTurn, (object) => object?.type === 'memory_entity');
-    if (entity) out.targetEntity = safeTrim(entity.label);
   }
 
   if (capability === 'chat.rename' && !Number.isFinite(Number(out.targetChatId))) {

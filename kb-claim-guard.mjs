@@ -92,7 +92,7 @@ const VERIFIER_SYSTEM =
   'NOT happen.\n\n' +
   'Flag a statement ONLY if it asserts, as an accomplished fact, that a specific change was made THIS turn ' +
   '— saved / added / removed / updated / marked / cleared / moved a recipe, grocery item, pantry item, ' +
-  'planned meal, memory, or person profile — and no tool call in the trace persisted it.\n\n' +
+  'planned meal, or person profile — and no tool call in the trace persisted it.\n\n' +
   'Do NOT flag:\n' +
   '- Describing what KitchenBot can do, or listing/naming its tools or features. That is not a claim of action.\n' +
   '- Reading, looking up, checking, or reporting existing state. Reads are not writes.\n' +

@@ -1,7 +1,7 @@
 # KitchenBot — Roadmap & Working State
 
 The living "where we are / what's next" doc. Read this first when picking up on a new device or a
-fresh session. **Update it at the end of a work session.** Last updated: **2026-07-23**.
+fresh session. **Update it at the end of a work session.** Last updated: **2026-07-24**.
 
 ## The goal
 
@@ -10,6 +10,80 @@ legitimate application"* — both in how it **works** (one reasoning brain with 
 **looks/feels** (a specific visual identity, not a generic app). Auth stays intentionally janky;
 it's never going to the app store, so no abuse/scale/cost threat-modeling. Family actually uses it
 (Rob + Elle + a 4yo, Bizzy).
+
+## 🔧 Changed 2026-07-24 (working copy — NOT yet deployed; pending Rob's PR merge)
+
+Items from live use; all done + full suite green (160 tests) + live-smoke-verified. Sitting in the
+working copy, undeployed, so they can ship together in one PR when Rob says go. Theme of the last two:
+Rob's "so few people use this app, kill the gates — we can always add them back later."
+
+- **Cross-device chat formatting bug — FIXED (`public/app.js`).** With the same user logged in on two
+  devices, a new message from device A left device B showing **raw, unrendered markdown** until a hard
+  refresh. Cause: the WebSocket `chat_updated` handler decided "did I send this, so skip the re-render?"
+  by comparing the broadcast's **username** to the local user — but that's true for a *second device on
+  the same account*, so B skipped reconciling its raw streamed-preview bubble into the rendered final.
+  Fix: key that decision on the per-device `weAreStreamingThisChat` flag (true only on the tab that
+  actually called `/chat`), promoted to an early return so the originating tab is also protected from a
+  mid-stream reset. Cross-user (Elle→Rob) was already fine; this closes the same-user-two-devices hole.
+- **Freeform "memory" feature — REMOVED ENTIRELY (Rob's call, see memory `kitchenbot-no-freeform-memory`).**
+  The old `memory.save` tool wrote to a `kb_memories` table (`household_note` + freeform `person`) with
+  no UI and near-zero use — an invisible "shadow" store the brain could pick by accident once someone
+  leaned on memory. Rob chose to **delete the feature, not manage it** (rejected a list/forget tool — he
+  wants less surface). Removed: the `memory.save` tool (kb-tools) + skill (kb-skills) + narration, the
+  `memory-executor.mjs` and `kb-memory-policy.mjs` files, all freeform-memory machinery in
+  `kb-memory-store.mjs` (the context packet now builds people-context only from `household_users` +
+  `person_profiles`), the `kb_memories` CREATE + `list/get/save/deleteKbMemory` in db.mjs, plus all
+  system-prompt / capability-intro / claim-guard references. **A `DROP TABLE IF EXISTS kb_memories`
+  migration wipes the legacy table + rows on deploy** (live-verified: seeded 2 rows → dropped clean).
+  Existing data discarded, no migration (per Rob — Bizzy's freeform note included; re-add in Food
+  Profiles if wanted). Durable memory is now ONLY the two structured, user-visible stores:
+  `household_defaults` and `person_profiles`. Minor known follow-up: `kb-prompt-context.mjs` still has
+  vestigial `(none)` memory sections in the **web-search side-model** prompt — harmless (not a store,
+  can't be picked), tidy later.
+- **Web search — un-gated, now on for EVERY household.** Was a per-household toggle in God Mode
+  (`households.web_search_enabled`, default off). Rob: "give web search to every account, drop the
+  per-account toggle." Now forced on at the single resolution point (`getAnthropicClient`,
+  kitchenbot.mjs ~799 → `const webSearchEnabled = true`); the brain still decides *when* to actually
+  search. Removed the God Mode "Household feature flags" card, its `/settings/anthropic/web-search`
+  route, `setHouseholdWebSearchEnabled` (db.mjs), and all the client toggle/tag/status UI. The
+  `web_search_enabled` column is left **inert** (not read for the capability anymore) so the gate is a
+  one-line restore later if ever wanted. Verified live: server boots, route now 404s.
+- **"See how to use this" walkthrough button — REMOVED (Household settings).** An artifact of the
+  pre-brain era (deterministic `!command` flows); the agent itself walks users through the app now.
+  Removed the button + banner, the `/demo/view` impersonation route + its `DEMO_VIEW_*` constants, and
+  the client handler. The general God Mode impersonation machinery is untouched (only the demo entry
+  point went). Verified live: route now 404s. (The `demo-env` household, if one was ever seeded, is
+  simply unused now.)
+- **Developer mode — NEW (owner-only candor channel).** On the app owner's OWN messages, the brain
+  gets an extra system-prompt principle (`developerPrinciple` in kb-agent-loop.mjs, pushed next to the
+  Elle `sweetheartPrinciple`): it stays a normal cooking assistant, but drops the politeness filter and
+  will briefly flag a REAL problem it actually hit that turn (a tool errored, a capability gap, a result
+  that contradicts what should have happened, genuine friction) — grounded in what it observed, never
+  hunting for or inventing critiques, never "you could add X" noise. Reframed from Rob's draft to be an
+  extension of the truthfulness rule (candor), NOT a critique mandate (which makes LLMs confabulate
+  bugs). **Gated on the app OWNER = the first-bootstrapped / God Mode user (`deps.isGlobalAdminUser`),
+  NOT the old household "owner" role** (which no longer exists). Live-verified: fires for Rob, NOT for a
+  friend household's own owner, NOT for Elle. Threaded `isGlobalAdminUser` through `buildKbRuntimeDeps`.
+- **Streaming-loop bug — "it wrote a good answer, then deleted it and shipped a worse one" — FIXED + reproduced.**
+  Rob hit this on a meta question ("why did you stop? do you have logs?"): KB streamed a genuinely useful reply
+  ("I have plan.list/cookbook.list but no tool to see logs…"), then it vanished and got replaced by an off-topic
+  truthfulness apology. Reproduced deterministically (instrumented harness driving the real loop with a mock
+  Anthropic) + A/B-isolated the trigger: **it's the tool CALL, not the tool mention** (naming tools is safe — a
+  feature we keep). Mechanism: the loop's "no prose before tools" rule treats ANY pre-tool text as throwaway
+  narration, so when the model writes a real answer AND calls a tool in the same turn, the loop wipes the answer
+  (`resetReplyStream`) and ships whatever it regenerates after the tool — which drifts. Introspective/"nerd"
+  questions hit it hardest (they provoke both a tool-naming answer and a reflexive "let me verify" tool call).
+  **Fix, two layers (kb-agent-loop.mjs):** (1) prompt — a question about your own behavior isn't an accusation you
+  lied; you can't see logs/telemetry, so say so plainly ("I can't" is a fine answer); don't reflexively call a tool
+  to double-check yourself. (2) loop — **stop streaming pre-tool text live; buffer every turn and let only the
+  final no-tool turn's text be the reply**, delivered once by `respondWithKbReply` (chunked). No show-then-wipe is
+  possible anymore. Also added a `stop_reason === 'max_tokens'` diagnostic log so a truncated reply is visible in
+  logs next time (the separate "stopped at meal 3" symptom — still open; likely a transient stream drop, now at
+  least diagnosable). **Tradeoff (accepted):** simple text replies now appear after generation (behind the
+  "Reading…" narration) rather than token-by-token as generated — reversible/tunable if it feels laggy in use.
+  Removed the now-unused live-stream bookkeeping; `streamReplyDelta`/`resetReplyStream` remain as tested primitives.
+
+---
 
 ## ✅ Shipped to PROD on 2026-07-20 (main `27a3056`, Render live)
 
