@@ -11,11 +11,12 @@ legitimate application"* — both in how it **works** (one reasoning brain with 
 it's never going to the app store, so no abuse/scale/cost threat-modeling. Family actually uses it
 (Rob + Elle + a 4yo, Bizzy).
 
-## 🔧 Changed 2026-07-24 (working copy — NOT yet deployed; pending Rob's PR merge)
+## ✅ Shipped to PROD on 2026-07-24 (main `3c2eb5d` via PR #13, Render live)
 
-Items from live use; all done + full suite green (160 tests) + live-smoke-verified. Sitting in the
-working copy, undeployed, so they can ship together in one PR when Rob says go. Theme of the last two:
-Rob's "so few people use this app, kill the gates — we can always add them back later."
+Items from live use; all done + full suite green (160 tests) + live-smoke-verified, shipped as one PR.
+Theme of the middle chunk: Rob's "so few people use this app, kill the gates — we can always add them
+back later." ⚠️ On deploy, the `DROP TABLE IF EXISTS kb_memories` migration wipes the legacy freeform
+memory rows. Watch: simple replies now appear after generation (buffered) rather than token-by-token.
 
 - **Cross-device chat formatting bug — FIXED (`public/app.js`).** With the same user logged in on two
   devices, a new message from device A left device B showing **raw, unrendered markdown** until a hard
