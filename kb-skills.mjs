@@ -271,6 +271,10 @@ function normalizeWebSearchActionInput(input, context = {}) {
   return query ? { query } : null;
 }
 
+// ⚠️ This registry is the ground-truth list of what KitchenBot can do. If you ADD or REMOVE a
+// capability here, also update the "what can you do?" intro answer (`capabilityIntroPrinciple` in
+// kb-agent-loop.mjs) so it never over- or under-sells the app. The intro's technical tier lists the
+// brain's own tools (self-maintaining), but its warm Tier-1 prose is hand-written and can drift.
 export const KB_SKILLS = {
   'memory.save': {
     id: 'memory.save',
