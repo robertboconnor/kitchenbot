@@ -9,7 +9,9 @@ import {
 
 test('assistant persona settings normalize to safe defaults', () => {
   assert.equal(normalizeAssistantName(''), 'KitchenBot');
-  assert.equal(normalizeAssistantTone('???'), 'helpful');
+  assert.equal(normalizeAssistantTone('???'), 'helpful'); // garbage (no letters) → default
+  assert.equal(normalizeAssistantTone(''), 'helpful');
+  assert.equal(normalizeAssistantTone('terse'), 'terse'); // free-text tone is preserved (KB can set any)
   assert.equal(normalizeAssistantTone('sexy'), 'thirsty');
   assert.equal(normalizeAssistantTone('friendly'), 'helpful');
   assert.equal(normalizeAssistantTone('sassy'), 'witty');

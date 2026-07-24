@@ -205,6 +205,8 @@ const INPUT_SCHEMAS = {
     properties: {
       defaultDinnerPortions: { type: 'integer', description: 'Default number of dinner portions.' },
       weeknightCookingStyle: { type: 'string', description: 'e.g. "easy", "quick", "involved".' },
+      assistantName: { type: 'string', description: 'Rename YOURSELF (the assistant) — what the household calls you, e.g. "Chef", "Remy".' },
+      assistantTone: { type: 'string', description: 'Your persistent tone/personality, e.g. "warm", "playful", "terse", "no-nonsense".' },
     },
   },
   'pantry.add': {

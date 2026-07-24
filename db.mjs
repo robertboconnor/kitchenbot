@@ -527,14 +527,25 @@ export async function isGlobalAdminUser(userId) {
     return explicitAdminIds.has(numericUserId);
   }
 
+  // God Mode = the FIRST bootstrapped user, forever (role-independent, since the
+  // owner/member distinction was removed 2026-07-23). Lowest household, lowest user id.
   const row = await get(
     `SELECT u.id
      FROM household_users u
-     WHERE u.role = 'owner'
      ORDER BY u.household_id ASC, u.id ASC
      LIMIT 1`
   );
   return Number(row?.id ?? 0) === numericUserId;
+}
+
+// Permanently delete a household and (via ON DELETE CASCADE on every household-scoped table,
+// with foreign_keys = ON) everything belonging to it: users, chats, messages, grocery, pantry,
+// cookbook, plan, profiles, defaults, usage ledger, etc. Irreversible. God-Mode only.
+export async function deleteHousehold(householdId) {
+  const id = Number(householdId);
+  if (!Number.isFinite(id) || id <= 0) return false;
+  await run(`DELETE FROM households WHERE id = ?`, [id]);
+  return true;
 }
 
 export async function getHouseholdById(householdId) {

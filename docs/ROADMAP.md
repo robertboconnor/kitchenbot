@@ -128,6 +128,21 @@ A big pass across the roadmap, now **deployed** (`dev` == `main`; 165 tests gree
   fire on a normal "add milk" turn. ⚠️ **Living documentation** — maintenance reminders planted at the
   principle + atop the `KB_SKILLS` registry; Tier-1 prose needs hand-updating when capabilities change (see
   memory `kitchenbot-capability-intro`). Deployed via PR #9.
+- **Settings housekeeping — 6 items (2026-07-23).** From live use: (1) **Nunito everywhere** — was
+  inconsistent (two competing `--font-display` defs, Nunito only on headings, missing `@font-face` on
+  the importer page, invisible on Android); now one cohesive Nunito voice across chat + body + both
+  style blocks, tuned (body 400 / line-height 1.55), weight carries hierarchy. (2) **God Mode: delete
+  households** — `deleteHousehold` (one cascade DELETE; FKs on) + a god-mode DELETE route (can't delete
+  your current household) + a type-the-name confirm button. (3) **Removed the "Household memory"
+  settings surface** (HTML + 3 routes) — an old-version artifact; the brain still has memory.save, this
+  just cut the manual editor. *(Residual null-guarded client JS flagged as a follow-up.)* (4) Renamed
+  **"Family food" → "Food profiles."** (5) **Killed the owner/member distinction** — every household
+  member can now edit all household settings (`requireOwner` is a pass-through); God Mode is the FIRST
+  bootstrapped user only, forever (role-independent). (6) **KB can change household settings** — extended
+  `household.defaults.update` so the brain can set its own **name and tone** (tone is now free-text, not
+  a 4-value enum) alongside portions/style; NOT per-user app preferences (palette) or login accounts —
+  those stay in Settings, and the prompt is honest about that line. 163 tests green; boots clean;
+  integration-verified (KB rename+tone, cascade delete, first-user god-mode). Deployed via PR #10.
 
 **Deferred (deliberate, with rationale):**
 - **Unify the two recipe-import pipelines — NOT a security fix; needs a product call (deferred).** The

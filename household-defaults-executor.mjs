@@ -20,6 +20,8 @@ function buildDefaultsOutcomeReply(outcome) {
 function fieldLabel(key) {
   if (key === 'defaultDinnerPortions') return 'dinner portions';
   if (key === 'weeknightCookingStyle') return 'weeknight cooking style';
+  if (key === 'assistantName') return 'my name';
+  if (key === 'assistantTone') return 'my tone';
   return key;
 }
 
@@ -66,6 +68,18 @@ export async function executeHouseholdDefaultsUpdate(runtimeAction, context) {
     String(current.weeknightCookingStyle || '') !== String(next.weeknightCookingStyle || '')
   ) {
     changedFields.push(fieldLabel('weeknightCookingStyle'));
+  }
+  if (
+    update.assistantName !== undefined &&
+    String(current.assistantName || '') !== String(next.assistantName || '')
+  ) {
+    changedFields.push(fieldLabel('assistantName'));
+  }
+  if (
+    update.assistantTone !== undefined &&
+    String(current.assistantTone || '') !== String(next.assistantTone || '')
+  ) {
+    changedFields.push(fieldLabel('assistantTone'));
   }
 
   const outcome = {
