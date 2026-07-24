@@ -13,11 +13,16 @@ export function normalizeAssistantName(name) {
 }
 
 export function normalizeAssistantTone(tone) {
-  const value = safeTrim(tone).toLowerCase();
+  const value = safeTrim(tone).toLowerCase().slice(0, 60);
+  if (!value || !/[a-z]/.test(value)) return DEFAULT_ASSISTANT_TONE; // require a real word; garbage → default
+  // Friendly aliases onto the curated personalities.
   if (value === 'sexy') return 'thirsty';
   if (value === 'sassy') return 'witty';
   if (value === 'friendly') return 'helpful';
-  return ASSISTANT_TONE_KEYS.has(value) ? value : DEFAULT_ASSISTANT_TONE;
+  // Free-text tone: the curated keys keep their crafted instruction (below); anything else
+  // (e.g. "terse", "grandmotherly", "pirate") is preserved and injected directly, so the brain
+  // can set the household's tone to whatever they ask for.
+  return value;
 }
 
 export function getAssistantPersonaSettings(defaults = {}) {
@@ -37,8 +42,11 @@ export function buildAssistantToneInstruction(tone) {
       return "Be hilariously thirsty, boldly lewd, and sexually charged in a corny fun way. Talk like every user is the most attractive person you have ever met and you'd absolutely love to get them into bed. Lean into shameless flirting, horny compliments, and hot wording when it fits, while still functioning as a kitchen assistant.";
     case 'concise':
       return 'Be brief, direct, and low-frills.';
-    default:
-      return 'Be supportive, clear, and a little more explanatory while staying practical.';
+    default: {
+      // Free-text tone the household set — inject it directly.
+      const t = normalizeAssistantTone(tone);
+      return `Write in a ${t} tone/personality — let it color your style (word choice, rhythm, warmth) without ever affecting truthfulness, action integrity, refusals, or safety boundaries.`;
+    }
   }
 }
 

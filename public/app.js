@@ -1178,7 +1178,7 @@
               return;
             }
             const data = await r.json();
-            isCurrentUserOwner = !!data.canManageHouseholdSettings;
+            isCurrentUserOwner = true; // owner/member distinction removed — every member can manage household settings
             currentAssistantName =
               (data.defaults && typeof data.defaults.assistantName === 'string' && data.defaults.assistantName.trim()) ||
               currentAssistantName ||
@@ -1361,7 +1361,7 @@
               pinCol.appendChild(pinRow);
               pinCol.appendChild(pinFeedback);
               row.appendChild(label);
-              row.appendChild(roleCol);
+              // owner/member distinction removed — no per-user Role selector
               row.appendChild(pinCol);
               const prefGrid = document.createElement('div');
               prefGrid.className = 'settings-user-pref-grid';
@@ -1444,18 +1444,16 @@
           await loadMyHouseholdView(); // sets isCurrentUserOwner from /settings/household
           await refreshOwnerAnthropicUsageView();
           const isGa = await loadAnthropicSection();
-          // My preferences + Family food are for everyone; Household + Usage are owner-only;
-          // God Mode is super-admin only.
+          // Owner/member distinction removed (2026-07-23): My preferences, Food profiles,
+          // Household, and Usage are for EVERY household member. Only God Mode is gated (to the
+          // first bootstrapped user / global admin).
           const householdBtn = document.getElementById('settings-subtab-household-btn');
-          if (householdBtn) householdBtn.style.display = isCurrentUserOwner ? 'inline-block' : 'none';
+          if (householdBtn) householdBtn.style.display = 'inline-block';
           const usageBtn = document.getElementById('settings-subtab-usage-btn');
-          if (usageBtn) usageBtn.style.display = isCurrentUserOwner ? 'inline-block' : 'none';
+          if (usageBtn) usageBtn.style.display = 'inline-block';
           const subAdminBtn = document.getElementById('settings-subtab-admin-btn');
           if (subAdminBtn) subAdminBtn.style.display = isGa ? 'inline-block' : 'none';
-          if (
-            (currentSettingsSubView === 'admin' && !isGa) ||
-            ((currentSettingsSubView === 'household' || currentSettingsSubView === 'usage') && !isCurrentUserOwner)
-          ) {
+          if (currentSettingsSubView === 'admin' && !isGa) {
             currentSettingsSubView = 'my';
           }
           if (isGa) {
@@ -1472,8 +1470,8 @@
         const SETTINGS_SUBVIEWS = {
           my: { view: 'settings-view-my', btn: 'settings-subtab-my-btn', gated: false },
           family: { view: 'settings-view-family', btn: 'settings-subtab-family-btn', gated: false },
-          household: { view: 'settings-view-household', btn: 'settings-subtab-household-btn', gated: true },
-          usage: { view: 'settings-view-usage', btn: 'settings-subtab-usage-btn', gated: true },
+          household: { view: 'settings-view-household', btn: 'settings-subtab-household-btn', gated: false },
+          usage: { view: 'settings-view-usage', btn: 'settings-subtab-usage-btn', gated: false },
           admin: { view: 'settings-view-admin', btn: 'settings-subtab-admin-btn', gated: true },
         };
 
@@ -2112,6 +2110,36 @@
                   'settings-admin-tag' + (hh.webSearchEnabled ? ' settings-admin-tag--on' : '');
                 webTag.textContent = hh.webSearchEnabled ? 'Web search on' : 'Web search off';
                 tags.appendChild(webTag);
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'settings-admin-household-delete';
+                delBtn.textContent = 'Delete';
+                delBtn.style.marginLeft = 'auto';
+                delBtn.addEventListener('click', async () => {
+                  const typed = window.prompt(
+                    'Permanently delete household "' + hh.name + '" and ALL of its data (users, chats, lists, cookbook — everything). This cannot be undone.\\n\\nType the household name to confirm:'
+                  );
+                  if (typed == null) return;
+                  if (typed.trim() !== String(hh.name).trim()) {
+                    window.alert('Name did not match — nothing was deleted.');
+                    return;
+                  }
+                  try {
+                    const dr = await fetch('/admin/households/' + encodeURIComponent(hh.id), {
+                      method: 'DELETE',
+                      credentials: 'same-origin',
+                    });
+                    const data = await dr.json().catch(() => ({}));
+                    if (!dr.ok) {
+                      window.alert(data.error || 'Delete failed.');
+                      return;
+                    }
+                    await refreshAdminHouseholdsList();
+                  } catch (e) {
+                    window.alert('Delete failed.');
+                  }
+                });
+                tags.appendChild(delBtn);
                 row.appendChild(main);
                 row.appendChild(tags);
                 listEl.appendChild(row);
@@ -3741,7 +3769,7 @@
           currentUserName = meData.name;
           currentHouseholdId = meData.householdId != null ? Number(meData.householdId) : null;
           currentUserId = meData.userId != null ? Number(meData.userId) : null;
-          isCurrentUserOwner = !!meData.isOwner;
+          isCurrentUserOwner = true; // owner/member distinction removed
           applyGodModeFromMe(meData);
           syncMemoriesWrapVisibility();
           applyPalette(meData.palette);

@@ -132,8 +132,13 @@ function normalizeHouseholdDefaultsActionInput(input) {
   );
   if (style) update.weeknightCookingStyle = style;
 
-  // ONE BRAIN: the brain passes structured defaults (defaultDinnerPortions / weeknightCookingStyle),
-  // handled above. The executor does not regex a defaults update out of the raw prompt.
+  // The brain can also rename itself and change its tone (these live in the same defaults).
+  const assistantName = safeTrim(defaults.assistantName ?? defaults.name ?? defaults.kitchenbotName ?? defaults.botName);
+  if (assistantName) update.assistantName = assistantName;
+  const assistantTone = safeTrim(defaults.assistantTone ?? defaults.tone ?? defaults.personality ?? defaults.voice);
+  if (assistantTone) update.assistantTone = assistantTone;
+
+  // ONE BRAIN: the brain passes structured defaults; the executor does not regex them from the prompt.
   return Object.keys(update).length > 0 ? update : null;
 }
 

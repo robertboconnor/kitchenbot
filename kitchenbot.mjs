@@ -36,6 +36,7 @@ import {
   isGlobalAdminUser,
   getFirstHouseholdId,
   getHouseholdById,
+  deleteHousehold,
   getHouseholdByKey,
   setHouseholdWebSearchEnabled,
   listHouseholdUsers,
@@ -169,10 +170,17 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
         /* Three user-selectable palettes — kept in sync with the main app, switched by
            <html data-palette="…">. No dark mode. TODO(Phase 1): fold this importer into
            the Cookbook surface so there is one shared stylesheet. */
+        @font-face {
+          font-family: "Nunito";
+          src: url("/fonts/nunito-variable-latin.woff2") format("woff2");
+          font-weight: 400 800;
+          font-style: normal;
+          font-display: swap;
+        }
         :root {
           color-scheme: light;
-          --font-display: ui-rounded, "SF Pro Rounded", "Nunito", "Quicksand", system-ui, sans-serif;
-          --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+          --font-display: "Nunito", ui-rounded, "SF Pro Rounded", "Quicksand", system-ui, sans-serif;
+          --font-ui: "Nunito", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
           --radius-lg: 16px;
         }
         :root, :root[data-palette="sweetwater"] {
@@ -209,7 +217,8 @@ function renderRecipeImporterPage({ knownCookbookSources = [] } = {}) {
         body {
           margin: 0;
           min-height: 100vh;
-          font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+          font-family: var(--font-ui);
+          line-height: 1.5;
           background: var(--bg-gradient);
           color: var(--text-main);
           padding: 20px 14px 28px;
@@ -1199,16 +1208,13 @@ async function isRequestGlobalAdmin(req) {
   return isGlobalAdminUser(uid);
 }
 
+// The owner/member distinction was removed (2026-07-23): this is a family app, not a
+// finance tool, so ANY authenticated household member may edit household settings.
+// requireAuth already ran ahead of this in every route chain, so this is a pass-through.
+// (Cross-household super-admin — "God Mode" — is a separate axis, still gated by
+// requireGlobalAdminRead / isGlobalAdminUser, which is the first bootstrapped user only.)
 async function requireOwner(req, res, next) {
-  try {
-    const u = await getHouseholdUserById(req.householdId, req.userId);
-    if (!u || u.role !== 'owner') {
-      return res.status(403).json({ error: 'Owner only' });
-    }
-    next();
-  } catch (e) {
-    next(e);
-  }
+  next();
 }
 
 async function requireGlobalAdmin(req, res, next) {
@@ -1617,6 +1623,32 @@ app.post(
   }
 });
 
+// God Mode: permanently delete a household + all its data (cascade). Cannot delete the household
+// you are currently signed into (avoids bricking your own session).
+app.delete(
+  '/admin/households/:id',
+  requireHousehold,
+  requireAuth,
+  requireNotImpersonatingReadOnly,
+  requireGlobalAdmin,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid household id' });
+      if (id === Number(req.householdId)) {
+        return res.status(400).json({ error: 'You cannot delete the household you are currently signed into.' });
+      }
+      const h = await getHouseholdById(id);
+      if (!h) return res.status(404).json({ error: 'Household not found' });
+      await deleteHousehold(id);
+      return res.json({ ok: true, deletedId: id, deletedName: h.name });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: e.message || 'Failed to delete household' });
+    }
+  }
+);
+
 app.post(
   '/admin/impersonate',
   requireHousehold,
@@ -1827,7 +1859,7 @@ app.get('/', (req, res) => {
           /* Rounded display voice + clean UI sans — NO serifs, ever. Nunito first (self-hosted,
              so all platforms match); Apple's ui-rounded as a graceful alt if the font fails. */
           --font-display: "Nunito", ui-rounded, "SF Pro Rounded", "Quicksand", system-ui, sans-serif;
-          --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+          --font-ui: "Nunito", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
           --radius-sm: 9px;
           --radius-md: 12px;
           --radius-lg: 16px;
@@ -1927,14 +1959,17 @@ app.get('/', (req, res) => {
           box-sizing: border-box;
         }
 
-        /* Headings, brand, and buttons carry the rounded display voice;
-           body copy stays a clean sans so it reads grown-up, not childish. */
+        /* Nunito everywhere (2026-07-23): one cohesive rounded voice across the whole app, not
+           just headings. Weight carries hierarchy — body 400 with a generous line-height so long
+           recipes/replies read comfortably; headings/buttons stay heavy. */
         h1, h2, h3, h4, .brand, button, .tab-button, .pill, input, textarea, select {
           font-family: var(--font-display);
         }
 
         body {
           font-family: var(--font-ui);
+          font-weight: 400;
+          line-height: 1.55;
           margin: 0;
           padding: 24px 16px 12px;
           height: 100vh;
@@ -3321,7 +3356,8 @@ app.get('/', (req, res) => {
         .admin-report-table,
         .admin-report-table th,
         .admin-report-table td {
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          font-family: var(--font-ui);
+          font-variant-numeric: tabular-nums;
           font-variant-ligatures: none;
           text-rendering: optimizeLegibility;
         }
@@ -4920,7 +4956,7 @@ app.get('/', (req, res) => {
           <h2 style="margin-top: 0;">Settings</h2>
           <div id="settings-subnav" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px;">
             <button type="button" id="settings-subtab-my-btn" class="settings-subtab-btn settings-subtab-active">My preferences</button>
-            <button type="button" id="settings-subtab-family-btn" class="settings-subtab-btn">Family food</button>
+            <button type="button" id="settings-subtab-family-btn" class="settings-subtab-btn">Food profiles</button>
             <button type="button" id="settings-subtab-household-btn" class="settings-subtab-btn" style="display: none;">Household</button>
             <button type="button" id="settings-subtab-usage-btn" class="settings-subtab-btn" style="display: none;">Anthropic usage</button>
             <button type="button" id="settings-subtab-admin-btn" class="settings-subtab-btn" style="display: none;">God Mode</button>
@@ -5061,39 +5097,6 @@ app.get('/', (req, res) => {
                       </div>
                     </div>
                   </div>
-                  <div id="my-settings-entity-memories-wrap" style="display: none;">
-                    <h4 style="margin:0 0 6px;">Household memory</h4>
-                    <p class="settings-section-note">
-                      KitchenBot uses this to remember people and household-wide facts across chats.
-                    </p>
-                    <div class="settings-memory-viewer">
-                      <div id="my-settings-entity-memories-list" style="font-size: 13px;"></div>
-                    </div>
-                    <div id="my-settings-entity-memories-msg" style="font-size: 13px; color: var(--accent-strong); margin: 8px 0 0;"></div>
-                    <div class="settings-memory-editor" style="margin-top: 12px;">
-                      <div class="settings-form-row" style="margin-bottom:8px;">
-                        <div class="settings-form-field" style="max-width: 180px;">
-                          <label for="my-settings-memory-type">Memory type</label>
-                          <select id="my-settings-memory-type">
-                            <option value="person">Person</option>
-                            <option value="household_note">Household-wide</option>
-                          </select>
-                        </div>
-                        <div class="settings-form-field" style="max-width: 220px;">
-                          <label for="my-settings-memory-label">Person or memory label</label>
-                          <input id="my-settings-memory-label" type="text" autocomplete="off" placeholder="e.g. Elle or quick lunches" />
-                        </div>
-                        <div class="settings-form-field">
-                          <label for="my-settings-memory-summary">What should KitchenBot remember?</label>
-                          <input id="my-settings-memory-summary" type="text" autocomplete="off" placeholder="What KitchenBot should remember" />
-                        </div>
-                      </div>
-                      <div class="settings-actions-row">
-                        <button type="button" id="my-settings-memory-save">Save</button>
-                        <button type="button" id="my-settings-memory-cancel-edit" style="display: none;">Cancel</button>
-                      </div>
-                    </div>
-                  </div>
                 </div>
               </section>
 
@@ -5126,7 +5129,7 @@ app.get('/', (req, res) => {
           </div>
 
           <div id="settings-view-family" class="settings-subview" style="display: none;">
-            <h3 style="margin-top: 0;">Family food</h3>
+            <h3 style="margin-top: 0;">Food profiles</h3>
             <p class="settings-page-intro">
               What everyone eats — likes, dislikes, and allergies. KitchenBot uses this to plan meals for the whole
               household, and it stays in sync with what you tell KitchenBot in chat. Anyone can view and add what they know.
@@ -5578,30 +5581,6 @@ app.post(
   }
 );
 
-app.get('/settings/household/memory-notes', requireHousehold, requireAuth, requireOwner, async (req, res) => {
-  try {
-    const rows = await listKbMemories(req.householdId);
-    res.json({
-      memories: rows.map((row) => {
-        const memoryType = normalizeMemoryType(row.memoryType);
-        const notes = normalizePersonNotes(row?.attributes?.notes || []);
-        return {
-          id: row.id,
-          memoryType,
-          label: row.label,
-          summary: memoryType === 'person' ? buildPersonSummary(notes) : row.summary,
-          attributes: memoryType === 'person' ? { ...(row.attributes || {}), notes } : row.attributes,
-          sourceKind: row.sourceKind,
-          updatedAt: row.updatedAt,
-        };
-      }),
-    });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Failed to load saved memories' });
-  }
-});
-
 function normalizeCookbookEditorTextList(value) {
   if (Array.isArray(value)) {
     return value
@@ -5894,123 +5873,6 @@ app.post(
         });
       }
       return res.status(500).json({ error: message || 'Could not save that recipe right now.' });
-    }
-  }
-);
-
-app.post(
-  '/settings/household/memory-notes',
-  requireHousehold,
-  requireAuth,
-  requireNotImpersonatingReadOnly,
-  requireOwner,
-  async (req, res) => {
-    try {
-      const id = req.body.id != null && Number.isFinite(Number(req.body.id)) ? Number(req.body.id) : null;
-      const noteIndex =
-        req.body.noteIndex != null && Number.isFinite(Number(req.body.noteIndex)) ? Number(req.body.noteIndex) : null;
-      if (id && req.body.memoryType === 'person' && noteIndex != null) {
-        const rows = await listKbMemories(req.householdId);
-        const existing = rows.find((row) => Number(row.id) === id);
-        if (!existing) return res.status(404).json({ error: 'Memory not found' });
-        const currentNotes = normalizePersonNotes(existing?.attributes?.notes || []);
-        if (noteIndex < 0 || noteIndex >= currentNotes.length) {
-          return res.status(400).json({ error: 'Invalid saved note index' });
-        }
-        currentNotes[noteIndex] = { text: String(req.body.summary || '').trim() };
-        const record = buildMemoryRecordForStorage({
-          type: 'person',
-          label: req.body.label || existing.label,
-          attributes: { ...(existing.attributes || {}), notes: currentNotes },
-        });
-        if (!record) return res.status(400).json({ error: 'Label and note are required' });
-        await saveKbMemory(req.householdId, record, {
-          id,
-          sourceKind: 'manual',
-        });
-        return res.json({ ok: true });
-      }
-      const record = buildMemoryRecordForStorage({
-        type: req.body.memoryType,
-        label: req.body.label,
-        summary: req.body.summary,
-        attributes: req.body.attributes,
-      });
-      if (!record) {
-        return res.status(400).json({ error: 'Type, label, and summary are required' });
-      }
-      if (id) {
-        await saveKbMemory(req.householdId, record, {
-          id,
-          sourceKind: 'manual',
-        });
-        return res.json({ ok: true });
-      }
-      const prior = await getKbMemoryByTypeAndLabel(
-        req.householdId,
-        record.memoryType,
-        record.normalizedLabel
-      );
-      const merged = prior ? mergeMemoryRecord(prior, record) : record;
-      await saveKbMemory(req.householdId, merged, {
-        id: prior?.id ?? null,
-        sourceKind: 'manual',
-      });
-      return res.json({ ok: true });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: 'Failed to save memory' });
-    }
-  }
-);
-
-app.delete(
-  '/settings/household/memory-notes/:id',
-  requireHousehold,
-  requireAuth,
-  requireNotImpersonatingReadOnly,
-  requireOwner,
-  async (req, res) => {
-    try {
-      const id = Number(req.params.id);
-      if (!Number.isFinite(id)) {
-        return res.status(400).json({ error: 'Invalid memory id' });
-      }
-      const noteIndex =
-        req.query.noteIndex != null && Number.isFinite(Number(req.query.noteIndex)) ? Number(req.query.noteIndex) : null;
-      if (noteIndex != null) {
-        const rows = await listKbMemories(req.householdId);
-        const existing = rows.find((row) => Number(row.id) === id);
-        if (!existing) return res.status(404).json({ error: 'Memory not found' });
-        if (normalizeMemoryType(existing.memoryType) !== 'person') {
-          return res.status(400).json({ error: 'Only people support note-level deletion' });
-        }
-        const currentNotes = normalizePersonNotes(existing?.attributes?.notes || []);
-        if (noteIndex < 0 || noteIndex >= currentNotes.length) {
-          return res.status(400).json({ error: 'Invalid saved note index' });
-        }
-        const nextNotes = currentNotes.filter((_, idx) => idx !== noteIndex);
-        if (nextNotes.length === 0) {
-          await deleteKbMemory(req.householdId, id);
-          return res.json({ ok: true });
-        }
-        const record = buildMemoryRecordForStorage({
-          type: 'person',
-          label: existing.label,
-          attributes: { ...(existing.attributes || {}), notes: nextNotes },
-        });
-        if (!record) return res.status(400).json({ error: 'Could not rebuild person memory' });
-        await saveKbMemory(req.householdId, record, {
-          id,
-          sourceKind: 'manual',
-        });
-        return res.json({ ok: true });
-      }
-      await deleteKbMemory(req.householdId, id);
-      return res.json({ ok: true });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: 'Failed to delete memory' });
     }
   }
 );
