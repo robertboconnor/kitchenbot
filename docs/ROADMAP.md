@@ -115,6 +115,19 @@ A big pass across the roadmap, now **deployed** (`dev` == `main`; 165 tests gree
   fallback):** recipe-text parsers, `looksLikeBotBlockPage`, OCR/doc-AI parsers, API-response parsers,
   `inventory-classification` section fallbacks. Deployed via PR #8. *(Borderline `cookbook-store` metadata
   auto-derivation — `inferCookbookCategory` etc. — left for a later audit; lower priority.)*
+- **Two-tier "what can you do?" intro (2026-07-23).** The organic capability answer undersold the app, and
+  Rob seeds a new owner's account by posing "what can you do?" via god mode as a welcome. New
+  `capabilityIntroPrinciple()` in `kb-agent-loop.mjs`: **Tier 1** = warm, concrete overview (shared brain
+  that acts; plan+remember; grocery-from-plan-minus-pantry; cook around tastes/allergies; never fake) +
+  owner-provisioning pointers (Settings) + an escape-hatch ("I can change many settings for you — just ask",
+  e.g. add a kid to family food with no login) + a nerd-version offer; **Tier 2** (only if they accept) =
+  the real mechanics + the brain's ACTUAL tools listed by name (self-maintaining) + the truthfulness
+  verifier + live shared state. **Contract-legal:** a REASONED prompt principle (brain decides by meaning,
+  generates + adapts), NOT a code-level canned/regex response. Live-verified: adapts to a brand-new EMPTY
+  account (invites instead of citing non-existent data), steps up to Tier 2 on a reasoned "yes", does NOT
+  fire on a normal "add milk" turn. ⚠️ **Living documentation** — maintenance reminders planted at the
+  principle + atop the `KB_SKILLS` registry; Tier-1 prose needs hand-updating when capabilities change (see
+  memory `kitchenbot-capability-intro`). Deployed via PR #9.
 
 **Deferred (deliberate, with rationale):**
 - **Unify the two recipe-import pipelines — NOT a security fix; needs a product call (deferred).** The
