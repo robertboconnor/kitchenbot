@@ -8,7 +8,6 @@ import {
   addMessage,
   getMessages,
   clearMessages,
-  deleteKbMemory,
   addGroceryItems,
   addPantryItems,
   getPantryItems,
@@ -38,7 +37,6 @@ import {
   getHouseholdById,
   deleteHousehold,
   getHouseholdByKey,
-  setHouseholdWebSearchEnabled,
   listHouseholdUsers,
   listPersonProfiles,
   getPersonProfile,
@@ -55,9 +53,6 @@ import {
   verifyPin,
   getHouseholdMessageStats,
   getUserMessageCountsInHousehold,
-  getKbMemoryByTypeAndLabel,
-  listKbMemories,
-  saveKbMemory,
   listCookbookEntries,
   listCookbookSourceBookTitles,
   getCookbookEntryById,
@@ -70,14 +65,7 @@ import {
 } from './db.mjs';
 import { handleKbChatTurn } from './kb-runtime.mjs';
 import { respondWithKbErrorReply } from './kb-reply.mjs';
-import {
-  buildPersonSummary,
-  buildMemoryRecordForStorage,
-  buildKbContextPacket,
-  mergeMemoryRecord,
-  normalizeMemoryType,
-  normalizePersonNotes,
-} from './kb-memory-store.mjs';
+import { buildKbContextPacket } from './kb-memory-store.mjs';
 import {
   buildCookbookRecordForStorage,
   COOKBOOK_CATEGORY_OPTIONS,
@@ -805,7 +793,10 @@ async function getAnthropicClient(householdId) {
   if (!h) {
     throw new Error('Household not found.');
   }
-  const webSearchEnabled = Number(h.web_search_enabled) === 1;
+  // Web search is on for EVERY household — the per-household gate was removed 2026-07-24
+  // (Rob: "give web search to every account"). The brain still decides WHEN to actually use it.
+  // The web_search_enabled column is left inert so the gate could be restored later if wanted.
+  const webSearchEnabled = true;
   const mode = h.anthropic_key_mode || 'shared';
   if (mode === 'household') {
     const k = h.anthropic_api_key && String(h.anthropic_api_key).trim();
@@ -1686,53 +1677,6 @@ app.post(
     } catch (e) {
       console.error(e);
       return res.status(500).json({ error: 'Impersonation failed' });
-    }
-  }
-);
-
-const DEMO_VIEW_HOUSEHOLD_KEY = 'demo-env';
-const DEMO_VIEW_USER_DISPLAY_NAME = 'Rob';
-
-app.post(
-  '/demo/view',
-  requireHousehold,
-  requireAuth,
-  requireNotAlreadyImpersonating,
-  async (req, res) => {
-    try {
-      const demoHousehold = await getHouseholdByKey(DEMO_VIEW_HOUSEHOLD_KEY);
-      if (!demoHousehold) {
-        return res.status(404).json({ error: 'Demo household is not configured (expected key demo-env).' });
-      }
-      const demoUser = await getUserByHouseholdAndDisplayName(
-        demoHousehold.id,
-        DEMO_VIEW_USER_DISPLAY_NAME
-      );
-      if (!demoUser) {
-        return res
-          .status(404)
-          .json({ error: 'Demo user is not configured (expected display name Rob in demo household).' });
-      }
-      const realRow = await getHouseholdUserById(req.householdId, req.userId);
-      if (!realRow) {
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-      const token = signToken({
-        householdId: demoHousehold.id,
-        userId: demoUser.id,
-        displayName: demoUser.display_name,
-        sessionVersion: demoUser.session_version != null ? Math.trunc(Number(demoUser.session_version)) : 0,
-        isImpersonating: true,
-        impersonationReadOnly: true,
-        adminUserId: req.userId,
-        adminHouseholdId: req.householdId,
-        adminDisplayName: realRow.display_name,
-      });
-      setAuthCookie(res, token);
-      return res.json({ ok: true });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: 'Demo view failed' });
     }
   }
 );
@@ -4996,7 +4940,7 @@ app.get('/', (req, res) => {
                 <div class="settings-card-header">
                   <div>
                     <h3>Household</h3>
-                    <p class="settings-card-subtitle">Core identity and a quick demo walkthrough for sharing how KitchenBot works.</p>
+                    <p class="settings-card-subtitle">Core identity for this household.</p>
                   </div>
                   <span class="settings-pill-note">Session household</span>
                 </div>
@@ -5012,15 +4956,6 @@ app.get('/', (req, res) => {
                   <div class="settings-meta-item">
                     <span class="label">Household key</span>
                     <span class="value"><code id="my-settings-hh-key"></code></span>
-                  </div>
-                </div>
-                <div class="settings-inline-banner">
-                  <p class="settings-section-note" style="margin-bottom: 8px;">
-                    Open a read-only walkthrough as the sample user in the shared demo household.
-                  </p>
-                  <div class="settings-actions-row">
-                    <button type="button" id="settings-demo-view-btn">See how to use this</button>
-                    <span id="settings-demo-view-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
                   </div>
                 </div>
               </section>
@@ -5279,27 +5214,6 @@ app.get('/', (req, res) => {
                 </div>
               </section>
 
-              <section class="settings-card">
-                <div class="settings-card-header">
-                  <div>
-                    <h3>Household feature flags</h3>
-                    <p class="settings-card-subtitle">Adjust the household-specific capability toggle that affects live model behavior.</p>
-                  </div>
-                </div>
-                <div class="settings-inline-banner" style="margin-bottom: 12px;">
-                  <p style="font-size: 13px; color: var(--text-soft); margin: 0 0 8px;">
-                    For the <strong>selected</strong> household only: when enabled, KitchenBot may attach Anthropic&apos;s web search tool on messages that look like they need live web context.
-                  </p>
-                  <label style="display: flex; align-items: flex-start; gap: 8px;">
-                    <input type="checkbox" id="admin-web-search-enabled" style="margin-top: 3px;" />
-                    <span>Enable web search for this household</span>
-                  </label>
-                  <div class="settings-actions-row" style="margin-top: 8px;">
-                    <button type="button" id="admin-web-search-save">Save web search setting</button>
-                    <span id="admin-web-search-msg" style="font-size: 13px; color: var(--accent-strong);"></span>
-                  </div>
-                </div>
-              </section>
 
               <section class="settings-card">
                 <div class="settings-card-header">
@@ -6113,30 +6027,6 @@ app.post(
 });
 
 app.post(
-  '/settings/anthropic/web-search',
-  requireHousehold,
-  requireAuth,
-  requireNotImpersonatingReadOnly,
-  requireGlobalAdmin,
-  async (req, res) => {
-  try {
-    const householdId = Number(req.body.householdId);
-    if (!Number.isFinite(householdId)) {
-      return res.status(400).json({ error: 'householdId is required' });
-    }
-    const targetId = await resolveAnthropicTargetHouseholdId(req, res, householdId);
-    if (targetId == null) return;
-    const raw = req.body.webSearchEnabled;
-    const enabled = raw === true || raw === 1 || raw === '1' || String(raw).toLowerCase() === 'true';
-    await setHouseholdWebSearchEnabled(targetId, enabled);
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: e.message || 'Failed to save web search setting' });
-  }
-});
-
-app.post(
   '/settings/anthropic/key',
   requireHousehold,
   requireAuth,
@@ -6347,6 +6237,7 @@ app.post(
         emitKbProgress,
         clearChatRuntimeState,
         getAnthropicClient,
+        isGlobalAdminUser,
         buildKbContextPacket,
         incrementUserMessageCountForSender,
         isAnthropicSdkAuthOrKeyError,

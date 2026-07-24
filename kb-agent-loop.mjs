@@ -19,7 +19,7 @@ import { createLoggedAnthropicMessage, finalizeLoggedAnthropicStream } from './a
 import { ANTHROPIC_MAIN_REASONING_MODEL } from './anthropic-model-policy.mjs';
 import { buildKbToolDefinitions, executeKbToolCall } from './kb-tools.mjs';
 import { buildAssistantPersonaSystemText } from './kb-persona.mjs';
-import { respondWithKbReply, streamReplyDelta, resetReplyStream } from './kb-reply.mjs';
+import { respondWithKbReply } from './kb-reply.mjs';
 import { narrationForToolName } from './kb-narration.mjs';
 import { verifyReplyClaims, buildClaimCorrectionMessage } from './kb-claim-guard.mjs';
 
@@ -46,22 +46,6 @@ function resolvePersonaDefaults(memoryContext) {
     memoryContext?.householdDefaults ||
     {}
   );
-}
-
-function buildMemoryContextText(memoryContext) {
-  // Pass 1: durable memory rows only. Pass 2 moves live app state (pantry,
-  // grocery, defaults) onto on-demand read-tools instead of always-on injection.
-  const rows = Array.isArray(memoryContext?.rows) ? memoryContext.rows : [];
-  const lines = rows
-    .slice(0, 8)
-    .map((row) => {
-      const key = safeTrim(row?.key || row?.label);
-      const value = safeTrim(row?.value || row?.note);
-      if (!value) return '';
-      return key ? `- ${key}: ${value}` : `- ${value}`;
-    })
-    .filter(Boolean);
-  return lines.join('\n');
 }
 
 // Affectionate easter egg. Rob built this app; Elle is his wife. When she's the one talking,
@@ -123,8 +107,8 @@ function capabilityIntroPrinciple() {
     "everyone's tastes and allergies automatically; (5) you never fake an action — if you say it's saved, it's " +
     "saved. Because the person is this account's OWNER, also point them to Settings to add the rest of their " +
     "household, set preferences, and fill in food profiles — AND tell them you can change many settings for them " +
-    "directly (food profiles, household defaults like portion size and cooking style, even your own name and tone, " +
-    "saved household facts), so if they want something and there's no button, they should just ask (great example: " +
+    "directly (food profiles, household defaults like portion size and cooking style, even your own name and tone), " +
+    "so if they want something and there's no button, they should just ask (great example: " +
     "adding a young kid to the food profiles even though the kid has no login). Be honest that a couple of things — " +
     "a person's own app appearance/color and creating login accounts — they do themselves in Settings, not you. " +
     "ADAPT to reality: if the household is brand-new and empty, " +
@@ -138,7 +122,7 @@ function capabilityIntroPrinciple() {
     "call your tools; no keyword router, reasoning every turn; the rule is 'smart brain, dumb executors' (you decide, " +
     "the tools mechanically execute). Then LIST YOUR ACTUAL AVAILABLE TOOLS by their real names (the tools you " +
     "genuinely have this turn — do not make any up), grouped sensibly (reads/lookups, grocery, pantry, cookbook, " +
-    "weekly plan, household & memory, web), skipping trivial internal ones. Then note two things you're proud of: " +
+    "weekly plan, people & settings, web), skipping trivial internal ones. Then note two things you're proud of: " +
     "truthfulness is enforced structurally (after you draft a reply a separate verifier checks it against the tools " +
     "you actually called, so you can't claim a write you didn't make) and shared state is live (one household " +
     "database, real-time updates to everyone). Offer to go deeper. Make it satisfying for an actual engineer — real " +
@@ -146,14 +130,35 @@ function capabilityIntroPrinciple() {
   );
 }
 
-export function buildLoopSystemPrompt({ memoryContext, name }) {
+// DEVELOPER MODE. Gated on the app OWNER — the first-bootstrapped / God Mode user (Rob himself),
+// NOT the old household "owner" role (which no longer exists). Only Rob's OWN messages get this.
+// It's an extension of the truthfulness principle: with the developer, drop the politeness filter
+// and name a real problem you actually hit this turn — never hunt for or invent things to critique.
+function developerPrinciple(name) {
+  const who = safeTrim(name) || 'the developer';
+  return (
+    `DEVELOPER — the person talking to you right now is ${who}, who built and owns this app. Your job with ` +
+    'them does not change: you are their cooking assistant, exactly as you are for everyone else. Do NOT turn ' +
+    'ordinary cooking chat into a status report, do NOT go hunting for things to critique, and do NOT bring up ' +
+    'the app when nothing about it came up. The ONE thing that changes: with them, drop the politeness filter ' +
+    'about the app itself. If — while actually helping — you genuinely hit something real THIS turn (a tool ' +
+    'errored or returned something clearly wrong; you could not do what they asked because you have no tool ' +
+    'for it; a result plainly contradicts what should have happened; or a real point of friction made the ' +
+    'interaction clumsy) — name it plainly and briefly at the end. Every such note must be grounded in what ' +
+    'you just observed. Never invent a problem to seem useful, never flag something that worked, never ' +
+    'speculate about code or design you cannot see, never pad with generic "you could add X" ideas. Real and ' +
+    'specific, or nothing at all.'
+  );
+}
+
+export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false }) {
   const persona = buildAssistantPersonaSystemText(resolvePersonaDefaults(memoryContext), {
     role: 'assistant',
   });
   const principles = [
-    'You are one unified household brain for a shared kitchen app (cooking, meal ideas, a grocery list, a pantry, a saved cookbook, and household memory).',
+    'You are one unified household brain for a shared kitchen app (cooking, meal ideas, a grocery list, a pantry, and a saved cookbook).',
     `Right now you are talking to: ${safeTrim(name) || 'a household member'}.`,
-    'Read what they actually want, then act. Your TOOLS are how you DO things — change the grocery list, add/remove pantry items, save or revise recipes, update the cookbook, save durable memory, search the web. Understanding is your job; doing is the tools’ job.',
+    'Read what they actually want, then act. Your TOOLS are how you DO things — change the grocery list, add/remove pantry items, save or revise recipes, update the cookbook, search the web. Understanding is your job; doing is the tools’ job.',
     'Only take an action when the user genuinely wants it. When they just want to talk, brainstorm, or think, then talk — do not call tools for the sake of it.',
     'When the user asks you to plan, brainstorm, suggest, or create (a week of dinners, meal ideas, what to cook, a recipe) — actually DELIVER concrete, specific ideas in your reply; never just gather context and punt. When following through would mean a large or speculative write (a whole week of ingredients), present the plan and ASK whether to add it all, rather than guessing. Do small, explicitly-requested actions directly. And never say you are "adding" or "saving" something unless you actually called the tool this turn.',
     'You may call several tools across the turn: look something up, act on it, check the result, then act again. Decide the path yourself from what the tools return.',
@@ -168,17 +173,19 @@ export function buildLoopSystemPrompt({ memoryContext, name }) {
     "When you and the user settle on the meals for the week (or the user lists them), record them with plan.add — they appear in the household's This Week panel and become your durable memory of the week. A single chat often runs all week and hundreds of messages deep while you only see the most recent ones, so this is how the plan survives. Use plan.list to recall the week's meals or to resolve which meal the user means (e.g. \"let's cook the succotash tonight\"), and mark a meal cooked with plan.update once the household makes it.",
     "This chat may be very long (a whole week of cooking) and you only see the most recent messages. When the user refers to something from earlier that you can no longer see — an amount, a fix (\"how did we save the broken toum?\"), a recipe detail, a decision — call thread.search with a focused query to pull the relevant earlier messages, then answer from what you found and say you looked it back up. Do not guess or claim to remember something that has scrolled out of view.",
     "Saved recipes carry tags — short lowercase labels like \"kid-approved\", \"quick\", \"vegetarian\", \"date-night\". Put labels like \"Bizzy-approved\" in a recipe's tags (in the recipe.tags array on cookbook.save / cookbook.update), NOT in its title. To find labeled recipes, call cookbook.list with a `tag` filter (e.g. tag \"kid-approved\"). cookbook.list returns each saved recipe's title, tags, and summary, so use it to actually see what's in the cookbook before answering questions about it.",
-    "For a household member's FOOD facts — foods they accept, foods they reject, allergies — use person.profile.update (structured, per-person), NOT memory.save. It appends and keeps foods queryable, and marking a food accepted automatically clears it from rejected (and vice versa), so tastes can change over time. Read person.profile.get before planning a meal for someone (e.g. a kid's dinner) or to answer \"what does X eat?\"; call it with no person to see everyone's profile. Keep memory.save for other, non-food facts about people or the household.",
-    "You can change household SETTINGS for the user directly when asked — don't send them hunting for a button. You have tools for: the household's default dinner portions and weeknight cooking style, AND your own name and tone (all via household.defaults.update — yes, you can rename yourself or change your persistent tone if they ask); each person's food profile (person.profile.update, incl. adding someone who has no login); and durable household facts (memory.save). What you CANNOT change: a single user's personal app preferences (like their color theme) and creating login accounts — those stay in the Settings screen, so point them there for those. Be honest about that line.",
+    "For a household member's FOOD facts — foods they accept, foods they reject, allergies — use person.profile.update (structured, per-person). It appends and keeps foods queryable, and marking a food accepted automatically clears it from rejected (and vice versa), so tastes can change over time. Read person.profile.get before planning a meal for someone (e.g. a kid's dinner) or to answer \"what does X eat?\"; call it with no person to see everyone's profile.",
+    "You can change household SETTINGS for the user directly when asked — don't send them hunting for a button. You have tools for: the household's default dinner portions and weeknight cooking style, AND your own name and tone (all via household.defaults.update — yes, you can rename yourself or change your persistent tone if they ask); each person's food profile (person.profile.update, incl. adding someone who has no login). What you CANNOT change: a single user's personal app preferences (like their color theme) and creating login accounts — those stay in the Settings screen, so point them there for those. Be honest about that line.",
     'For destructive actions — clearing the whole grocery list (grocery.clear) or deleting a saved cookbook recipe (cookbook.delete) — only do it when the user clearly asked for that specific action. If it is at all ambiguous, confirm first instead of acting.',
     'After the tools have run, write ONE short, warm, natural reply describing what actually happened. Do not paste raw tool output.',
     'Never make an offer you cannot act on right now. Do NOT say things like "want me to add X? say yes and I will" — there is no mechanism to hold that intent for a later turn. Either just do it now, or tell them to ask when they want it.',
+    "A question about your OWN behavior — \"why did you stop?\", \"what happened there?\", \"can you see X?\" — is a normal question, not an accusation that you lied. Answer it plainly. You have no access to server logs, error traces, or the internals of your earlier replies, so if asked why an earlier reply cut off or for logs, say honestly that you cannot see that. \"I can't do that\" or \"I can't see that\" is a complete, good answer — do not turn it into a truthfulness confession or apologize for a mistake you did not make.",
+    "Don't call a tool reflexively just to double-check yourself. Use a tool only when it changes your answer or the user asked you to act — not to 'verify' something you are already sure of.",
   ];
   principles.push(capabilityIntroPrinciple());
   if (isSweetheartUser(name)) principles.push(sweetheartPrinciple());
+  if (isDeveloper) principles.push(developerPrinciple(name));
   const principlesText = principles.join('\n');
   const peopleText = safeTrim(memoryContext?.householdPeopleText);
-  const memoryText = buildMemoryContextText(memoryContext);
   return [
     persona,
     '',
@@ -186,7 +193,6 @@ export function buildLoopSystemPrompt({ memoryContext, name }) {
     peopleText
       ? `\nEveryone in this household — consider ALL of them when planning food, not only whoever is typing. Allergies are hard constraints. For deeper detail on anyone's tastes call person.profile.get:\n${peopleText}`
       : '',
-    memoryText ? `\nOther relevant saved household/person memory:\n${memoryText}` : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -243,7 +249,11 @@ export async function runKbAgentLoop({
   await deps.incrementUserMessageCountForSender?.(req);
   deps.broadcastToChat?.(chatId, { type: 'chat_updated', householdId, chatId, user: name });
 
-  const system = buildLoopSystemPrompt({ memoryContext, name });
+  // Only the app owner (first-bootstrapped / God Mode user) gets developer mode.
+  const isDeveloper = deps?.isGlobalAdminUser
+    ? await deps.isGlobalAdminUser(req.userId).catch(() => false)
+    : false;
+  const system = buildLoopSystemPrompt({ memoryContext, name, isDeveloper });
   const tools = buildKbToolDefinitions({ webSearchEnabled });
   const messages = buildMessagesFromHistory(recentMessages, promptText);
 
@@ -259,7 +269,6 @@ export async function runKbAgentLoop({
     anthropic,
     deps,
     memoryContext,
-    memories: memoryContext?.rows,
     workingContext: null,
     recentMessages,
     webSearchEnabled,
@@ -268,8 +277,6 @@ export async function runKbAgentLoop({
   const collectedOutcomes = [];
   let finalText = '';
   let finalClaims = null; // null = reply text not yet verified; array = verifier's result
-  let streamedFinalReply = false;
-  let streamedTextInPriorTurn = false;
   let claimCorrections = 0;
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
@@ -280,20 +287,13 @@ export async function runKbAgentLoop({
       messages,
       tools,
     });
-    // Forward the model's words to BOTH users token-by-token as they're written. The
-    // "no prose before tools" rule means text only appears in the final reply, so these
-    // deltas ARE the reply streaming live. If the model DID narrate before a tool in an
-    // earlier turn, clear that stale text the moment this turn starts writing, so only
-    // the final turn's reply survives (no "…now.Done!" mashing).
-    let streamedTextThisTurn = false;
-    stream.on('text', (delta) => {
-      if (!delta) return;
-      if (!streamedTextThisTurn && streamedTextInPriorTurn) {
-        resetReplyStream({ res, deps, chatId, householdId, turnId });
-      }
-      streamedTextThisTurn = true;
-      streamReplyDelta({ res, deps, chatId, householdId, turnId, delta });
-    });
+    // We deliberately do NOT forward the model's words to the user mid-loop. A model turn can
+    // write text AND THEN call a tool in the same turn (violating "no prose before tools").
+    // Streaming that text live means wiping it the instant the tool call lands — the user watches
+    // a real, useful answer get deleted and replaced by whatever the model regenerates after the
+    // tool runs, which often drifts off-topic. So we buffer every turn and let ONLY the final,
+    // no-tool turn's text become the reply, delivered once and cleanly by respondWithKbReply.
+    // The progress narration ("Reading…", tool narrations) covers the wait.
     const response = await finalizeLoggedAnthropicStream(stream, {
       householdId,
       chatId,
@@ -308,9 +308,17 @@ export async function runKbAgentLoop({
     const toolUses = content.filter((block) => block?.type === 'tool_use');
     const textBlocks = content.filter((block) => block?.type === 'text');
 
+    // Diagnostic: a reply truncated by the token cap is otherwise invisible — surface it so
+    // "why did that cut off?" is answerable from the logs instead of a mystery.
+    if (response?.stop_reason === 'max_tokens') {
+      console.warn(
+        `[kb-loop] chat ${chatId} turn ${turnId}: response stopped on max_tokens (${MAX_TOKENS}) — reply may be truncated.`
+      );
+    }
+
     // Done: the model wrote a reply and asked for no (more) tools — UNLESS that reply claims a
-    // write it never actually made this turn. Then wipe the streamed text and make the model
-    // either do it for real or retract, rather than ship a false "Saved it!".
+    // write it never actually made this turn. Then make the model either do it for real or retract,
+    // rather than ship a false "Saved it!". Nothing was streamed yet, so there is nothing to wipe.
     if (response?.stop_reason !== 'tool_use' || toolUses.length === 0) {
       const candidateText = textBlocks.map((block) => block.text || '').join('').trim();
       const verdict = await verifyReplyClaims({
@@ -328,22 +336,17 @@ export async function runKbAgentLoop({
             `claim(s) not backed by the tool trace — forcing correction ` +
             `(${claimCorrections}/${MAX_CLAIM_CORRECTIONS}). e.g. ${claims[0]}`
         );
-        if (streamedTextThisTurn) resetReplyStream({ res, deps, chatId, householdId, turnId });
-        streamedTextInPriorTurn = false;
         messages.push({ role: 'assistant', content });
         messages.push({ role: 'user', content: buildClaimCorrectionMessage(claims) });
         continue;
       }
       finalText = candidateText;
       finalClaims = claims; // verified (may be non-empty if the correction budget is exhausted)
-      streamedFinalReply = finalText.length > 0; // it was already streamed live above
       break;
     }
 
-    // This turn is calling tools (not final). If it also streamed any text, that was
-    // pre-tool narration — remember it so the next turn clears it before writing.
-    streamedTextInPriorTurn = streamedTextInPriorTurn || streamedTextThisTurn;
-
+    // This turn is calling tools (not final). Any text it wrote is pre-tool narration or a
+    // premature answer; it was never streamed, so it simply does not become the reply.
     // Record the assistant's tool-calling turn verbatim (required before tool_results).
     messages.push({ role: 'assistant', content });
 
@@ -426,11 +429,9 @@ export async function runKbAgentLoop({
       `[kb-truthfulness] chat ${chatId} turn ${turnId}: honest fallback — reply still made ` +
         `${finalClaims.length} unsupported claim(s) not backed by the tool trace. e.g. ${finalClaims[0]}`
     );
-    if (streamedFinalReply) resetReplyStream({ res, deps, chatId, householdId, turnId });
     finalText =
       "Hold on — I started to say that was done, but I didn't actually complete it, so I won't claim it. " +
       "Tell me to go ahead and I'll do it for real.";
-    streamedFinalReply = false;
   }
 
   // Deliver through the existing reply machinery: streams NDJSON deltas, persists
@@ -449,7 +450,6 @@ export async function runKbAgentLoop({
     workingContext: null,
     outcomes: collectedOutcomes.map((r) => r?.outcome).filter(Boolean),
     userMessageAlreadyPersisted: true,
-    suppressStreaming: streamedFinalReply,
     deps,
   });
 }

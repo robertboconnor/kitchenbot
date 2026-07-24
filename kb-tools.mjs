@@ -78,16 +78,6 @@ const NAME_ONLY = {
 const NO_INPUT = { type: 'object', properties: {} };
 
 const INPUT_SCHEMAS = {
-  'memory.save': {
-    type: 'object',
-    properties: {
-      key: { type: 'string', description: 'Short stable label, e.g. "rob_preferences".' },
-      value: { type: 'string', description: 'The fact to remember.' },
-      scope: { type: 'string', enum: ['household', 'person'], description: 'Whose memory this is. Defaults to household.' },
-      person: { type: 'string', description: 'Person name when scope is "person".' },
-    },
-    required: ['value'],
-  },
   'cookbook.save': {
     type: 'object',
     properties: {

@@ -425,12 +425,10 @@
           const memorySaveButton = document.getElementById('my-settings-memory-save');
           const adminModeSave = document.getElementById('admin-anthropic-mode-save');
           const adminNewHh = document.getElementById('admin-new-hh-submit');
-          const demoViewBtn = document.getElementById('settings-demo-view-btn');
           if (gas) gas.disabled = ro;
           if (sas) sas.disabled = ro;
           if (memSave) memSave.disabled = ro;
           if (memorySaveButton) memorySaveButton.disabled = ro;
-          if (demoViewBtn) demoViewBtn.disabled = ro;
           if (adminModeSave) adminModeSave.disabled = ro;
           if (adminNewHh) adminNewHh.disabled = ro;
           if (groceryAddName) {
@@ -671,15 +669,21 @@
                   if (msgHid != null && currentHouseholdId != null && msgHid !== Number(currentHouseholdId)) {
                     return;
                   }
-                  if (msg.user && msg.user === currentUserName) {
+                  // "Did THIS tab send the message?" is a per-device fact, so key it on
+                  // weAreStreamingThisChat (true only on the tab that fired /chat and is rendering
+                  // its own reply inline) — never on the username. Keying it on the username made a
+                  // SECOND device logged in as the same user treat every broadcast as its own and
+                  // skip the reconcile, leaving its raw streamed preview (textContent, no markdown)
+                  // frozen on screen until a hard refresh. The early return also protects the
+                  // sending tab from the mid-stream reset below: chat_updated fires once the moment
+                  // the user message persists, while that tab is still streaming its reply.
+                  if (weAreStreamingThisChat) {
                     return;
                   }
                   resetTransientAssistantBubble();
-                  if (!weAreStreamingThisChat) {
-                    const shouldStickToBottom = isChatNearBottom();
-                    void loadHistory({ preserveViewport: true }).catch(() => {});
-                    if (!shouldStickToBottom) showNewMessageIndicator();
-                  }
+                  const shouldStickToBottom = isChatNearBottom();
+                  void loadHistory({ preserveViewport: true }).catch(() => {});
+                  if (!shouldStickToBottom) showNewMessageIndicator();
                   if (currentGroceriesSubview === 'thisweek') {
                     loadThisWeek();
                   }
@@ -1804,12 +1808,7 @@
           const noteEl = document.getElementById('owner-usage-status-note');
           if (noteEl) {
             const household = reportData && reportData.household;
-            noteEl.textContent = household
-              ? household.statusText +
-                ' Web search is ' +
-                (household.webSearchEnabled ? 'enabled' : 'disabled') +
-                ' for this household.'
-              : '';
+            noteEl.textContent = household ? household.statusText : '';
           }
         }
 
@@ -2032,25 +2031,14 @@
             } else {
               sharedRadio.checked = true;
             }
-            const webCb = document.getElementById('admin-web-search-enabled');
-            if (webCb) {
-              webCb.checked = !!d.household.webSearchEnabled;
-              webCb.disabled = godModeReadOnly;
-            }
-            const webSaveBtn = document.getElementById('admin-web-search-save');
-            if (webSaveBtn) webSaveBtn.disabled = godModeReadOnly;
             if (statEl) {
               statEl.textContent =
                 'Anthropic: ' +
                 (d.statusBrief || d.statusText || '') +
-                ' · Web search: ' +
-                (d.household.webSearchEnabled ? 'on' : 'off') +
                 ' · Runtime: Smart only';
             }
             updateAdminAnthropicFormVisibility();
             if (msgEl) msgEl.textContent = '';
-            const webMsg = document.getElementById('admin-web-search-msg');
-            if (webMsg) webMsg.textContent = '';
           } catch (e) {}
         }
 
@@ -2098,11 +2086,6 @@
                 main.appendChild(meta);
                 const tags = document.createElement('div');
                 tags.className = 'settings-admin-household-tags';
-                const webTag = document.createElement('span');
-                webTag.className =
-                  'settings-admin-tag' + (hh.webSearchEnabled ? ' settings-admin-tag--on' : '');
-                webTag.textContent = hh.webSearchEnabled ? 'Web search on' : 'Web search off';
-                tags.appendChild(webTag);
                 const delBtn = document.createElement('button');
                 delBtn.type = 'button';
                 delBtn.className = 'settings-admin-household-delete';
@@ -3993,35 +3976,6 @@
           });
         }
 
-        const adminWebSearchSave = document.getElementById('admin-web-search-save');
-        if (adminWebSearchSave) {
-          adminWebSearchSave.addEventListener('click', async () => {
-            const sel = document.getElementById('admin-anthropic-household-select');
-            const hid = sel && sel.value ? Number(sel.value) : NaN;
-            const msgEl = document.getElementById('admin-web-search-msg');
-            const cb = document.getElementById('admin-web-search-enabled');
-            if (!Number.isFinite(hid)) {
-              if (msgEl) msgEl.textContent = 'Select a household.';
-              return;
-            }
-            try {
-              const r = await fetch('/settings/anthropic/web-search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ householdId: hid, webSearchEnabled: !!(cb && cb.checked) }),
-              });
-              const errBody = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed';
-                return;
-              }
-              if (msgEl) msgEl.textContent = 'Saved.';
-              await loadGlobalAdminView();
-            } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
-            }
-          });
-        }
 
         const settingsAnthropicOwnerKeySave = document.getElementById('settings-anthropic-owner-key-save');
         if (settingsAnthropicOwnerKeySave) {
@@ -4165,30 +4119,6 @@
           });
         }
 
-        const settingsDemoViewBtn = document.getElementById('settings-demo-view-btn');
-        if (settingsDemoViewBtn) {
-          settingsDemoViewBtn.addEventListener('click', async () => {
-            const msgEl = document.getElementById('settings-demo-view-msg');
-            if (msgEl) msgEl.textContent = '';
-            try {
-              const r = await fetch('/demo/view', { method: 'POST' });
-              const errBody = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                if (msgEl) msgEl.textContent = mapServerReadOnlyErrorMessage(errBody.error) || 'Could not open demo view.';
-                return;
-              }
-              const meR = await fetch('/me');
-              if (!meR.ok) {
-                showLogin();
-                return;
-              }
-              const meData = await meR.json();
-              await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
-            } catch (e) {
-              if (msgEl) msgEl.textContent = 'Request failed.';
-            }
-          });
-        }
 
         const memorySaveButton = document.getElementById('my-settings-memory-save');
         const memoryCancelButton = document.getElementById('my-settings-memory-cancel-edit');

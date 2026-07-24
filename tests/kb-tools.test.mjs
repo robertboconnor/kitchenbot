@@ -42,7 +42,6 @@ test('web.search is gated by webSearchEnabled', () => {
 test('isWriteCapability separates reads from writes', () => {
   assert.equal(isWriteCapability('grocery.write'), true);
   assert.equal(isWriteCapability('pantry.add'), true);
-  assert.equal(isWriteCapability('memory.save'), true);
   assert.equal(isWriteCapability('grocery.list'), false);
   assert.equal(isWriteCapability('pantry.list'), false);
   assert.equal(isWriteCapability('cookbook.list'), false);
