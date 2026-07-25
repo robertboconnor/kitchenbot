@@ -210,6 +210,50 @@ export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false
     .join('\n');
 }
 
+// Marks the fixed, repeated parts of a loop request as ephemeral-cached: the system rulebook
+// (as one cached text block) and the full tool schema (breakpoint on the LAST tool — caching a
+// prefix caches everything before it, so all tools are covered by one marker). Two markers total,
+// well under the API's limit of four. Pure cost optimization: the content the model receives is
+// unchanged, and a cache miss just means we pay full price that once — never a wrong answer.
+export function applyPromptCaching(systemText, toolDefs) {
+  const system = [
+    { type: 'text', text: String(systemText ?? ''), cache_control: { type: 'ephemeral' } },
+  ];
+  const tools =
+    Array.isArray(toolDefs) && toolDefs.length
+      ? [
+          ...toolDefs.slice(0, -1),
+          { ...toolDefs[toolDefs.length - 1], cache_control: { type: 'ephemeral' } },
+        ]
+      : toolDefs;
+  return { system, tools };
+}
+
+// Rotating cache breakpoint for the conversation. On a multi-tool turn the loop keeps appending the
+// assistant's tool calls + the tool results to `messages`, and every later iteration re-sends that
+// whole growing transcript. Marking the LAST message's last block ephemeral-cached each iteration
+// lets the next iteration read the entire prior conversation (transcript + any attached photo) from
+// cache and pay full price only for what's new. Combined with the static system/tool markers that's
+// 3 breakpoints, under the API's limit of 4. Returns a shallow per-request copy so the canonical
+// `messages` array stays unmarked (no stale markers to clear, no accumulation). Pure cost accounting.
+export function withConversationCacheBreakpoint(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const lastIdx = messages.length - 1;
+  const last = messages[lastIdx];
+  const content = last?.content;
+  let markedContent;
+  if (typeof content === 'string') {
+    markedContent = [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }];
+  } else if (Array.isArray(content) && content.length) {
+    markedContent = content.map((block, i) =>
+      i === content.length - 1 ? { ...block, cache_control: { type: 'ephemeral' } } : block
+    );
+  } else {
+    return messages; // nothing markable (empty/odd content) — send as-is
+  }
+  return [...messages.slice(0, lastIdx), { ...last, content: markedContent }];
+}
+
 function buildMessagesFromHistory(recentMessages, currentPrompt, attachment = null) {
   const mapped = (Array.isArray(recentMessages) ? recentMessages : [])
     .map((m) => ({
@@ -292,6 +336,11 @@ export async function runKbAgentLoop({
     : false;
   const system = buildLoopSystemPrompt({ memoryContext, name, isDeveloper });
   const tools = buildKbToolDefinitions({ webSearchEnabled });
+  // Prompt caching: the system rulebook + full tool schema (~7–8k tokens) are byte-identical on every
+  // one of this turn's up-to-8 iterations and across messages in a sitting, so cache them once and let
+  // reuse bill at ~10% of input. Identical prompt to the model — purely token accounting. See
+  // applyPromptCaching. (cache_control passes straight through the SDK wrapper; ephemeral caching is GA.)
+  const { system: cachedSystem, tools: cachedTools } = applyPromptCaching(system, tools);
   const messages = buildMessagesFromHistory(recentMessages, promptText, req.kbAttachment);
 
   // Context handed to every executor via kb-tools.executeKbToolCall.
@@ -333,9 +382,9 @@ export async function runKbAgentLoop({
       const stream = anthropic.messages.stream({
         model: ANTHROPIC_MAIN_REASONING_MODEL,
         max_tokens: MAX_TOKENS,
-        system,
-        messages,
-        tools,
+        system: cachedSystem,
+        messages: withConversationCacheBreakpoint(messages),
+        tools: cachedTools,
       });
       response = await finalizeLoggedAnthropicStream(stream, {
         householdId,
@@ -457,11 +506,11 @@ export async function runKbAgentLoop({
         {
           model: ANTHROPIC_MAIN_REASONING_MODEL,
           max_tokens: MAX_TOKENS,
-          system,
-          messages: [
+          system: cachedSystem,
+          messages: withConversationCacheBreakpoint([
             ...messages,
             { role: 'user', content: 'Wrap up: tell me plainly what you did and where things stand.' },
-          ],
+          ]),
         },
         { householdId, chatId, turnId, callPurpose: 'kb_agent_loop', callSurface: 'chat', prompt: promptText }
       );
