@@ -2294,7 +2294,10 @@
 
         // --- Chat file attachments (photos + text/markdown) ---
         const attachBtn = document.getElementById('attach-btn');
-        const attachInput = document.getElementById('attach-input');
+        const attachMenu = document.getElementById('attach-menu');
+        const attachInputs = ['camera', 'photos', 'files']
+          .map((src) => document.getElementById('attach-input-' + src))
+          .filter(Boolean);
         const attachmentPreview = document.getElementById('attachment-preview');
         let pendingAttachment = null;
 
@@ -2355,7 +2358,7 @@
           x.style.cssText = 'border:none;background:none;cursor:pointer;font-size:18px;line-height:1;color:var(--text-soft);padding:0 2px;';
           x.addEventListener('click', () => {
             pendingAttachment = null;
-            if (attachInput) attachInput.value = '';
+            attachInputs.forEach((input) => { input.value = ''; });
             renderAttachmentPreview();
           });
           chip.appendChild(x);
@@ -2398,11 +2401,41 @@
           }
         }
 
-        if (attachBtn && attachInput) {
-          attachBtn.addEventListener('click', () => attachInput.click());
-          attachInput.addEventListener('change', () => {
-            const f = attachInput.files && attachInput.files[0];
-            if (f) handleAttachFile(f);
+        function closeAttachMenu() {
+          if (!attachMenu) return;
+          attachMenu.hidden = true;
+          if (attachBtn) attachBtn.setAttribute('aria-expanded', 'false');
+        }
+        if (attachBtn && attachMenu && attachInputs.length) {
+          // The paperclip opens a small Camera / Photos / Files menu, each wired to its own input.
+          // Android only surfaces an explicit gallery ("Photos") for an image-only input with no
+          // capture; one mixed image+text input collapses to Camera + Files. All feed handleAttachFile.
+          attachBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const willOpen = attachMenu.hidden;
+            attachMenu.hidden = !willOpen;
+            attachBtn.setAttribute('aria-expanded', String(willOpen));
+          });
+          attachMenu.querySelectorAll('button[data-attach-src]').forEach((item) => {
+            item.addEventListener('click', () => {
+              const input = document.getElementById('attach-input-' + item.getAttribute('data-attach-src'));
+              closeAttachMenu();
+              if (input) input.click();
+            });
+          });
+          attachInputs.forEach((input) => {
+            input.addEventListener('change', () => {
+              const f = input.files && input.files[0];
+              if (f) handleAttachFile(f);
+            });
+          });
+          document.addEventListener('click', (e) => {
+            if (attachMenu.hidden) return;
+            if (e.target === attachBtn || attachMenu.contains(e.target)) return;
+            closeAttachMenu();
+          });
+          document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !attachMenu.hidden) closeAttachMenu();
           });
         }
 
@@ -4683,7 +4716,7 @@
           pendingAttachment = null;
           addMessage('user', speaker, prompt, { attachments: sentAttachment ? [sentAttachment] : [] });
           promptInput.value = '';
-          if (attachInput) attachInput.value = '';
+          attachInputs.forEach((input) => { input.value = ''; });
           renderAttachmentPreview();
           resizePromptInput();
           weAreStreamingThisChat = true;

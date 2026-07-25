@@ -4051,6 +4051,52 @@ app.get('/', (req, res) => {
           align-self: flex-end;
         }
 
+        #attach-wrap {
+          position: relative;
+          align-self: flex-end;
+          display: flex;
+        }
+
+        /* Attach chooser: Camera / Photos / Files, popped above the paperclip. Explicit options
+           so Android surfaces a real gallery path — one mixed image+text <input> collapses to
+           Camera + Files with no "Photos". Pops upward since the composer sits at screen bottom. */
+        #attach-menu {
+          position: absolute;
+          bottom: calc(100% + 6px);
+          left: 0;
+          z-index: 60;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          padding: 6px;
+          min-width: 172px;
+          background: var(--card-bg);
+          border: 1px solid var(--border-subtle);
+          border-radius: 14px;
+          box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+        }
+
+        #attach-menu[hidden] {
+          display: none;
+        }
+
+        #attach-menu button {
+          align-self: stretch;
+          width: 100%;
+          text-align: left;
+          border: none;
+          background: none;
+          border-radius: 9px;
+          padding: 10px 12px;
+          font-size: 14px;
+          font-weight: 500;
+          color: var(--text-main);
+        }
+
+        #attach-menu button:hover {
+          background: var(--accent-soft);
+        }
+
         button {
           padding: 9px 14px;
           cursor: pointer;
@@ -5225,8 +5271,17 @@ app.get('/', (req, res) => {
 
         <div id="attachment-preview"></div>
         <div id="input-area">
-          <button id="attach-btn" type="button" aria-label="Attach a photo or file" title="Attach a photo or file">📎</button>
-          <input id="attach-input" type="file" accept="image/*,.md,.markdown,.txt,text/markdown,text/plain" hidden />
+          <div id="attach-wrap">
+            <button id="attach-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Attach a photo or file" title="Attach a photo or file">📎</button>
+            <div id="attach-menu" role="menu" hidden>
+              <button type="button" role="menuitem" data-attach-src="camera">📷 Camera</button>
+              <button type="button" role="menuitem" data-attach-src="photos">🖼️ Photos</button>
+              <button type="button" role="menuitem" data-attach-src="files">📄 File</button>
+            </div>
+            <input id="attach-input-camera" type="file" accept="image/*" capture="environment" hidden />
+            <input id="attach-input-photos" type="file" accept="image/*" hidden />
+            <input id="attach-input-files" type="file" accept="image/*,.md,.markdown,.txt,text/markdown,text/plain" hidden />
+          </div>
           <textarea id="prompt" placeholder="What's cooking?" rows="1"></textarea>
           <button id="send" type="button" aria-label="Send">↑</button>
         </div>
