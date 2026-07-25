@@ -6,11 +6,38 @@ import {
   listCookbookEntries,
 } from './db.mjs';
 import { resolveInventoryItemMatch } from './inventory-item-resolver.mjs';
-import { findCookbookMatches } from './cookbook-store.mjs';
+import { findCookbookMatches, normalizeCookbookTitleKey } from './cookbook-store.mjs';
 
-// Auto-link a planned meal to a saved cookbook recipe by title (fuzzy, confident single
-// match only). Resolved on read so a meal links itself as soon as its recipe is saved with
-// a matching name — no persisted pointer needed (an explicit cookbook_entry_id still wins).
+// Low-signal connector words that shouldn't count toward a meal↔recipe title match.
+const MEAL_LINK_STOPWORDS = new Set([
+  'with', 'and', 'the', 'a', 'an', 'of', 'in', 'on', 'to', 'for', 'or', 'plus', 'over', 'under', 'style', 'served',
+]);
+
+function mealLinkContentTokens(title) {
+  return normalizeCookbookTitleKey(title)
+    .split(' ')
+    .filter((token) => token && !MEAL_LINK_STOPWORDS.has(token));
+}
+
+// Overlap coefficient: |A ∩ B| / min(|A|, |B|). Better than Jaccard when a meal name is richer
+// than its recipe title (or vice-versa) — it measures how fully the shorter title is covered.
+// Returns the shared-token count too, so we can require ≥2 real food words (not one coincidence).
+function scoreMealRecipeMatch(mealName, recipeTitle) {
+  const a = new Set(mealLinkContentTokens(mealName));
+  const b = new Set(mealLinkContentTokens(recipeTitle));
+  if (a.size === 0 || b.size === 0) return { score: 0, shared: 0 };
+  let shared = 0;
+  for (const token of a) if (b.has(token)) shared += 1;
+  return { score: shared / Math.min(a.size, b.size), shared };
+}
+
+// Auto-link a planned meal to a saved cookbook recipe by title. Resolved on read so a meal links
+// itself as soon as its recipe is saved with a matching name — no persisted pointer needed (an
+// explicit cookbook_entry_id still wins). Two passes: (1) a confident structural match
+// (exact/substring/all-tokens) when it yields a single hit; (2) a tolerant fallback for the common
+// case where a meal name is richer than the recipe title ("Grilled cod, corn & bacon succotash" vs
+// a saved "Cod & Corn Succotash") — scored by content-token overlap, and linked ONLY when a single
+// candidate clearly dominates, so we never guess between two plausible recipes.
 export async function enrichMealsWithRecipeLinks(householdId, meals) {
   const list = Array.isArray(meals) ? meals : [];
   if (list.length === 0) return list;
@@ -23,9 +50,20 @@ export async function enrichMealsWithRecipeLinks(householdId, meals) {
   if (!Array.isArray(entries) || entries.length === 0) return list;
   return list.map((meal) => {
     if (meal.cookbookEntryId) return meal;
-    const matches = findCookbookMatches(entries, meal.name);
-    if (matches.length === 1) {
-      return { ...meal, cookbookEntryId: matches[0].id, cookbookTitle: matches[0].title, autoLinkedRecipe: true };
+    const strict = findCookbookMatches(entries, meal.name);
+    if (strict.length === 1) {
+      return { ...meal, cookbookEntryId: strict[0].id, cookbookTitle: strict[0].title, autoLinkedRecipe: true };
+    }
+    if (strict.length === 0) {
+      const scored = entries
+        .map((entry) => ({ entry, ...scoreMealRecipeMatch(meal.name, entry?.title) }))
+        .filter((candidate) => candidate.shared >= 2 && candidate.score >= 0.6)
+        .sort((x, y) => y.score - x.score || y.shared - x.shared);
+      // Link only a lone candidate, or a clear winner (strictly better than the runner-up).
+      if (scored.length === 1 || (scored.length > 1 && scored[0].score > scored[1].score)) {
+        const best = scored[0];
+        return { ...meal, cookbookEntryId: best.entry.id, cookbookTitle: best.entry.title, autoLinkedRecipe: true };
+      }
     }
     return meal;
   });

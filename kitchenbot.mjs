@@ -2561,11 +2561,6 @@ app.get('/', (req, res) => {
           box-shadow: 0 12px 28px rgba(var(--accent-rgb), 0.16);
         }
 
-        .kitchen-section-btn--secondary {
-          opacity: 0.82;
-          background: rgba(250, 252, 255, 0.88);
-        }
-
         .kitchen-section-panel {
           display: grid;
           gap: 16px;
@@ -3741,6 +3736,15 @@ app.get('/', (req, res) => {
           margin-bottom: 4px;
         }
 
+        /* This Week items: let the meal name fill the row so every title/description shares
+           one left edge (checkbox → name → ✕). Without flex:1 the name span floats in the
+           middle under justify-content:space-between, so longer meals drift further left. */
+        .g-item-name {
+          flex: 1 1 auto;
+          min-width: 0;
+          text-align: left;
+        }
+
         .g-left {
           display: flex;
           align-items: center;
@@ -4670,8 +4674,8 @@ app.get('/', (req, res) => {
               <div id="grocery-subtabs" class="kitchen-section-switcher">
                 <button id="grocery-subtab-cookbook" type="button" class="settings-subtab-btn kitchen-section-btn settings-subtab-active">Cookbook</button>
                 <button id="grocery-subtab-list" type="button" class="settings-subtab-btn kitchen-section-btn">Groceries</button>
-                <button id="grocery-subtab-pantry" type="button" class="settings-subtab-btn kitchen-section-btn kitchen-section-btn--secondary">Pantry</button>
-                <button id="grocery-subtab-thisweek" type="button" class="settings-subtab-btn kitchen-section-btn kitchen-section-btn--secondary">This Week</button>
+                <button id="grocery-subtab-pantry" type="button" class="settings-subtab-btn kitchen-section-btn">Pantry</button>
+                <button id="grocery-subtab-thisweek" type="button" class="settings-subtab-btn kitchen-section-btn">This Week</button>
               </div>
               <details class="kitchen-workspace-mobile-about">
                 <summary class="kitchen-mobile-about-summary">About Kitchen</summary>
@@ -4888,9 +4892,9 @@ app.get('/', (req, res) => {
             <div class="kitchen-section-header">
               <div class="kitchen-section-kicker">This Week</div>
               <div class="kitchen-section-title-row">
-                <h3 class="kitchen-section-title">The plan for this chat</h3>
+                <h3 class="kitchen-section-title">The plan for this week</h3>
               </div>
-              <p class="kitchen-section-copy">The meals you’re planning in the current chat. KitchenBot keeps this in sync as you plan — so it remembers the week even in a very long thread — and you can tick meals off or drop them here.</p>
+              <p class="kitchen-section-copy">Every meal on your plan for the week. It follows you across all your chats — so nothing gets lost, even in a very long thread — and you can tick meals off or drop them here.</p>
             </div>
             <ul class="g-list" id="thisweek-list"></ul>
             <p id="thisweek-empty" class="kitchen-section-copy" style="display:none;">No meals planned this week yet. Ask KitchenBot to plan the week and they’ll show up here (across every chat).</p>

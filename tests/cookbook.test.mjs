@@ -1923,3 +1923,60 @@ test('ONE BRAIN: cookbook.update stores the brain-provided full revised recipe w
   assert.ok(parsed.entry.ingredients.some((line) => /pumpkin/i.test(line)), 'the brain-provided revised recipe (with pumpkin seeds) was stored');
   await fs.rm(tempDir, { recursive: true, force: true });
 });
+
+test('NO TRUNCATION: a long instruction step is stored verbatim, not chopped mid-word', async () => {
+  // Regression: instruction steps used to be capped at 240 chars/step, which chopped detailed
+  // steps mid-word ("...Discard any that don't open." was stored as "...Discard any th"). Real
+  // recipe steps run long — a paragraph is normal — and must survive storage intact.
+  const cb = await import(new URL(`../cookbook-store.mjs?long-step=${Date.now()}`, import.meta.url).href);
+  const longStep =
+    'Push the succotash to one side of the pan, or pull it out temporarily. Add the wine to the pan, ' +
+    'bring to a simmer, then add the littlenecks in a single layer. Cover and steam 5-8 minutes, shaking ' +
+    'the pan occasionally, until they open. Discard any that do not open. Fold the succotash back in with ' +
+    'the clams and their liquor, tossing gently so the corn and beans soak up that clam broth.';
+  assert.ok(longStep.length > 240, 'the fixture step must exceed the old 240-char cap to be a real regression guard');
+  const rec = cb.buildCookbookRecordForStorage({
+    title: 'Cod & Corn Succotash with Littlenecks',
+    summary: 'A late-summer one-pan seafood supper.',
+    ingredients: ['1.5 lb cod', '2 ears corn'],
+    instructions: ['Render the bacon until crisp.', longStep],
+  });
+  assert.equal(rec.instructions[1], longStep, 'the long step is stored verbatim, not truncated');
+  assert.ok(!/\bth$/.test(rec.instructions[1]), 'the stored step does not end mid-word');
+});
+
+test('NO TRUNCATION: cookbook.update repairs an already-truncated recipe instead of no-op "unchanged"', async () => {
+  // Regression: because the update/merge path re-applied the same 240-char cap, resubmitting the
+  // full corrected recipe re-truncated it to the identical stored string, so mergeCookbookRecord
+  // produced no diff and the executor reported "unchanged" — the recipe could never be repaired.
+  const cb = await import(new URL(`../cookbook-store.mjs?repair-merge=${Date.now()}`, import.meta.url).href);
+  const fullStep =
+    'Cover and steam the littlenecks 5-8 minutes, shaking the pan occasionally, until they open. ' +
+    'Discard any that do not open, then fold the succotash back in with the clams and their liquor so ' +
+    'the corn and beans soak up that briny clam broth — taste before adding any more salt.';
+  const existingTruncated = {
+    title: 'Cod Succotash',
+    summary: 'x',
+    category: 'seafood',
+    recipeType: 'entree',
+    ingredients: ['cod'],
+    instructions: ['Render the bacon.', fullStep.slice(0, 240)], // what the old cap left in the DB
+    tags: [],
+    sourceTitle: '',
+    sourceUrl: '',
+    notes: [],
+  };
+  const incoming = cb.buildCookbookRecordForStorage({
+    title: 'Cod Succotash',
+    summary: 'x',
+    ingredients: ['cod'],
+    instructions: ['Render the bacon.', fullStep],
+  });
+  const merged = cb.mergeCookbookRecord(existingTruncated, incoming);
+  assert.equal(merged.instructions[1], fullStep, 'the merge keeps the full corrected step (no re-truncation)');
+  assert.notEqual(
+    JSON.stringify(existingTruncated.instructions),
+    JSON.stringify(merged.instructions),
+    'the update now produces a real change, so the executor will not report "unchanged"',
+  );
+});

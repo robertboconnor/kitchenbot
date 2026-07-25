@@ -42,6 +42,36 @@ it. Built + deployed autonomously overnight. All 160 tests green; each item live
 - **Reply truncation** (twice in two days): MAX_TOKENS 2048→4096, auto-continue on a cap, retry an
   errored/empty stream, honest failure instead of blank/"Okay." (The observed cut was an early-stop,
   not the cap — fixes cover cap + error; the diagnostic log reveals the rest if it recurs.)
+- **ROOT CAUSE of the "truncation" (3rd occurrence — the real one): a hard char cap in cookbook
+  STORAGE, not Anthropic.** `normalizeStringList(instructions, 16, 240)` silently `.slice(0,240)`'d
+  every instruction step, so any detailed step (a paragraph is normal) was chopped mid-word before
+  it hit the DB — the "Discard any th" Rob saw was a 240-char cut. Same cap in the UPDATE/merge path
+  meant resubmitting the full recipe re-truncated to the identical string → `cookbook.update`
+  reported **"unchanged"** and could never repair it. This was systematic (fires on ~every real
+  recipe), fully in our code, and explains the saved-recipe cases (and any read back via cookbook.get
+  and relayed). FIX: generous named caps (2000 chars/step, 40 steps; 400/ingredient×60; 1000/note×30)
+  across all three paths (save, merge, parse). Reproduced (386→240 mid-word), fixed, and locked with
+  2 regression tests + a real save→DB→read round-trip. NOTE: recipes saved BEFORE this fix are still
+  truncated in the DB — they need a re-save/cookbook.update to repair (now that update no longer no-ops).
+- **"Answer the request, not your tool bookkeeping" principle** — Rob's "yes please" (write+save the
+  recipe) drew a reply narrating save *timing* ("the save happened last turn; this turn I only ran a
+  read-only check") instead of the recipe. Added a principle: confirm outcomes plainly / do it now /
+  write out what they asked for — don't narrate which tool ran on which turn. (Aggravated by the
+  truncated-recipe state above; the storage fix removes the main trigger.)
+- **This Week UI batch (4 paper-cuts):** (1) Kitchen-card header "The plan for this chat" → "The plan
+  for this week" + subtitle rewritten (it's household-wide, not chat-scoped). (2) Inconsistent item
+  alignment — `.g-item-name` had NO css, so under `.g-item`'s `justify-content:space-between` the name
+  span floated mid-row and longer meals drifted further left; added `.g-item-name { flex:1 1 auto;
+  min-width:0 }` so every title shares one left edge (verified in-browser). (3) The 🍳 recipe auto-link
+  missed the cod meal: `findCookbookMatches`' token branch required EVERY meal-name word to appear in
+  the recipe title, so a richer meal name ("Grilled cod, corn & bacon succotash") never matched a
+  leaner saved title ("Cod & Corn Succotash …"). Gave the auto-link its OWN tolerant fallback
+  (content-token overlap ≥0.6, ≥2 shared words, single dominant candidate only — never guesses; strict
+  `findCookbookMatches` untouched so brain get/update resolution stays tight). 2 new tests. (4) Subview
+  toggles: Pantry/This Week carried `kitchen-section-btn--secondary` (opacity .82 + blue tint) while
+  Cookbook/Groceries didn't — removed it (+ the now-dead rule) so all four match.
+  NOTE on (3): if the cod recipe was itself a truncation casualty (saved as a failed placeholder), it
+  won't appear/link until re-saved cleanly — re-save is the cure now that storage + update are fixed.
 - **Brain knows the This Week UI** (the 🍳 recipe link it couldn't explain) + a call-then-report
   principle (report an action only after the tool succeeded; don't over-confess a real success).
 - **This Week plan is HOUSEHOLD-WIDE** (was per-chat): follows every chat, and cooking a meal from a
