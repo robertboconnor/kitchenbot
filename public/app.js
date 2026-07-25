@@ -1644,22 +1644,39 @@
               )
             ) +
             '</span></div>';
+          const cacheReadTokens = Number(totals.cacheReadInputTokens || 0);
+          const cacheCreateTokens = Number(totals.cacheCreationInputTokens || 0);
+          const freshInputTokens = Number(totals.inputTokens || 0);
+          const inputSideTokens = freshInputTokens + cacheReadTokens + cacheCreateTokens;
+          const cachedPct = inputSideTokens > 0 ? Math.round((cacheReadTokens / inputSideTokens) * 100) : 0;
+          const cachingSavingsUsd =
+            totals.estimatedCostWithoutCacheUsd != null && totals.estimatedCostUsd != null
+              ? Number(totals.estimatedCostWithoutCacheUsd) - Number(totals.estimatedCostUsd)
+              : null;
+          if (cacheReadTokens > 0 || cacheCreateTokens > 0) {
+            html += '<div class="admin-report-stat"><span class="label">Cached reads</span><span class="value">' + escapeAdminHtml(cacheReadTokens) + '</span></div>';
+            if (cachingSavingsUsd != null && cachingSavingsUsd > 0) {
+              html += '<div class="admin-report-stat"><span class="label">Saved by caching</span><span class="value">' + escapeAdminHtml(formatAdminUsageUsd(cachingSavingsUsd, true)) + '</span></div>';
+            }
+          }
           html += '</div>';
+          if (cacheReadTokens > 0) {
+            html += '<div class="admin-report-note" style="margin-top:6px;">' + escapeAdminHtml(cachedPct + '% of input tokens were served from cache (billed at ~1/10th the price of fresh input).') + '</div>';
+          }
           html += '<div class="admin-report-grid">';
           html += renderAdminUsageSection(
             'Where usage went',
             reportData.byFunction || [],
             'Function',
-            'A single visible KitchenBot turn often spans several internal calls, including interpretation, context loading, reply writing, and web search.'
+            'A single visible KitchenBot turn usually spans several Anthropic calls — the brain loop that reasons and writes the reply, plus a truthfulness check, context loading, and titling.'
           );
           if (includeByHousehold) {
             html += renderAdminUsageSection('By household', reportData.byHousehold || [], 'Household');
           }
-          html += renderAdminUsageSection('By actual web search usage', reportData.byWebSearchUsage || [], 'Usage');
           html += '</div>';
           const recentRows = Array.isArray(reportData.recentRows) ? reportData.recentRows : [];
           html += '<section class="admin-report-section" style="margin-top:12px;"><h5>Recent calls</h5>';
-          html += '<div class="admin-report-note">This table shows Anthropic calls made during KB turns, not every visible KitchenBot message. Some replies come from deterministic outcome text and do not create a separate chat_reply row.</div>';
+          html += '<div class="admin-report-note">This table shows Anthropic calls made during KB turns, not every visible KitchenBot message. Some replies come from deterministic outcome text and do not create a separate ledger row.</div>';
           if (recentRows.length === 0) {
             html += '<div class="admin-report-empty">No rows.</div>';
           } else {
@@ -1736,15 +1753,13 @@
           const startEl = document.getElementById('admin-usage-start-date');
           const endEl = document.getElementById('admin-usage-end-date');
           const hhEl = document.getElementById('admin-usage-household-select');
-          const wsUsedEl = document.getElementById('admin-usage-websearch-used');
-          if (!reportEl || !startEl || !endEl || !hhEl || !wsUsedEl) return;
+          if (!reportEl || !startEl || !endEl || !hhEl) return;
           if (msgEl) msgEl.textContent = 'Loading usage…';
           try {
             const qs = new URLSearchParams();
             if (startEl.value) qs.set('startDate', startEl.value);
             if (endEl.value) qs.set('endDate', endEl.value);
             if (hhEl.value && hhEl.value !== 'all') qs.set('householdId', hhEl.value);
-            if (wsUsedEl.value && wsUsedEl.value !== 'all') qs.set('usedWebSearch', wsUsedEl.value);
             const r = await fetch('/admin/usage-report?' + qs.toString());
             const data = await r.json().catch(() => ({}));
             if (!r.ok) {
@@ -1763,14 +1778,12 @@
           const reportEl = document.getElementById('owner-usage-report');
           const startEl = document.getElementById('owner-usage-start-date');
           const endEl = document.getElementById('owner-usage-end-date');
-          const wsUsedEl = document.getElementById('owner-usage-websearch-used');
-          if (!reportEl || !startEl || !endEl || !wsUsedEl) return;
+          if (!reportEl || !startEl || !endEl) return;
           if (msgEl) msgEl.textContent = 'Loading usage…';
           try {
             const qs = new URLSearchParams();
             if (startEl.value) qs.set('startDate', startEl.value);
             if (endEl.value) qs.set('endDate', endEl.value);
-            if (wsUsedEl.value && wsUsedEl.value !== 'all') qs.set('usedWebSearchUsed', wsUsedEl.value);
             const r = await fetch('/settings/household/anthropic-usage?' + qs.toString());
             const data = await r.json().catch(() => ({}));
             if (!r.ok) {
@@ -3997,12 +4010,6 @@
             refreshAdminUsageReport();
           });
         }
-        const adminUsageWebSearchUsed = document.getElementById('admin-usage-websearch-used');
-        if (adminUsageWebSearchUsed) {
-          adminUsageWebSearchUsed.addEventListener('change', () => {
-            refreshAdminUsageReport();
-          });
-        }
         const ownerUsageRefresh = document.getElementById('owner-usage-refresh');
         if (ownerUsageRefresh) {
           ownerUsageRefresh.addEventListener('click', async () => {
@@ -4018,12 +4025,6 @@
         const ownerUsageEndDate = document.getElementById('owner-usage-end-date');
         if (ownerUsageEndDate) {
           ownerUsageEndDate.addEventListener('change', () => {
-            refreshOwnerAnthropicUsageReport();
-          });
-        }
-        const ownerUsageWebSearchUsed = document.getElementById('owner-usage-websearch-used');
-        if (ownerUsageWebSearchUsed) {
-          ownerUsageWebSearchUsed.addEventListener('change', () => {
             refreshOwnerAnthropicUsageReport();
           });
         }

@@ -30,6 +30,9 @@ test('classifyAnthropicUsageFunction groups raw purposes into human-readable fun
   assert.equal(classifyAnthropicUsageFunction('inventory_section_classification'), 'Inventory classification');
   assert.equal(classifyAnthropicUsageFunction('web_search'), 'Web search');
   assert.equal(classifyAnthropicUsageFunction('chat_title'), 'Chat titles');
+  assert.equal(classifyAnthropicUsageFunction('kb_agent_loop'), 'Conversation & reasoning');
+  assert.equal(classifyAnthropicUsageFunction('kb_truthfulness_check'), 'Truthfulness checks');
+  assert.equal(classifyAnthropicUsageFunction('cookbook_shape'), 'Cookbook');
   assert.equal(classifyAnthropicUsageFunction('something_new'), 'Other');
 });
 
@@ -53,9 +56,6 @@ test('buildAnthropicUsageReport rolls visible chat work into meaningful function
   const report = buildAnthropicUsageReport(rows);
   const byFunction = Object.fromEntries(report.byFunction.map((entry) => [entry.key, entry]));
   const byPurpose = Object.fromEntries(report.byPurpose.map((entry) => [entry.key, entry]));
-  const byWebSearchUsage = Object.fromEntries(
-    report.byWebSearchUsage.map((entry) => [entry.key, entry])
-  );
 
   assert.equal(report.totals.callCount, rows.length);
   assert.equal(byFunction['Conversation replies'].callCount, 1);
@@ -68,9 +68,6 @@ test('buildAnthropicUsageReport rolls visible chat work into meaningful function
   assert.equal(byPurpose.chat_reply.callCount, 1);
   assert.equal(byPurpose.kb_turn_grounding_provisional.callCount, 1);
   assert.equal(byPurpose.kb_working_context.callCount, 1);
-
-  assert.equal(byWebSearchUsage.used.callCount, 1);
-  assert.equal(byWebSearchUsage.not_used.callCount, 6);
 
   const functionCallTotal = report.byFunction.reduce((sum, entry) => sum + entry.callCount, 0);
   const purposeCallTotal = report.byPurpose.reduce((sum, entry) => sum + entry.callCount, 0);
@@ -103,4 +100,27 @@ test('buildAnthropicUsageReport keeps known cost totals visible when a few rows 
   assert.equal(byFunction['Turn interpretation'].estimatedCostPartial, false);
   assert.equal(byFunction['Turn interpretation'].estimatedCostKnownCallCount, 1);
   assert.equal(byFunction['Turn interpretation'].estimatedCostUnknownCallCount, 0);
+});
+
+test('buildAnthropicUsageReport reports a no-cache baseline so caching savings are visible', () => {
+  const rows = [
+    makeRow({
+      call_purpose: 'kb_agent_loop',
+      model: 'claude-sonnet-5',
+      input_tokens: 1000,
+      output_tokens: 200,
+      cache_creation_input_tokens: 2000,
+      cache_read_input_tokens: 8000,
+    }),
+  ];
+
+  const report = buildAnthropicUsageReport(rows);
+
+  // The no-cache baseline prices every cache-read/cache-write token as fresh input,
+  // so it must exceed the real (caching-on) cost — the gap is the visible savings.
+  assert.equal(report.totals.estimatedCostWithoutCacheUsd > report.totals.estimatedCostUsd, true);
+
+  // Sonnet-5: input $3/M, output $15/M. Baseline = (1000+2000+8000) input-side tokens.
+  const expectedNoCache = (11000 / 1_000_000) * 3 + (200 / 1_000_000) * 15;
+  assert.ok(Math.abs(report.totals.estimatedCostWithoutCacheUsd - expectedNoCache) < 1e-9);
 });

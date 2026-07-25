@@ -896,7 +896,6 @@ function buildAnthropicUsageReportResponse(rows, households, options = {}) {
     totals: report.totals,
     byFunction: report.byFunction,
     byHousehold,
-    byWebSearchUsage: report.byWebSearchUsage,
     byPurpose: report.byPurpose,
     recentRows,
     ...(options.household ? { household: options.household } : {}),
@@ -1453,7 +1452,6 @@ app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdmin
       callPurpose: req.query.callPurpose ? String(req.query.callPurpose).trim() : null,
       callSurface: req.query.callSurface ? String(req.query.callSurface).trim() : null,
       webSearchEnabledAtCall: normalizeUsageFilterBoolean(req.query.webSearchEnabled),
-      usedWebSearchTool: normalizeUsageFilterBoolean(req.query.usedWebSearchUsed),
     };
 
     const [rows, households] = await Promise.all([
@@ -1469,7 +1467,6 @@ app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdmin
           callPurpose: filters.callPurpose || null,
           callSurface: filters.callSurface || null,
           webSearchEnabled: filters.webSearchEnabledAtCall,
-          usedWebSearchTool: filters.usedWebSearchTool,
         },
       })
     );
@@ -1488,7 +1485,6 @@ app.get('/settings/household/anthropic-usage', requireHousehold, requireAuth, as
       startDate,
       endDate: endDateExclusive,
       webSearchEnabledAtCall: normalizeUsageFilterBoolean(req.query.webSearchEnabled),
-      usedWebSearchTool: normalizeUsageFilterBoolean(req.query.usedWebSearchUsed),
     };
     const [rows, households, household] = await Promise.all([
       getAnthropicUsageLedgerAllRows(filters),
@@ -1506,7 +1502,6 @@ app.get('/settings/household/anthropic-usage', requireHousehold, requireAuth, as
           startDate: req.query.startDate ? String(req.query.startDate) : null,
           endDate: req.query.endDate ? String(req.query.endDate) : null,
           webSearchEnabled: filters.webSearchEnabledAtCall,
-          usedWebSearchTool: filters.usedWebSearchTool,
         },
         household: {
           id: household.id,
@@ -5101,14 +5096,6 @@ app.get('/', (req, res) => {
                   <label for="owner-usage-end-date">End date</label>
                   <input id="owner-usage-end-date" type="date" />
                 </div>
-                <div class="settings-form-field" style="max-width: 180px;">
-                  <label for="owner-usage-websearch-used">Web search used</label>
-                  <select id="owner-usage-websearch-used">
-                    <option value="all">All</option>
-                    <option value="used">Used</option>
-                    <option value="not_used">Not used</option>
-                  </select>
-                </div>
                 <button type="button" id="owner-usage-refresh">Refresh usage</button>
               </div>
               <div id="owner-usage-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
@@ -5167,7 +5154,7 @@ app.get('/', (req, res) => {
                 <div class="settings-card-header">
                   <div>
                     <h3>Anthropic usage</h3>
-                    <p class="settings-card-subtitle">Review token, cost, and web-search usage with filters that make the underlying call ledger easier to scan.</p>
+                    <p class="settings-card-subtitle">Review token and cost usage with filters that make the underlying call ledger easier to scan.</p>
                   </div>
                 </div>
                 <div class="settings-admin-selectors" style="margin-bottom: 10px;">
@@ -5182,14 +5169,6 @@ app.get('/', (req, res) => {
                   <div class="settings-form-field" style="max-width: 200px;">
                     <label for="admin-usage-household-select">Household</label>
                     <select id="admin-usage-household-select"></select>
-                  </div>
-                  <div class="settings-form-field" style="max-width: 180px;">
-                    <label for="admin-usage-websearch-used">Web search used</label>
-                    <select id="admin-usage-websearch-used">
-                      <option value="all">All</option>
-                      <option value="used">Used</option>
-                      <option value="not_used">Not used</option>
-                    </select>
                   </div>
                   <button type="button" id="admin-usage-refresh">Refresh usage</button>
                 </div>
