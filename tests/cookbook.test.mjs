@@ -1980,3 +1980,29 @@ test('NO TRUNCATION: cookbook.update repairs an already-truncated recipe instead
     'the update now produces a real change, so the executor will not report "unchanged"',
   );
 });
+
+test('cookbook.update can RECATEGORIZE a recipe (an incoming category overrides the stored one)', async () => {
+  // A fish dish wrongly filed under "sauces" could not be fixed via cookbook.update, because the
+  // update tool schema exposed no category field — only cookbook.save (a fresh save) could set it.
+  // The merge path already lets an incoming category win; this guards that a category-only edit is
+  // both applied and detected as a real change (so the executor won't no-op it as "unchanged").
+  const cb = await import(new URL(`../cookbook-store.mjs?recategorize=${Date.now()}`, import.meta.url).href);
+  const misfiled = cb.buildCookbookRecordForStorage({
+    title: 'Seared Cod with Corn Succotash',
+    summary: 'A late-summer fish supper.',
+    category: 'sauces',
+    ingredients: ['1 lb cod', '2 ears corn'],
+    instructions: ['Sear the cod skin-side down.', 'Warm the succotash and plate.'],
+  });
+  assert.equal(misfiled.category, 'sauces', 'sanity: the recipe starts filed under the wrong category');
+  const corrected = cb.buildCookbookRecordForStorage({
+    title: 'Seared Cod with Corn Succotash',
+    summary: 'A late-summer fish supper.',
+    category: 'fish',
+    ingredients: ['1 lb cod', '2 ears corn'],
+    instructions: ['Sear the cod skin-side down.', 'Warm the succotash and plate.'],
+  });
+  const merged = cb.mergeCookbookRecord(misfiled, corrected);
+  assert.equal(merged.category, 'fish', 'the incoming category wins — the recipe is recategorized to fish');
+  assert.notEqual(misfiled.category, merged.category, 'a category-only change is a real diff, not a no-op "unchanged"');
+});
