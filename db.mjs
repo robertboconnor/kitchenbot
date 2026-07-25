@@ -687,17 +687,6 @@ export async function createHouseholdUser(householdId, { displayName, role, pin 
   return Number(result.lastID);
 }
 
-export async function updateHouseholdUserRole(householdId, userId, role) {
-  const normalizedRole = String(role ?? '').trim().toLowerCase();
-  if (!['owner', 'member'].includes(normalizedRole)) throw new Error('invalid_role');
-  const result = await run(
-    `UPDATE household_users SET role = ? WHERE household_id = ? AND id = ?`,
-    [normalizedRole, householdId, userId]
-  );
-  if (!Number(result.changes)) throw new Error('User not found');
-  return true;
-}
-
 export async function updateHouseholdUserChatColor(householdId, userId, chatColor) {
   const result = await run(
     `UPDATE household_users SET chat_color = ? WHERE household_id = ? AND id = ?`,
@@ -1488,24 +1477,30 @@ function mapMealPlanItemRow(row) {
   };
 }
 
-export async function getMealPlanItems(householdId, chatId) {
+// The "This Week" plan is HOUSEHOLD-WIDE (2026-07-25): one plan that follows the household across
+// every chat, so you can plan in one chat and cook each meal from separate chats. chat_id is kept
+// on write only as provenance — reads/updates/deletes are scoped to the household, never the chat.
+export async function getMealPlanItems(householdId) {
   const rows = await all(
     `SELECT m.id, m.household_id, m.chat_id, m.name, m.normalized_name, m.cookbook_entry_id,
             c.title AS cookbook_title, m.note, m.status, m.position, m.created_at, m.updated_at
      FROM meal_plan_items m
      LEFT JOIN cookbook_entries c ON c.id = m.cookbook_entry_id AND c.household_id = m.household_id
-     WHERE m.household_id = ? AND m.chat_id = ?
+     WHERE m.household_id = ?
      ORDER BY m.position ASC, m.id ASC`,
-    [householdId, chatId]
+    [householdId]
   );
   return rows.map(mapMealPlanItemRow);
 }
 
 export async function addMealPlanItems(householdId, chatId, items) {
   const rows = Array.isArray(items) ? items : [];
+  // Dedupe + position across the WHOLE household plan, not just this chat.
+  const existing = await getMealPlanItems(householdId);
+  const present = new Set(existing.map((r) => r.normalizedName));
   const maxRow = await get(
-    `SELECT COALESCE(MAX(position), -1) AS maxPos FROM meal_plan_items WHERE household_id = ? AND chat_id = ?`,
-    [householdId, chatId]
+    `SELECT COALESCE(MAX(position), -1) AS maxPos FROM meal_plan_items WHERE household_id = ?`,
+    [householdId]
   );
   let position = (Number(maxRow?.maxPos) || -1) + 1;
   let inserted = 0;
@@ -1513,7 +1508,8 @@ export async function addMealPlanItems(householdId, chatId, items) {
     const name = String(item?.name ?? '').trim();
     if (!name) continue;
     const normalizedName = normalizeInventoryNameKey(name);
-    if (!normalizedName) continue;
+    if (!normalizedName || present.has(normalizedName)) continue;
+    present.add(normalizedName);
     const note = item?.note == null ? '' : String(item.note).trim();
     const cookbookEntryId =
       Number.isFinite(Number(item?.cookbookEntryId)) && Number(item.cookbookEntryId) > 0 ? Number(item.cookbookEntryId) : null;
@@ -1562,23 +1558,19 @@ export async function updateMealPlanItem(householdId, chatId, id, fields = {}) {
   if (sets.length === 0) return 0;
   sets.push('updated_at = CURRENT_TIMESTAMP');
   const result = await run(
-    `UPDATE meal_plan_items SET ${sets.join(', ')} WHERE household_id = ? AND chat_id = ? AND id = ?`,
-    [...params, householdId, chatId, id]
+    `UPDATE meal_plan_items SET ${sets.join(', ')} WHERE household_id = ? AND id = ?`,
+    [...params, householdId, id]
   );
   return Number(result.changes) || 0;
 }
 
 export async function deleteMealPlanItem(householdId, chatId, id) {
-  const result = await run(`DELETE FROM meal_plan_items WHERE household_id = ? AND chat_id = ? AND id = ?`, [
-    householdId,
-    chatId,
-    id,
-  ]);
+  const result = await run(`DELETE FROM meal_plan_items WHERE household_id = ? AND id = ?`, [householdId, id]);
   return Number(result.changes) || 0;
 }
 
-export async function clearMealPlan(householdId, chatId) {
-  const result = await run(`DELETE FROM meal_plan_items WHERE household_id = ? AND chat_id = ?`, [householdId, chatId]);
+export async function clearMealPlan(householdId) {
+  const result = await run(`DELETE FROM meal_plan_items WHERE household_id = ?`, [householdId]);
   return Number(result.changes) || 0;
 }
 

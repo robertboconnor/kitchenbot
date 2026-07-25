@@ -46,7 +46,6 @@ import {
   getHouseholdUserById,
   createHouseholdUser,
   updateHouseholdUserPin,
-  updateHouseholdUserRole,
   updateHouseholdAnthropicSettings,
   setHouseholdAnthropicMode,
   setHouseholdAnthropicApiKey,
@@ -1199,15 +1198,6 @@ async function isRequestGlobalAdmin(req) {
   return isGlobalAdminUser(uid);
 }
 
-// The owner/member distinction was removed (2026-07-23): this is a family app, not a
-// finance tool, so ANY authenticated household member may edit household settings.
-// requireAuth already ran ahead of this in every route chain, so this is a pass-through.
-// (Cross-household super-admin — "God Mode" — is a separate axis, still gated by
-// requireGlobalAdminRead / isGlobalAdminUser, which is the first bootstrapped user only.)
-async function requireOwner(req, res, next) {
-  next();
-}
-
 async function requireGlobalAdmin(req, res, next) {
   try {
     const ok = await isGlobalAdminUser(req.userId);
@@ -1485,7 +1475,7 @@ app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdmin
   }
 });
 
-app.get('/settings/household/anthropic-usage', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.get('/settings/household/anthropic-usage', requireHousehold, requireAuth, async (req, res) => {
   try {
     const startDate = isoDayStartUtc(req.query.startDate);
     const endDateExclusive = isoNextDayStartUtc(req.query.endDate);
@@ -1725,7 +1715,6 @@ app.get('/login/household', async (req, res) => {
       users: rows.map((u) => ({
         id: u.id,
         displayName: u.display_name,
-        role: u.role,
       })),
     });
   } catch (e) {
@@ -4888,7 +4877,7 @@ app.get('/', (req, res) => {
               <p class="kitchen-section-copy">The meals you’re planning in the current chat. KitchenBot keeps this in sync as you plan — so it remembers the week even in a very long thread — and you can tick meals off or drop them here.</p>
             </div>
             <ul class="g-list" id="thisweek-list"></ul>
-            <p id="thisweek-empty" class="kitchen-section-copy" style="display:none;">No meals planned in this chat yet. Ask KitchenBot to plan the week and they’ll show up here.</p>
+            <p id="thisweek-empty" class="kitchen-section-copy" style="display:none;">No meals planned this week yet. Ask KitchenBot to plan the week and they’ll show up here (across every chat).</p>
           </div>
           </div>
         </div>
@@ -5145,7 +5134,7 @@ app.get('/', (req, res) => {
                   <div style="margin-top: 8px;"><strong>Users (this household only)</strong></div>
                   <div class="admin-report-table-wrap" style="margin-top: 4px;">
                     <table class="admin-report-table" style="font-size: 13px;">
-                      <thead><tr><th>Display name</th><th>Role</th><th>PIN (global admin)</th><th>View as</th></tr></thead>
+                      <thead><tr><th>Display name</th><th>PIN (global admin)</th><th>View as</th></tr></thead>
                       <tbody id="admin-detail-users-body"></tbody>
                     </table>
                   </div>
@@ -5281,7 +5270,6 @@ app.post('/login', async (req, res) => {
       householdKey: household.household_key,
       userId: user.id,
       displayName: user.display_name,
-      isOwner: user.role === 'owner',
     });
   } catch (error) {
     console.error(error);
@@ -5308,7 +5296,6 @@ export async function handleGetMe(req, res) {
       householdId: req.householdId,
       userId: req.userId,
       palette: normalizePalette(me?.palette),
-      isOwner: !!(me && me.role === 'owner'),
       householdName,
       householdKey: h ? h.household_key : '',
       isGlobalAdmin,
@@ -5417,9 +5404,8 @@ app.post('/family/profiles/remove', requireHousehold, requireAuth, requireNotImp
   }
 });
 
-const SETTINGS_ROLES = new Set(['owner', 'member']);
 
-app.get('/settings/household', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.get('/settings/household', requireHousehold, requireAuth, async (req, res) => {
   try {
     const h = await getHouseholdById(req.householdId);
     if (!h) {
@@ -5429,8 +5415,6 @@ app.get('/settings/household', requireHousehold, requireAuth, requireOwner, asyn
     if (!currentUser) {
       return res.status(404).json({ error: 'User not found' });
     }
-    const canManageHouseholdSettings =
-      currentUser.role === 'owner' || (await isGlobalAdminUser(req.userId));
     const users = await listHouseholdUsers(req.householdId);
     const defaults = await getHouseholdDefaults(req.householdId);
     return res.json({
@@ -5443,14 +5427,11 @@ app.get('/settings/household', requireHousehold, requireAuth, requireOwner, asyn
       currentUser: {
         id: currentUser.id,
         displayName: currentUser.display_name,
-        role: currentUser.role,
       },
       defaults,
-      canManageHouseholdSettings,
       users: users.map((u) => ({
         id: u.id,
         displayName: u.display_name,
-        role: u.role,
         chatColor: normalizeChatColor(u.chat_color),
       })),
     });
@@ -5460,7 +5441,7 @@ app.get('/settings/household', requireHousehold, requireAuth, requireOwner, asyn
   }
 });
 
-app.get('/settings/household/defaults', requireHousehold, requireAuth, requireOwner, async (req, res) => {
+app.get('/settings/household/defaults', requireHousehold, requireAuth, async (req, res) => {
   try {
     const defaults = await getHouseholdDefaults(req.householdId);
     return res.json({ defaults });
@@ -5475,7 +5456,6 @@ app.post(
   requireHousehold,
   requireAuth,
   requireNotImpersonatingReadOnly,
-  requireOwner,
   async (req, res) => {
     try {
       const defaults = await saveHouseholdDefaults(req.householdId, {
@@ -5793,7 +5773,6 @@ app.post(
   requireHousehold,
   requireAuth,
   requireNotImpersonatingReadOnly,
-  requireOwner,
   async (req, res) => {
   try {
     const userId = Number(req.params.id);
@@ -5829,28 +5808,24 @@ app.post(
   requireHousehold,
   requireAuth,
   requireNotImpersonatingReadOnly,
-  requireOwner,
   async (req, res) => {
   try {
     const displayName = req.body.displayName?.trim();
-    const role = req.body.role?.trim();
     const pin = req.body.pin?.trim();
-    if (!displayName || !role || !pin) {
-      return res.status(400).json({ error: 'displayName, role, and pin are required' });
-    }
-    if (!SETTINGS_ROLES.has(role)) {
-      return res.status(400).json({ error: 'Invalid role' });
+    if (!displayName || !pin) {
+      return res.status(400).json({ error: 'displayName and pin are required' });
     }
     const existing = await getUserByHouseholdAndDisplayName(req.householdId, displayName);
     if (existing) {
       return res.status(409).json({ error: 'A user with this display name already exists' });
     }
-    const id = await createHouseholdUser(req.householdId, { displayName, role, pin });
+    // Roles were removed; every household member is equal. Stamp a fixed value only to satisfy
+    // the (now inert) NOT NULL role column.
+    const id = await createHouseholdUser(req.householdId, { displayName, role: 'member', pin });
     const created = await getHouseholdUserById(req.householdId, id);
     return res.json({
       id,
       displayName,
-      role,
       chatColor: created ? normalizeChatColor(created.chat_color) : 'blue',
     });
   } catch (e) {
@@ -5867,7 +5842,6 @@ app.post(
   requireHousehold,
   requireAuth,
   requireNotImpersonatingReadOnly,
-  requireOwner,
   async (req, res) => {
   try {
     const userId = Number(req.params.id);
@@ -5893,50 +5867,6 @@ app.post(
   }
 });
 
-app.post(
-  '/settings/household/users/:userId/role',
-  requireHousehold,
-  requireAuth,
-  requireNotImpersonatingReadOnly,
-  requireOwner,
-  async (req, res) => {
-  try {
-    const targetUserId = Number(req.params.userId);
-    if (!Number.isFinite(targetUserId)) {
-      return res.status(400).json({ error: 'Invalid user id' });
-    }
-    if (targetUserId === req.userId) {
-      return res.status(400).json({ error: 'Cannot change your own role' });
-    }
-    const role = req.body.role;
-    if (role !== 'owner' && role !== 'member') {
-      return res.status(400).json({ error: 'role must be owner or member' });
-    }
-    const target = await getHouseholdUserById(req.householdId, targetUserId);
-    if (!target) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    if (target.role === 'owner' && role === 'member') {
-      const householdUsers = await listHouseholdUsers(req.householdId);
-      const ownerCount = householdUsers.filter((u) => u.role === 'owner').length;
-      if (ownerCount <= 1) {
-        return res.status(400).json({ error: 'Cannot remove the last owner from the household' });
-      }
-    }
-    await updateHouseholdUserRole(req.householdId, targetUserId, role);
-    return res.json({ ok: true, userId: targetUserId, role });
-  } catch (e) {
-    if (e && e.message === 'User not found') {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    if (e && e.message === 'invalid_role') {
-      return res.status(400).json({ error: 'role must be owner or member' });
-    }
-    console.error(e);
-    return res.status(500).json({ error: e.message || 'Failed to update role' });
-  }
-});
-
 const ANTHROPIC_MODES = new Set(['shared', 'household']);
 
 app.get('/settings/anthropic', requireHousehold, requireAuth, async (req, res) => {
@@ -5944,13 +5874,9 @@ app.get('/settings/anthropic', requireHousehold, requireAuth, async (req, res) =
     const targetId = await resolveAnthropicTargetHouseholdId(req, res, req.query.householdId);
     if (targetId == null) return;
     const globalAdmin = await isRequestGlobalAdmin(req);
-    const sessionUser = await getHouseholdUserById(req.householdId, req.userId);
-    const isOwnerSession = sessionUser && sessionUser.role === 'owner';
-    if (targetId === req.householdId) {
-      if (!isOwnerSession && !globalAdmin) {
-        return res.status(403).json({ error: 'Owner only' });
-      }
-    } else if (!globalAdmin) {
+    // Roles removed: any member may view their OWN household's key settings; only God Mode
+    // may view another household's.
+    if (targetId !== req.householdId && !globalAdmin) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     const h = await getHouseholdById(targetId);
@@ -5975,8 +5901,7 @@ app.get('/settings/anthropic', requireHousehold, requireAuth, async (req, res) =
       statusBrief = 'Household key missing';
       keyStatus = 'household_missing';
     }
-    const canEditKey =
-      isOwnerSession && targetId === req.householdId && mode === 'household';
+    const canEditKey = targetId === req.householdId && mode === 'household';
     return res.json({
       household: {
         id: h.id,
@@ -6033,10 +5958,7 @@ app.post(
   requireNotImpersonatingReadOnly,
   async (req, res) => {
   try {
-    const u = await getHouseholdUserById(req.householdId, req.userId);
-    if (!u || u.role !== 'owner') {
-      return res.status(403).json({ error: 'Owner only' });
-    }
+    // Roles removed: any authenticated member of this household may set its key.
     const anthropicApiKey = String(req.body.anthropicApiKey ?? '').trim();
     if (!anthropicApiKey) {
       return res.status(400).json({ error: 'anthropicApiKey is required' });
@@ -6139,7 +6061,6 @@ app.delete(
   requireHousehold,
   requireAuth,
   requireNotImpersonatingReadOnly,
-  requireOwner,
   async (req, res) => {
   try {
     const chatId = Number(req.params.id);
@@ -6190,7 +6111,6 @@ registerKitchenInventoryRoutes(app, {
     requireHousehold,
     requireAuth,
     requireNotImpersonatingReadOnly,
-    requireOwner,
   },
   db: {
     getGroceryItems,

@@ -6,7 +6,7 @@ export function registerKitchenInventoryRoutes(app, deps) {
     db,
     inventory,
   } = deps;
-  const { requireHousehold, requireAuth, requireNotImpersonatingReadOnly, requireOwner } = middleware;
+  const { requireHousehold, requireAuth, requireNotImpersonatingReadOnly } = middleware;
   const {
     getGroceryItems,
     getPantryItems,
@@ -231,7 +231,7 @@ export function registerKitchenInventoryRoutes(app, deps) {
     }
   });
 
-  app.post('/groceries/clear', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, requireOwner, async (req, res) => {
+  app.post('/groceries/clear', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
     try {
       await clearGroceryItems(req.householdId);
       res.json({ ok: true });

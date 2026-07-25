@@ -49,6 +49,7 @@ export function toolNameToCapability(toolName) {
 
 const READ_ONLY_CAPABILITIES = new Set([
   'cookbook.list',
+  'cookbook.get',
   'grocery.list',
   'pantry.list',
   'household.defaults.get',
@@ -96,7 +97,16 @@ const INPUT_SCHEMAS = {
             type: 'array',
             items: { type: 'string' },
             description:
-              'Optional short labels you can filter on later, e.g. "kid-approved", "quick", "vegetarian", "date-night". A few lowercase words each. Use these for labels like "Bizzy-approved" instead of putting them in the title.',
+              'Optional short labels you can filter on later, e.g. "kid-approved", "quick", "vegetarian", "date-night". A few lowercase words each — YOU choose them and they are stored verbatim. Reuse an existing tag (check cookbook.list) when one fits, rather than coining a near-duplicate like "breads" when "bread" already exists.',
+          },
+          notes: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional freeform notes stored with the recipe, e.g. "jasmine tried — mushy, use basmati" or "pomegranate garnish is a hypothesis, unproven".',
+          },
+          category: {
+            type: 'string',
+            description: 'Optional cookbook category (see inventory.sections for the allowed list, e.g. "grains", "meat", "poultry"). Omit to let it be inferred.',
           },
         },
         required: ['title', 'ingredients', 'instructions'],
@@ -139,6 +149,11 @@ const INPUT_SCHEMAS = {
         description: 'Optional — only return recipes labeled with this tag (e.g. "kid-approved"). Omit to list everything.',
       },
     },
+  },
+  'cookbook.get': {
+    type: 'object',
+    properties: { name: { type: 'string', description: 'The title of the saved recipe to read in full (use cookbook.list if unsure of the exact title).' } },
+    required: ['name'],
   },
   'cookbook.delete': {
     type: 'object',
@@ -449,6 +464,17 @@ const OUTCOME_PASSTHROUGH_KEYS = [
   'entries',
   'tags',
   'filteredByTag',
+  'allTags',
+  // cookbook.get — the FULL saved recipe body must reach the brain to edit it faithfully
+  'ingredients',
+  'instructions',
+  'category',
+  'recipeType',
+  'sourceUrl',
+  'sourceTitle',
+  'sourceBookTitle',
+  'availableTitles',
+  'id',
   // person.profile.* — structured per-person food/allergy data
   'person',
   'acceptedFoods',

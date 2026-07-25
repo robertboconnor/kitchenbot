@@ -1,5 +1,6 @@
 import {
   executeCookbookDelete,
+  executeCookbookGet,
   executeCookbookList,
   executeCookbookSave,
   executeCookbookUpdate,
@@ -315,6 +316,22 @@ export const KB_SKILLS = {
     },
     normalizeActionInput: normalizeCookbookListActionInput,
     execute: executeCookbookList,
+  },
+  'cookbook.get': {
+    id: 'cookbook.get',
+    description: 'Read ONE saved cookbook recipe in full — every ingredient, step, note, tag, and category.',
+    narrationType: 'cookbook.get',
+    contextProfile: {
+      includeCookbook: true,
+    },
+    interpreterDescription:
+      'Read a single saved recipe IN FULL (ingredients, steps, notes) by its title. Use this BEFORE editing a saved recipe: cookbook.get it, apply the change, then cookbook.update with the full revised text. cookbook.list only returns summaries, so never reconstruct a saved recipe from memory when you can read the real one here.',
+    exampleAction: {
+      capability: 'cookbook.get',
+      input: { name: 'Turkish Vegetable Pilav with Lamb' },
+    },
+    normalizeActionInput: normalizeCookbookDeleteInput,
+    execute: executeCookbookGet,
   },
   'cookbook.delete': {
     id: 'cookbook.delete',

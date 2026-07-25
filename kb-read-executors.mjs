@@ -107,21 +107,6 @@ function threadSearchTokens(text) {
     .filter((t) => t.length > 2 && !THREAD_SEARCH_STOP_WORDS.has(t));
 }
 
-function buildThreadSnippet(content, qTokens, radius = 170) {
-  const lc = content.toLowerCase();
-  let pos = -1;
-  for (const t of qTokens) {
-    const i = lc.indexOf(t);
-    if (i >= 0 && (pos < 0 || i < pos)) pos = i;
-  }
-  if (pos < 0) pos = 0;
-  const start = Math.max(0, pos - 40);
-  let snippet = content.slice(start, start + radius * 2).replace(/\s+/g, ' ').trim();
-  if (start > 0) snippet = `…${snippet}`;
-  if (start + radius * 2 < content.length) snippet = `${snippet}…`;
-  return snippet;
-}
-
 // Deterministic retrieval over THIS chat's messages. ONE BRAIN: the brain decides to
 // look back and provides the query; we mechanically rank + return snippets (no side-model).
 // This is how the brain recalls arbitrary older detail (a fix, an amount) from a long thread
@@ -154,7 +139,9 @@ export async function executeThreadSearch(action, context = {}) {
     who: m.role === 'assistant' ? 'KitchenBot' : s(m.name) || s(m.role),
     position: `message ${idx + 1} of ${total}`,
     when: s(m.created_at),
-    snippet: buildThreadSnippet(content, qTokens),
+    // Return the FULL matched message (generously capped), not a keyword window — so the brain can
+    // actually re-read what it found (a recipe, a decision) instead of a fragment it can't use.
+    snippet: content.length > 4000 ? content.slice(0, 4000) + '… (truncated — narrow the search for the rest)' : content,
   }));
   return { ok: true, query, count: results.length, totalMessages: total, results };
 }

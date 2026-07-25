@@ -24,7 +24,13 @@ import { narrationForToolName } from './kb-narration.mjs';
 import { verifyReplyClaims, buildClaimCorrectionMessage } from './kb-claim-guard.mjs';
 
 const MAX_TOOL_ITERATIONS = 8;
-const MAX_TOKENS = 2048;
+// Raised 2048 → 4096: a full recipe or a week of detailed meals can exceed 2048 output tokens,
+// and a capped reply used to ship truncated mid-sentence. Paired with continue-on-cap below.
+const MAX_TOKENS = 4096;
+// If a reply STILL hits the cap after this many continuations, ship what we have.
+const MAX_REPLY_CONTINUATIONS = 3;
+// Retry a model turn that comes back empty (a dropped/errored stream) before giving up.
+const MAX_STREAM_RETRIES = 2;
 // The immediate conversation window sent every turn (~15 back-and-forths). Older context is reached
 // via the always-visible This Week plan + thread.search, so this only needs to be big enough that a
 // single sitting's task doesn't silently scroll out of view. Bumped 16 → 30 (2026-07-23): cost isn't
@@ -98,14 +104,14 @@ function capabilityIntroPrinciple() {
   return (
     "SPECIAL — WHAT-CAN-YOU-DO INTRO. When you judge (by MEANING, not keywords) that the person is asking " +
     "what you can do / for a tour of the app / how to use this / what this is — often a newly-provisioned " +
-    "owner exploring for the first time — give a warm, concrete overview, NOT a dry feature list, and NEVER " +
+    "person exploring for the first time — give a warm, concrete overview, NOT a dry feature list, and NEVER " +
     "invent a capability. In your own words, hit roughly: (1) you're the ONE brain the whole household shares " +
     "and you actually DO things (change the real grocery list, pantry, cookbook, and weekly plan), and everyone " +
     "they add sees the same picture no matter who planned it; (2) you plan the week AND remember it (the This " +
     "Week board; you can recall details days later); (3) you build the grocery list from a plan or recipe — " +
     "right amounts, minus what's already in the pantry — and keep their pantry and cookbook; (4) you cook around " +
     "everyone's tastes and allergies automatically; (5) you never fake an action — if you say it's saved, it's " +
-    "saved. Because the person is this account's OWNER, also point them to Settings to add the rest of their " +
+    "saved. Point them to Settings too — anyone in the household can add the rest of the " +
     "household, set preferences, and fill in food profiles — AND tell them you can change many settings for them " +
     "directly (food profiles, household defaults like portion size and cooking style, even your own name and tone), " +
     "so if they want something and there's no button, they should just ask (great example: " +
@@ -180,6 +186,10 @@ export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false
     'Never make an offer you cannot act on right now. Do NOT say things like "want me to add X? say yes and I will" — there is no mechanism to hold that intent for a later turn. Either just do it now, or tell them to ask when they want it.',
     "A question about your OWN behavior — \"why did you stop?\", \"what happened there?\", \"can you see X?\" — is a normal question, not an accusation that you lied. Answer it plainly. You have no access to server logs, error traces, or the internals of your earlier replies, so if asked why an earlier reply cut off or for logs, say honestly that you cannot see that. \"I can't do that\" or \"I can't see that\" is a complete, good answer — do not turn it into a truthfulness confession or apologize for a mistake you did not make.",
     "Don't call a tool reflexively just to double-check yourself. Use a tool only when it changes your answer or the user asked you to act — not to 'verify' something you are already sure of.",
+    "To CHANGE a saved cookbook recipe, cookbook.get it FIRST — that returns the full ingredients, steps, and notes — then apply the edit to that full text and cookbook.update with the complete revised recipe. cookbook.list only gives summaries; never rebuild a saved recipe from memory or you may silently drop something.",
+    "Cookbook tags and category are YOURS to choose and are stored exactly as you pass them — nothing overrides them. When tagging, reuse an existing tag (cookbook.list returns the household's whole tag vocabulary as allTags) rather than coining a near-duplicate like 'breads' when 'bread' already exists.",
+    "The 'This Week' plan strip is drawn by the app from the plan state — you don't render it. A planned meal automatically shows a '🍳 recipe' link once a saved cookbook recipe with a matching title exists (the app auto-links them by title), and its checkbox marks it cooked. plan.list gives you each meal's hasRecipe flag and status, so if someone asks what that 🍳 / recipe link or the checkmark means, explain the app is linking that meal to its saved recipe — never say you have no idea.",
+    "Report an action (saved, added, updated, removed) ONLY after you have actually called the tool and seen its success THIS turn. Never narrate a tool result — \"the tool returned…\", \"saved!\" — before calling it; if you haven't called it yet, call it now, then report what actually came back. And don't over-correct: if a tool genuinely succeeded, state it plainly — you do not owe a confession or a walk-back for a real success.",
   ];
   principles.push(capabilityIntroPrinciple());
   if (isSweetheartUser(name)) principles.push(sweetheartPrinciple());
@@ -278,49 +288,78 @@ export async function runKbAgentLoop({
   let finalText = '';
   let finalClaims = null; // null = reply text not yet verified; array = verifier's result
   let claimCorrections = 0;
+  // Accumulates a reply the model has to write across turns because it kept hitting the token cap.
+  let accumulatedReply = '';
+  let continuations = 0;
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-    const stream = anthropic.messages.stream({
-      model: ANTHROPIC_MAIN_REASONING_MODEL,
-      max_tokens: MAX_TOKENS,
-      system,
-      messages,
-      tools,
-    });
     // We deliberately do NOT forward the model's words to the user mid-loop. A model turn can
     // write text AND THEN call a tool in the same turn (violating "no prose before tools").
     // Streaming that text live means wiping it the instant the tool call lands — the user watches
     // a real, useful answer get deleted and replaced by whatever the model regenerates after the
     // tool runs, which often drifts off-topic. So we buffer every turn and let ONLY the final,
     // no-tool turn's text become the reply, delivered once and cleanly by respondWithKbReply.
-    // The progress narration ("Reading…", tool narrations) covers the wait.
-    const response = await finalizeLoggedAnthropicStream(stream, {
-      householdId,
-      chatId,
-      turnId,
-      callPurpose: 'kb_agent_loop',
-      callSurface: 'chat',
-      prompt: promptText,
-      webSearchEnabledAtCall: webSearchEnabled,
-    });
+    // The progress narration ("Reading…", tool narrations) covers the wait. If a turn comes back
+    // empty the stream dropped — retry a couple times so a transient blip isn't a blank reply.
+    let response = null;
+    for (let attempt = 0; attempt <= MAX_STREAM_RETRIES; attempt++) {
+      const stream = anthropic.messages.stream({
+        model: ANTHROPIC_MAIN_REASONING_MODEL,
+        max_tokens: MAX_TOKENS,
+        system,
+        messages,
+        tools,
+      });
+      response = await finalizeLoggedAnthropicStream(stream, {
+        householdId,
+        chatId,
+        turnId,
+        callPurpose: 'kb_agent_loop',
+        callSurface: 'chat',
+        prompt: promptText,
+        webSearchEnabledAtCall: webSearchEnabled,
+      });
+      if (response) break;
+      console.warn(
+        `[kb-loop] chat ${chatId} turn ${turnId}: model stream returned nothing ` +
+          `(attempt ${attempt + 1}/${MAX_STREAM_RETRIES + 1})${attempt < MAX_STREAM_RETRIES ? '; retrying' : '; giving up'}.`
+      );
+    }
+    if (!response) {
+      // The stream failed repeatedly — be honest instead of shipping a blank/"Okay." reply.
+      finalText =
+        "Sorry — I hit a snag reaching my brain just now and couldn't finish that. Give it another try in a moment.";
+      finalClaims = [];
+      break;
+    }
 
     const content = Array.isArray(response?.content) ? response.content : [];
     const toolUses = content.filter((block) => block?.type === 'tool_use');
     const textBlocks = content.filter((block) => block?.type === 'text');
 
-    // Diagnostic: a reply truncated by the token cap is otherwise invisible — surface it so
-    // "why did that cut off?" is answerable from the logs instead of a mystery.
-    if (response?.stop_reason === 'max_tokens') {
-      console.warn(
-        `[kb-loop] chat ${chatId} turn ${turnId}: response stopped on max_tokens (${MAX_TOKENS}) — reply may be truncated.`
-      );
-    }
-
-    // Done: the model wrote a reply and asked for no (more) tools — UNLESS that reply claims a
-    // write it never actually made this turn. Then make the model either do it for real or retract,
-    // rather than ship a false "Saved it!". Nothing was streamed yet, so there is nothing to wipe.
+    // Done: the model wrote a reply and asked for no (more) tools — UNLESS (a) the reply was cut off
+    // at the token cap, in which case continue generating the rest before finalizing; or (b) it
+    // claims a write it never made, in which case make it redo or retract. Nothing was streamed
+    // yet, so there is nothing to wipe either way.
     if (response?.stop_reason !== 'tool_use' || toolUses.length === 0) {
-      const candidateText = textBlocks.map((block) => block.text || '').join('').trim();
+      const turnText = textBlocks.map((block) => block.text || '').join('');
+      if (response?.stop_reason === 'max_tokens' && continuations < MAX_REPLY_CONTINUATIONS) {
+        continuations += 1;
+        accumulatedReply += turnText;
+        console.warn(
+          `[kb-loop] chat ${chatId} turn ${turnId}: reply hit the ${MAX_TOKENS}-token cap; ` +
+            `continuing (${continuations}/${MAX_REPLY_CONTINUATIONS}).`
+        );
+        messages.push({ role: 'assistant', content });
+        messages.push({
+          role: 'user',
+          content:
+            'Your previous message was cut off at the length limit. Continue it seamlessly from ' +
+            'exactly where it stopped — no preamble, no greeting, and do not repeat what you already wrote.',
+        });
+        continue;
+      }
+      const candidateText = (accumulatedReply + turnText).trim();
       const verdict = await verifyReplyClaims({
         anthropic,
         replyText: candidateText,
