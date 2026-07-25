@@ -8,6 +8,7 @@ import {
   normalizeCookbookSaveInput,
   normalizeCookbookUpdateInput,
 } from './cookbook-executor.mjs';
+import { executeAttachmentsClear } from './attachments-executor.mjs';
 import { previewGroceryListFromConversation, writeGroceryListFromConversation } from './grocery-executor.mjs';
 import { executeGroceryCheck, executeGroceryClear, executeGroceryRemove, executeGroceryUncheck, executeGroceryUpdateItem } from './grocery-action-executor.mjs';
 import { executeHouseholdDefaultsUpdate } from './household-defaults-executor.mjs';
@@ -348,6 +349,19 @@ export const KB_SKILLS = {
     },
     normalizeActionInput: normalizeCookbookDeleteInput,
     execute: executeCookbookDelete,
+  },
+  'attachments.clear': {
+    id: 'attachments.clear',
+    description: 'Remove saved chat photos (and optionally attached files) from a chat or the whole household.',
+    narrationType: 'attachments.clear',
+    contextProfile: {},
+    interpreterDescription:
+      'Delete stored chat attachments when the user asks to clear or remove photos/files (e.g. "clear the photos, we don\'t need them anymore"). Default scope is this chat and kind is photos; pass scope "household" to clear everywhere, or kind "text"/"all" to include attached files.',
+    exampleAction: {
+      capability: 'attachments.clear',
+      input: { scope: 'chat', kind: 'image' },
+    },
+    execute: executeAttachmentsClear,
   },
   'chat.rename': {
     id: 'chat.rename',

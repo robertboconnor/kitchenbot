@@ -13,6 +13,7 @@ export const WHIMSY_BY_CAPABILITY = {
   'pantry.list': 'Rummaging through the pantry…',
   'cookbook.list': 'Flipping through the cookbook…',
   'cookbook.get': 'Pulling up the full recipe…',
+  'attachments.clear': 'Clearing out the photos…',
   'grocery.write': 'Scribbling that onto the list…',
   'grocery.remove': 'Crossing that off the list…',
   'grocery.check': 'Ticking that off…',

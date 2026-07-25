@@ -160,6 +160,13 @@ const INPUT_SCHEMAS = {
     properties: { name: { type: 'string', description: 'Name of the saved cookbook recipe to delete.' } },
     required: ['name'],
   },
+  'attachments.clear': {
+    type: 'object',
+    properties: {
+      scope: { type: 'string', description: 'Which to remove: "chat" (this chat, default) or "household" (everywhere).' },
+      kind: { type: 'string', description: 'What to remove: "image" (photos, default), "text" (attached files), or "all".' },
+    },
+  },
   'chat.rename': {
     type: 'object',
     properties: { request: { type: 'string', description: 'Exact new title, or a request to auto-generate one from context.' } },
@@ -465,6 +472,9 @@ const OUTCOME_PASSTHROUGH_KEYS = [
   'tags',
   'filteredByTag',
   'allTags',
+  // attachments.clear
+  'scope',
+  'kind',
   // cookbook.get — the FULL saved recipe body must reach the brain to edit it faithfully
   'ingredients',
   'instructions',

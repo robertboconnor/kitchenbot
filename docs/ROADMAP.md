@@ -11,6 +11,21 @@ legitimate application"* — both in how it **works** (one reasoning brain with 
 it's never going to the app store, so no abuse/scale/cost threat-modeling. Family actually uses it
 (Rob + Elle + a 4yo, Bizzy).
 
+## ✅ Shipped to PROD on 2026-07-25 — KB reads files (photos + text)
+
+Rob wanted KB to read attached files: photos ("is this the right dice size?", "should it look like
+this?") + markdown/text (he drafts plans in another app). Built + deployed; **real-vision-verified**
+(fed it the logo, KB replied "a minimalist white robot head with slit eyes and a pink antenna").
+- **chat_attachments table** — images stored as downscaled base64 JPEG (the client shrinks to
+  ~1600px before upload → ~100-300KB each), text as utf8. Metadata-only in /history; bytes served
+  via /attachment/:id (auth-gated, household-scoped). message_id cascades on message delete.
+- **Multimodal loop** — an attached photo becomes an Anthropic vision block on the turn it's sent; a
+  text/markdown file folds into the prompt. History stays text-only (images not re-fed every turn).
+- **attachments.clear tool** — KB purges photos on request ("clear the photos, we don't need them"),
+  since Rob's on the cheapest Render disk. scope chat|household, kind image|text|all; photos default.
+- **Client** — 📎 attach button, in-browser downscale, removable preview chip, thumbnails in-chat.
+  express.json bumped to 12mb for base64 images; validation caps images ~6.7MB / text ~400KB.
+
 ## ✅ Shipped to PROD on 2026-07-25 (overnight batch from Rob's real cooking thread)
 
 Root theme Rob surfaced: the brain's cooking + honesty are great; the COOKBOOK tooling was failing

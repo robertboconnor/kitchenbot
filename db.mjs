@@ -341,6 +341,22 @@ async function initializeSchema() {
     CREATE INDEX IF NOT EXISTS idx_meal_plan_items_household_chat
       ON meal_plan_items(household_id, chat_id, position ASC, id ASC);
 
+    CREATE TABLE IF NOT EXISTS chat_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+      chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      message_id INTEGER NULL REFERENCES messages(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,               -- 'image' | 'text'
+      media_type TEXT NOT NULL,         -- e.g. image/jpeg, text/markdown
+      name TEXT,                        -- original filename
+      data TEXT NOT NULL,               -- base64 (image) or utf8 text
+      byte_size INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_attachments_household_chat
+      ON chat_attachments(household_id, chat_id, id ASC);
+
     CREATE TABLE IF NOT EXISTS person_profiles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
@@ -1571,6 +1587,89 @@ export async function deleteMealPlanItem(householdId, chatId, id) {
 
 export async function clearMealPlan(householdId) {
   const result = await run(`DELETE FROM meal_plan_items WHERE household_id = ?`, [householdId]);
+  return Number(result.changes) || 0;
+}
+
+// ── Chat attachments (photos + text files dropped into a chat) ───────────────────
+// Images are the storage concern (base64 JPEG), so they get their own table + a bulk delete the
+// brain can call to purge them ("clear the photos"). message_id cascades when a message is deleted.
+export async function addChatAttachment(householdId, chatId, messageId, { kind, mediaType, name, data, byteSize } = {}) {
+  const result = await run(
+    `INSERT INTO chat_attachments (household_id, chat_id, message_id, kind, media_type, name, data, byte_size)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      householdId,
+      chatId,
+      messageId == null ? null : Number(messageId),
+      String(kind ?? 'image'),
+      String(mediaType ?? ''),
+      name == null ? null : String(name).slice(0, 200),
+      String(data ?? ''),
+      Number(byteSize) || 0,
+    ]
+  );
+  return Number(result.lastID);
+}
+
+// Metadata only (NOT the base64 data) so /history stays light; the client fetches bytes by id.
+export async function getChatAttachmentsForChat(householdId, chatId) {
+  const rows = await all(
+    `SELECT id, message_id, kind, media_type, name, byte_size, created_at
+     FROM chat_attachments
+     WHERE household_id = ? AND chat_id = ?
+     ORDER BY id ASC`,
+    [householdId, chatId]
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    messageId: r.message_id == null ? null : Number(r.message_id),
+    kind: r.kind,
+    mediaType: r.media_type,
+    name: r.name || '',
+    byteSize: Number(r.byte_size) || 0,
+    createdAt: r.created_at,
+  }));
+}
+
+export async function getChatAttachmentById(householdId, id) {
+  const row = await get(
+    `SELECT id, household_id, chat_id, message_id, kind, media_type, name, data, byte_size, created_at
+     FROM chat_attachments WHERE household_id = ? AND id = ? LIMIT 1`,
+    [householdId, Number(id)]
+  );
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    householdId: Number(row.household_id),
+    chatId: Number(row.chat_id),
+    messageId: row.message_id == null ? null : Number(row.message_id),
+    kind: row.kind,
+    mediaType: row.media_type,
+    name: row.name || '',
+    data: row.data || '',
+    byteSize: Number(row.byte_size) || 0,
+  };
+}
+
+// Bulk purge. Pass a chatId to clear one chat, omit for the whole household. kind: 'image', 'text',
+// or omit for all. Returns the number deleted.
+export async function deleteChatAttachments(householdId, { chatId = null, kind = null } = {}) {
+  const clauses = ['household_id = ?'];
+  const params = [householdId];
+  if (chatId != null) {
+    clauses.push('chat_id = ?');
+    params.push(Number(chatId));
+  }
+  if (kind === 'image' || kind === 'text') {
+    clauses.push('kind = ?');
+    params.push(kind);
+  }
+  const result = await run(`DELETE FROM chat_attachments WHERE ${clauses.join(' AND ')}`, params);
+  return Number(result.changes) || 0;
+}
+
+export async function deleteChatAttachment(householdId, id) {
+  const result = await run(`DELETE FROM chat_attachments WHERE household_id = ? AND id = ?`, [householdId, Number(id)]);
   return Number(result.changes) || 0;
 }
 
