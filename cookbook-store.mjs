@@ -9,6 +9,7 @@ export const COOKBOOK_CATEGORY_OPTIONS = [
   { value: 'soups', label: 'Soups' },
   { value: 'sauces', label: 'Sauces' },
   { value: 'pasta', label: 'Pasta' },
+  { value: 'grains', label: 'Grains & Rice' },
   { value: 'lunch_dishes', label: 'Lunch Dishes' },
   { value: 'fish', label: 'Fish' },
   { value: 'poultry', label: 'Poultry' },
@@ -494,6 +495,11 @@ export function inferCookbookCategory(raw) {
   if (matches([/\bpasta\b/, /\bspaghetti\b/, /\brigatoni\b/, /\bpenne\b/, /\bfusilli\b/, /\borzo\b/, /\bmacaroni\b/, /\bravioli\b/, /\blinguine\b/, /\bfettuccine\b/, /\bgnocchi\b/, /\blasagna\b/])) {
     return 'pasta';
   }
+  // Rice/grain-FORWARD dishes — checked before the protein categories so a pilav with a little
+  // lamb lands in grains, not meat. Rice-DISH words only, so a steak-with-rice-side stays meat.
+  if (matches([/\bpilaf\b/, /\bpilav\b/, /\brisotto\b/, /\bbiryani\b/, /\bpaella\b/, /\bjambalaya\b/, /\bcongee\b/, /\bporridge\b/, /\bpolenta\b/, /\bquinoa\b/, /\bfried rice\b/, /\brice bowl\b/, /\bgrain bowl\b/, /\bbibimbap\b/, /\bfarro\b/, /\bbulgur\b/, /\bcouscous\b/])) {
+    return 'grains';
+  }
   if (matches([/\bsandwich\b/, /\bsub\b/, /\bhero\b/, /\bhoagie\b/, /\bmuffaletta\b/, /\bpanini\b/, /\bsalad\b/, /\bwrap\b/, /\btoast\b/, /\bquiche\b/, /\bfrittata\b/, /\btart\b/])) {
     return 'lunch_dishes';
   }
@@ -860,8 +866,15 @@ Rules:
         ...baseRecord,
         title: preserveTitle ? baseRecord.title : (shaped?.title || baseRecord.title),
         summary: shaped?.summary || baseRecord.summary,
-        category: shaped?.category || baseRecord.category,
-        tags: Array.isArray(shaped?.tags) && shaped.tags.length > 0 ? shaped.tags : baseRecord.tags,
+        // ONE BRAIN: the brain's category + tags are authoritative — fall back to the shape helper
+        // only when the brain provided none. Never override what the brain deliberately chose.
+        category: baseRecord.category || shaped?.category || '',
+        tags:
+          Array.isArray(baseRecord.tags) && baseRecord.tags.length > 0
+            ? baseRecord.tags
+            : Array.isArray(shaped?.tags)
+              ? shaped.tags
+              : [],
         sourceTitle: baseRecord.sourceTitle || shaped?.sourceTitle || '',
         sourceUrl: baseRecord.sourceUrl,
         sourceKind: baseRecord.sourceKind,

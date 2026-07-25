@@ -1198,91 +1198,6 @@
               const label = document.createElement('span');
               label.className = 'settings-user-name';
               label.textContent = u.displayName;
-              const roleCol = document.createElement('div');
-              roleCol.className = 'settings-user-row-role-col';
-              const roleWrap = document.createElement('div');
-              roleWrap.className = 'settings-user-inline-controls';
-              const roleLbl = document.createElement('span');
-              roleLbl.textContent = 'Role';
-              const roleSel = document.createElement('select');
-              roleSel.setAttribute('aria-label', 'Role for ' + u.displayName);
-              [['owner', 'Owner'], ['member', 'Member']].forEach(([val, lab]) => {
-                const o = document.createElement('option');
-                o.value = val;
-                o.textContent = lab;
-                roleSel.appendChild(o);
-              });
-              roleSel.value = u.role === 'owner' ? 'owner' : 'member';
-              let prevRole = roleSel.value;
-              const roleBtn = document.createElement('button');
-              roleBtn.type = 'button';
-              roleBtn.textContent = 'Update role';
-              const roleFeedback = document.createElement('div');
-              roleFeedback.className = 'settings-user-row-role-feedback';
-              roleFeedback.setAttribute('aria-live', 'polite');
-              const isSelf = u.id === data.currentUser.id;
-              function syncRoleButtonState() {
-                if (isSelf) return;
-                roleBtn.disabled = roleSel.value === prevRole;
-              }
-              if (isSelf) {
-                roleSel.disabled = true;
-                roleBtn.disabled = true;
-              } else {
-                roleSel.addEventListener('change', () => {
-                  clearEntityMemoryUiMessage();
-                  roleFeedback.textContent = '';
-                  syncRoleButtonState();
-                });
-                syncRoleButtonState();
-              }
-              roleBtn.addEventListener('click', async () => {
-                clearEntityMemoryUiMessage();
-                const newRole = roleSel.value;
-                if (newRole === prevRole) {
-                  roleFeedback.textContent = 'No changes';
-                  roleFeedback.style.color = 'var(--text-soft)';
-                  return;
-                }
-                const originalBtnText = 'Update role';
-                roleBtn.textContent = 'Saving...';
-                roleBtn.disabled = true;
-                if (!isSelf) roleSel.disabled = true;
-                roleFeedback.textContent = '';
-                try {
-                  const rr = await fetch('/settings/household/users/' + u.id + '/role', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ role: newRole }),
-                  });
-                  const errBody = await rr.json().catch(() => ({}));
-                  if (rr.ok) {
-                    prevRole = newRole;
-                    roleFeedback.textContent = 'Role updated';
-                    roleFeedback.style.color = 'var(--accent-strong)';
-                    row.classList.add('settings-user-row-role-flash');
-                    setTimeout(() => row.classList.remove('settings-user-row-role-flash'), 2000);
-                  } else {
-                    roleFeedback.textContent =
-                      mapServerReadOnlyErrorMessage(errBody.error) || 'Failed to update role';
-                    roleFeedback.style.color = '#b91c1c';
-                    roleSel.value = prevRole;
-                  }
-                } catch (e) {
-                  roleFeedback.textContent = 'Request failed';
-                  roleFeedback.style.color = '#b91c1c';
-                  roleSel.value = prevRole;
-                } finally {
-                  roleBtn.textContent = originalBtnText;
-                  if (!isSelf) roleSel.disabled = false;
-                  if (!isSelf) syncRoleButtonState();
-                }
-              });
-              roleWrap.appendChild(roleLbl);
-              roleWrap.appendChild(roleSel);
-              roleWrap.appendChild(roleBtn);
-              roleCol.appendChild(roleWrap);
-              roleCol.appendChild(roleFeedback);
               const pinCol = document.createElement('div');
               pinCol.className = 'settings-user-row-role-col';
               const pinRow = document.createElement('div');
@@ -1545,7 +1460,10 @@
               for (const v of values) {
                 const chip = document.createElement('span');
                 chip.style.cssText =
-                  'display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:999px;font-size:13px;border:1px solid var(--border-subtle);' +
+                  // Fixed rounded-RECTANGLE radius, not a 999px pill: a pill radius makes a value
+                  // that wraps to multiple lines (a long "won't eat", or a Notes line) bleed past
+                  // the over-curved corners. Also top-align the × so it sits at the first line.
+                  'display:inline-flex;align-items:flex-start;gap:5px;padding:4px 9px;border-radius:10px;font-size:13px;border:1px solid var(--border-subtle);' +
                   (tone === 'allergy' ? 'background:#fef2f2;color:#b91c1c;border-color:#fecaca;' : 'background:var(--card-bg-2);color:var(--text);');
                 chip.appendChild(document.createTextNode(v));
                 if (!readOnly) {
@@ -1922,8 +1840,6 @@
               const tr = document.createElement('tr');
               const td1 = document.createElement('td');
               td1.textContent = u.displayName;
-              const td2 = document.createElement('td');
-              td2.textContent = u.role;
               const td3 = document.createElement('td');
               const pinIn = document.createElement('input');
               pinIn.type = 'password';
@@ -1995,7 +1911,6 @@
                 td4.textContent = '—';
               }
               tr.appendChild(td1);
-              tr.appendChild(td2);
               tr.appendChild(td3);
               tr.appendChild(td4);
               tbody.appendChild(tr);
@@ -3459,7 +3374,7 @@
           }
           thisweekList.innerHTML = '';
           if (thisweekEmpty) {
-            thisweekEmpty.textContent = 'No meals planned in this chat yet. Ask KitchenBot to plan the week and they’ll show up here.';
+            thisweekEmpty.textContent = 'No meals planned this week yet. Ask KitchenBot to plan the week and they’ll show up here (across every chat).';
             thisweekEmpty.style.display = items.length === 0 ? '' : 'none';
           }
           for (const item of items) {
@@ -3559,35 +3474,61 @@
             return;
           }
           thisweekStrip.innerHTML = '';
+          // Collapsed by DEFAULT — the meal chips ate ~1/5 of a phone screen. One line + a chevron
+          // when collapsed; expands to the chips. State persists across chats/sessions.
+          const collapsed = localStorage.getItem('kb_thisweek_collapsed') !== '0';
           thisweekStrip.style.cssText =
-            'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;margin:0 0 6px;background:var(--accent-soft);border-radius:12px;';
+            'display:block;margin:0 0 6px;background:var(--accent-soft);border-radius:12px;overflow:hidden;';
+
+          const header = document.createElement('button');
+          header.type = 'button';
+          header.setAttribute('aria-expanded', String(!collapsed));
+          header.style.cssText =
+            'display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:8px 12px;background:none;border:none;cursor:pointer;text-align:left;';
           const label = document.createElement('span');
-          label.textContent = 'This week';
           label.style.cssText =
-            'font-size:12px;font-weight:700;color:var(--accent-strong);text-transform:uppercase;letter-spacing:.04em;flex:none;';
-          thisweekStrip.appendChild(label);
-          for (const item of items) {
-            const cooked = item.status === 'cooked';
-            const chip = document.createElement('button');
-            chip.type = 'button';
-            chip.style.cssText =
-              'display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;border:1px solid var(--border-subtle);background:#fff;font-size:13px;cursor:pointer;' +
-              (cooked ? 'opacity:.6;text-decoration:line-through;' : '');
-            chip.textContent = (cooked ? '✓ ' : '') + item.name + (item.cookbookEntryId ? ' 🍳' : '');
-            chip.title =
-              item.name + (cooked ? ' — cooked' : ' — planned') + (item.cookbookEntryId ? ' · has a saved recipe' : '');
-            chip.addEventListener('click', () => {
-              setActiveTab('groceries');
-              if (item.cookbookEntryId) {
-                setGroceriesSubview('cookbook');
-                if (typeof openCookbookDetail === 'function') openCookbookDetail(item.cookbookEntryId);
-              } else {
-                setGroceriesSubview('thisweek');
-              }
-            });
-            thisweekStrip.appendChild(chip);
+            'font-size:12px;font-weight:700;color:var(--accent-strong);text-transform:uppercase;letter-spacing:.04em;';
+          const cookedCount = items.filter((i) => i.status === 'cooked').length;
+          label.textContent = 'This week · ' + items.length + (cookedCount ? ' · ' + cookedCount + ' cooked' : '');
+          const chevron = document.createElement('span');
+          chevron.textContent = collapsed ? '▾' : '▴';
+          chevron.setAttribute('aria-hidden', 'true');
+          chevron.style.cssText = 'font-size:13px;color:var(--accent-strong);flex:none;';
+          header.appendChild(label);
+          header.appendChild(chevron);
+          header.addEventListener('click', () => {
+            localStorage.setItem('kb_thisweek_collapsed', collapsed ? '0' : '1');
+            renderThisWeekStrip();
+          });
+          thisweekStrip.appendChild(header);
+
+          if (!collapsed) {
+            const body = document.createElement('div');
+            body.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 12px 10px;';
+            for (const item of items) {
+              const cooked = item.status === 'cooked';
+              const chip = document.createElement('button');
+              chip.type = 'button';
+              chip.style.cssText =
+                'display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;border:1px solid var(--border-subtle);background:#fff;font-size:13px;cursor:pointer;' +
+                (cooked ? 'opacity:.6;text-decoration:line-through;' : '');
+              chip.textContent = (cooked ? '✓ ' : '') + item.name + (item.cookbookEntryId ? ' 🍳' : '');
+              chip.title =
+                item.name + (cooked ? ' — cooked' : ' — planned') + (item.cookbookEntryId ? ' · has a saved recipe' : '');
+              chip.addEventListener('click', () => {
+                setActiveTab('groceries');
+                if (item.cookbookEntryId) {
+                  setGroceriesSubview('cookbook');
+                  if (typeof openCookbookDetail === 'function') openCookbookDetail(item.cookbookEntryId);
+                } else {
+                  setGroceriesSubview('thisweek');
+                }
+              });
+              body.appendChild(chip);
+            }
+            thisweekStrip.appendChild(body);
           }
-          thisweekStrip.style.display = 'flex';
+          thisweekStrip.style.display = 'block';
         }
 
         function renderChats() {
@@ -4385,7 +4326,7 @@
             for (const u of data.users) {
               const opt = document.createElement('option');
               opt.value = u.displayName;
-              opt.textContent = u.role ? (u.displayName + ' (' + u.role + ')') : u.displayName;
+              opt.textContent = u.displayName;
               loginNameSelect.appendChild(opt);
             }
             loginNameSelect.disabled = false;
@@ -4480,7 +4421,6 @@
                 name: resolvedName,
                 householdId: data.householdId,
                 userId: data.userId,
-                isOwner: data.isOwner,
                 chatColors: {},
                 isImpersonating: false,
                 impersonationReadOnly: false,

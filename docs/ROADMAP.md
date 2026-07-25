@@ -1,7 +1,7 @@
 # KitchenBot — Roadmap & Working State
 
 The living "where we are / what's next" doc. Read this first when picking up on a new device or a
-fresh session. **Update it at the end of a work session.** Last updated: **2026-07-24**.
+fresh session. **Update it at the end of a work session.** Last updated: **2026-07-25**.
 
 ## The goal
 
@@ -11,11 +11,47 @@ legitimate application"* — both in how it **works** (one reasoning brain with 
 it's never going to the app store, so no abuse/scale/cost threat-modeling. Family actually uses it
 (Rob + Elle + a 4yo, Bizzy).
 
-## 🔧 Changed 2026-07-24 (working copy — NOT yet deployed; pending Rob's PR merge)
+## ✅ Shipped to PROD on 2026-07-25 (overnight batch from Rob's real cooking thread)
 
-Items from live use; all done + full suite green (160 tests) + live-smoke-verified. Sitting in the
-working copy, undeployed, so they can ship together in one PR when Rob says go. Theme of the last two:
-Rob's "so few people use this app, kill the gates — we can always add them back later."
+Root theme Rob surfaced: the brain's cooking + honesty are great; the COOKBOOK tooling was failing
+it. Built + deployed autonomously overnight. All 160 tests green; each item live-smoke-verified.
+- **cookbook.get** — new read-only tool returning a saved recipe's FULL body (ingredients, steps,
+  notes, tags, category). Unblocks the save→refine→update loop KB itself proposed but couldn't do
+  (it could save/list but never *read* a recipe to edit it). Loop principle: get → apply → update.
+- **thread.search returns FULL message content** (was a truncated keyword window) — Rob's root
+  frustration; the brain can actually re-use what it recalls now.
+- **Tags + category are brain-authoritative** — killed the haiku shape-model override that dropped
+  Rob's tags; cookbook.list exposes the household `allTags` vocabulary for dedup; brain can set
+  `notes` + `category` on save. New **"grains" category** + rice/pilav auto-detect (pilav-with-lamb
+  → grains, not meat).
+- **Reply truncation** (twice in two days): MAX_TOKENS 2048→4096, auto-continue on a cap, retry an
+  errored/empty stream, honest failure instead of blank/"Okay." (The observed cut was an early-stop,
+  not the cap — fixes cover cap + error; the diagnostic log reveals the rest if it recurs.)
+- **Brain knows the This Week UI** (the 🍳 recipe link it couldn't explain) + a call-then-report
+  principle (report an action only after the tool succeeded; don't over-confess a real success).
+- **This Week plan is HOUSEHOLD-WIDE** (was per-chat): follows every chat, and cooking a meal from a
+  *different* chat than you planned it in now works (updates key on id, not chat). Household dedup.
+- **UX:** collapsible This Week strip (collapsed by default — ate ~1/5 of mobile); Food-profiles
+  corner-radius bug (notes rendered as 999px pills → bled; now a 10px rounded rectangle).
+- **Role debt fully removed** (earlier this session, folded into this deploy): requireOwner no-op +
+  all 11 usages, isOwner/canManage/role API fields, dead role selector, role-update route + db fn,
+  the add-a-member role requirement, and the Anthropic-key owner gate (opened to all members per
+  Rob). DB `role` column left inert. + capabilityIntro "you're the owner" prompt line removed.
+
+### 🔭 Open / next ("what should we do in 3 days")
+- **False-save-claim spiral (#2b):** shipped a call-then-report principle, but the deeper question —
+  why the truthfulness verifier let a fabricated "saved!" through one turn then over-confessed the
+  next — needs a real look at kb-claim-guard + the correction loop. Conservative: not touched overnight.
+- Nice-to-haves surfaced by the plan work: ambient plan in the system prompt (brain sees it only via
+  plan.list today); a `plan.clear` to start a new week cleanly; real-time cross-chat strip refresh
+  (today it refreshes on chat switch, which is fine).
+
+## ✅ Shipped to PROD on 2026-07-24 (main `3c2eb5d` via PR #13, Render live)
+
+Items from live use; all done + full suite green (160 tests) + live-smoke-verified, shipped as one PR.
+Theme of the middle chunk: Rob's "so few people use this app, kill the gates — we can always add them
+back later." ⚠️ On deploy, the `DROP TABLE IF EXISTS kb_memories` migration wipes the legacy freeform
+memory rows. Watch: simple replies now appear after generation (buffered) rather than token-by-token.
 
 - **Cross-device chat formatting bug — FIXED (`public/app.js`).** With the same user logged in on two
   devices, a new message from device A left device B showing **raw, unrendered markdown** until a hard

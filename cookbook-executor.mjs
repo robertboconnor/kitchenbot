@@ -219,6 +219,9 @@ function buildCandidateFromBrainRecipe(recipe, { preferredTitle = '', sourceUrl 
     instructions,
     tags: toList(recipe.tags),
     notes: toList(recipe.notes),
+    // Only carry a category when the brain actually chose one — leaving it undefined lets
+    // buildCookbookRecordForStorage infer it (an empty string would suppress inference).
+    ...(safeTrim(recipe.category) ? { category: safeTrim(recipe.category) } : {}),
     recipeType: safeTrim(recipe.recipeType) || 'saved_recipe',
     sourceTitle: safeTrim(recipe.sourceTitle || sourceTitle),
     sourceUrl: safeTrim(recipe.sourceUrl || sourceUrl),
@@ -620,10 +623,16 @@ export async function executeCookbookList(runtimeAction, context) {
   const entries = rawTag
     ? all.filter((entry) => Array.isArray(entry.tags) && entry.tags.some((t) => String(t).toLowerCase() === rawTag))
     : all;
+  // The household's whole tag vocabulary, so the brain reuses existing tags instead of coining
+  // near-duplicates ("bread" vs "breads").
+  const allTags = [
+    ...new Set(all.flatMap((entry) => (Array.isArray(entry.tags) ? entry.tags : []).map((t) => String(t).toLowerCase()))),
+  ].sort();
   return {
     capability: 'cookbook.list',
     status: 'listed',
     count: entries.length,
+    allTags,
     ...(rawTag ? { filteredByTag: rawTag } : {}),
     entries: entries.slice(0, 20).map((entry) => ({
       id: entry.id,
@@ -672,6 +681,62 @@ export async function executeCookbookDelete(runtimeAction, context) {
     status: 'deleted',
     id: match.id,
     deletedTitle: match.title,
+  };
+}
+
+// READ a single saved recipe IN FULL — ingredients, steps, notes, tags, category.
+// cookbook.list only returns summaries, so before the brain edits a saved recipe it must
+// cookbook.get the real text here, apply the change, and cookbook.update the full result —
+// never reconstruct a recipe from chat memory and risk silently dropping something.
+export async function executeCookbookGet(runtimeAction, context) {
+  const { req } = context;
+  const requestedName = safeTrim(runtimeAction?.input?.name || runtimeAction?.input?.title);
+  if (!requestedName) {
+    return {
+      capability: 'cookbook.get',
+      status: 'invalid',
+      error: 'I need the saved recipe title to look it up in full.',
+    };
+  }
+  const entries = await listCookbookEntries(req.householdId);
+  const matches = findCookbookMatches(entries, requestedName);
+  if (matches.length === 0) {
+    return {
+      capability: 'cookbook.get',
+      status: 'missing',
+      requestedName,
+      // Hand back the real titles so the brain can disambiguate and retry, not guess.
+      availableTitles: entries.slice(0, 40).map((e) => e.title),
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      capability: 'cookbook.get',
+      status: 'ambiguous',
+      requestedName,
+      matches: matches.slice(0, 8).map((e) => e.title),
+    };
+  }
+  // Re-read the single match in full (ingredients + instructions + notes), never a summary.
+  const full = await getCookbookEntryById(req.householdId, matches[0].id);
+  if (!full) {
+    return { capability: 'cookbook.get', status: 'missing', requestedName };
+  }
+  return {
+    capability: 'cookbook.get',
+    status: 'found',
+    id: full.id,
+    title: full.title,
+    category: full.category,
+    recipeType: full.recipeType,
+    summary: full.summary,
+    ingredients: full.ingredients,
+    instructions: full.instructions,
+    notes: full.notes,
+    tags: full.tags,
+    sourceTitle: full.sourceTitle,
+    sourceUrl: full.sourceUrl,
+    sourceBookTitle: full.sourceBookTitle,
   };
 }
 
