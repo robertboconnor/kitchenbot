@@ -109,6 +109,40 @@ test('auto-link: a planned meal links to a saved cookbook recipe by title (confi
   assert.equal(!!tofu.hasRecipe, false, 'tofu has no matching saved recipe, so it stays unlinked');
 });
 
+test('auto-link: a richer meal name still links to a leaner recipe title via content overlap (the cod case)', async () => {
+  // Regression: the strict all-tokens match required EVERY meal-name word to appear in the recipe
+  // title, so "Grilled cod, corn & bacon succotash" never linked to a saved "Cod & Corn Succotash …"
+  // (missing "grilled"/"bacon"). The overlap fallback links it; a decoy sharing only one word must not.
+  const parsed = await runScript(`
+    const cb = await import(new URL('./cookbook-store.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const rec = cb.buildCookbookRecordForStorage({ title: 'Cod & Corn Succotash with Littlenecks', summary: 'A one-pan seafood supper.', ingredients: ['cod', 'corn'], instructions: ['steam the clams', 'fold in the succotash'] });
+    await db.saveCookbookEntry(householdId, rec, { sourceKind: 'manual', sourceChatId: chatId });
+    const decoy = cb.buildCookbookRecordForStorage({ title: 'Grilled Chicken Thighs with Fennel', summary: 'x', ingredients: ['chicken'], instructions: ['grill it'] });
+    await db.saveCookbookEntry(householdId, decoy, { sourceKind: 'manual', sourceChatId: chatId });
+    await plan.executePlanAdd({ capability: 'plan.add', input: { meals: [{ name: 'Grilled cod, corn & bacon succotash' }] } }, ctx);
+    const listed = await reads.executePlanList({}, ctx);
+    process.stdout.write(JSON.stringify({ meals: listed.meals }));
+  `);
+  const cod = parsed.meals.find((m) => /cod/i.test(m.name));
+  assert.equal(cod.hasRecipe, true, 'the richer meal name links to the leaner cod recipe via overlap');
+  assert.match(cod.recipeTitle, /Cod & Corn Succotash/);
+});
+
+test('auto-link: stays unlinked when two recipes are equally plausible (never guesses)', async () => {
+  const parsed = await runScript(`
+    const cb = await import(new URL('./cookbook-store.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    const a = cb.buildCookbookRecordForStorage({ title: 'Cod Succotash Verde', summary: 'x', ingredients: ['cod'], instructions: ['cook'] });
+    const b = cb.buildCookbookRecordForStorage({ title: 'Cod Succotash Rojo', summary: 'x', ingredients: ['cod'], instructions: ['cook'] });
+    await db.saveCookbookEntry(householdId, a, { sourceKind: 'manual', sourceChatId: chatId });
+    await db.saveCookbookEntry(householdId, b, { sourceKind: 'manual', sourceChatId: chatId });
+    await plan.executePlanAdd({ capability: 'plan.add', input: { meals: [{ name: 'Cod succotash' }] } }, ctx);
+    const listed = await reads.executePlanList({}, ctx);
+    process.stdout.write(JSON.stringify({ meals: listed.meals }));
+  `);
+  const cod = parsed.meals.find((m) => /cod/i.test(m.name));
+  assert.equal(!!cod.hasRecipe, false, 'two equally-good matches → no link, rather than guessing wrong');
+});
+
 test('thread.search retrieves an older message past the recent window, deterministically (no side-model)', async () => {
   const parsed = await runScript(`
     await db.addMessage(householdId, chatId, 'user', 'Rob', 'the toum broke and split into oil');

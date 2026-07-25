@@ -4,9 +4,11 @@ export const ANTHROPIC_LIGHTWEIGHT_BACKGROUND_MODEL = 'claude-haiku-4-5-20251001
 // ONE BRAIN (KITCHENBOT_BRAIN_CONTRACT.md — "Smart Brain, Dumb Executors"): the only
 // permitted side-model calls are (a) mechanical parse/shape helpers that never decide an
 // action, derive intent, or classify on the brain's behalf, and (b) post-hoc integrity CHECKS
-// on the brain's own output that select no action and infer no user intent. Chat-title naming
-// and recipe import structuring (OCR / URL → structured recipe) are the parse/shape set;
-// the truthfulness verifier (`kb_truthfulness_check`) is the integrity-check set — it reads
+// on the brain's own output that select no action and infer no user intent. Chat-title naming,
+// recipe import structuring (OCR / URL → structured recipe), and cookbook shaping (`cookbook_shape`
+// — cleaning a saved recipe into structured JSON, and isolating/extracting a recipe from fetched
+// page text) are the parse/shape set; the truthfulness verifier (`kb_truthfulness_check`) is the
+// integrity-check set — it reads
 // the reply + the real tool trace and flags unsupported completion claims. It uses the MAIN
 // model on purpose: it runs AFTER the reply has streamed (so its latency is a background commit,
 // not a wait), and mis-judging truthfulness in either direction is high-cost, so it gets the
@@ -16,6 +18,9 @@ const LIGHTWEIGHT_CALL_PURPOSES = new Set([
   'chat_title',
   'recipe_import_image_structure',
   'recipe_import_url_structure',
+  // Strict-JSON recipe shaping/extraction on save/import. Off the reply hot path and the same class
+  // of task as the recipe-import structuring above, which already runs on the lightweight tier.
+  'cookbook_shape',
 ]);
 
 export function resolveAnthropicModelForCallPurpose(callPurpose) {

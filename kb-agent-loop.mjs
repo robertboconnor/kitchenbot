@@ -190,6 +190,7 @@ export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false
     "Cookbook tags and category are YOURS to choose and are stored exactly as you pass them — nothing overrides them. When tagging, reuse an existing tag (cookbook.list returns the household's whole tag vocabulary as allTags) rather than coining a near-duplicate like 'breads' when 'bread' already exists.",
     "The 'This Week' plan strip is drawn by the app from the plan state — you don't render it. A planned meal automatically shows a '🍳 recipe' link once a saved cookbook recipe with a matching title exists (the app auto-links them by title), and its checkbox marks it cooked. plan.list gives you each meal's hasRecipe flag and status, so if someone asks what that 🍳 / recipe link or the checkmark means, explain the app is linking that meal to its saved recipe — never say you have no idea.",
     "Report an action (saved, added, updated, removed) ONLY after you have actually called the tool and seen its success THIS turn. Never narrate a tool result — \"the tool returned…\", \"saved!\" — before calling it; if you haven't called it yet, call it now, then report what actually came back. And don't over-correct: if a tool genuinely succeeded, state it plainly — you do not owe a confession or a walk-back for a real success.",
+    "Answer the request, not your own tool bookkeeping. The user does not need a play-by-play of which tool ran on which turn, or that a check was 'read-only' — that reads as evasive and off-topic. When they ask you to do or confirm something: if it's already done, just confirm it plainly and hand them the result ('That's saved — here's the recipe'); if it isn't done yet, do it now. If they asked you to write something out (a full recipe, a plan), write it out in the reply — don't reply about the mechanics of having saved it.",
     "Users can attach a photo or a text/markdown file to a message — you see photos directly and attached files as text, so just look and answer. Photos cost disk to keep, so when the user asks to remove or clear photos ('we don't need these anymore'), do it with attachments.clear (defaults to this chat's photos; pass scope 'household' to clear everywhere).",
   ];
   principles.push(capabilityIntroPrinciple());
@@ -207,6 +208,50 @@ export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+// Marks the fixed, repeated parts of a loop request as ephemeral-cached: the system rulebook
+// (as one cached text block) and the full tool schema (breakpoint on the LAST tool — caching a
+// prefix caches everything before it, so all tools are covered by one marker). Two markers total,
+// well under the API's limit of four. Pure cost optimization: the content the model receives is
+// unchanged, and a cache miss just means we pay full price that once — never a wrong answer.
+export function applyPromptCaching(systemText, toolDefs) {
+  const system = [
+    { type: 'text', text: String(systemText ?? ''), cache_control: { type: 'ephemeral' } },
+  ];
+  const tools =
+    Array.isArray(toolDefs) && toolDefs.length
+      ? [
+          ...toolDefs.slice(0, -1),
+          { ...toolDefs[toolDefs.length - 1], cache_control: { type: 'ephemeral' } },
+        ]
+      : toolDefs;
+  return { system, tools };
+}
+
+// Rotating cache breakpoint for the conversation. On a multi-tool turn the loop keeps appending the
+// assistant's tool calls + the tool results to `messages`, and every later iteration re-sends that
+// whole growing transcript. Marking the LAST message's last block ephemeral-cached each iteration
+// lets the next iteration read the entire prior conversation (transcript + any attached photo) from
+// cache and pay full price only for what's new. Combined with the static system/tool markers that's
+// 3 breakpoints, under the API's limit of 4. Returns a shallow per-request copy so the canonical
+// `messages` array stays unmarked (no stale markers to clear, no accumulation). Pure cost accounting.
+export function withConversationCacheBreakpoint(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const lastIdx = messages.length - 1;
+  const last = messages[lastIdx];
+  const content = last?.content;
+  let markedContent;
+  if (typeof content === 'string') {
+    markedContent = [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }];
+  } else if (Array.isArray(content) && content.length) {
+    markedContent = content.map((block, i) =>
+      i === content.length - 1 ? { ...block, cache_control: { type: 'ephemeral' } } : block
+    );
+  } else {
+    return messages; // nothing markable (empty/odd content) — send as-is
+  }
+  return [...messages.slice(0, lastIdx), { ...last, content: markedContent }];
 }
 
 function buildMessagesFromHistory(recentMessages, currentPrompt, attachment = null) {
@@ -291,6 +336,11 @@ export async function runKbAgentLoop({
     : false;
   const system = buildLoopSystemPrompt({ memoryContext, name, isDeveloper });
   const tools = buildKbToolDefinitions({ webSearchEnabled });
+  // Prompt caching: the system rulebook + full tool schema (~7–8k tokens) are byte-identical on every
+  // one of this turn's up-to-8 iterations and across messages in a sitting, so cache them once and let
+  // reuse bill at ~10% of input. Identical prompt to the model — purely token accounting. See
+  // applyPromptCaching. (cache_control passes straight through the SDK wrapper; ephemeral caching is GA.)
+  const { system: cachedSystem, tools: cachedTools } = applyPromptCaching(system, tools);
   const messages = buildMessagesFromHistory(recentMessages, promptText, req.kbAttachment);
 
   // Context handed to every executor via kb-tools.executeKbToolCall.
@@ -332,9 +382,9 @@ export async function runKbAgentLoop({
       const stream = anthropic.messages.stream({
         model: ANTHROPIC_MAIN_REASONING_MODEL,
         max_tokens: MAX_TOKENS,
-        system,
-        messages,
-        tools,
+        system: cachedSystem,
+        messages: withConversationCacheBreakpoint(messages),
+        tools: cachedTools,
       });
       response = await finalizeLoggedAnthropicStream(stream, {
         householdId,
@@ -456,11 +506,11 @@ export async function runKbAgentLoop({
         {
           model: ANTHROPIC_MAIN_REASONING_MODEL,
           max_tokens: MAX_TOKENS,
-          system,
-          messages: [
+          system: cachedSystem,
+          messages: withConversationCacheBreakpoint([
             ...messages,
             { role: 'user', content: 'Wrap up: tell me plainly what you did and where things stand.' },
-          ],
+          ]),
         },
         { householdId, chatId, turnId, callPurpose: 'kb_agent_loop', callSurface: 'chat', prompt: promptText }
       );

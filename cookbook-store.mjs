@@ -233,6 +233,19 @@ export function getCookbookCategoryLabel(category) {
   return COOKBOOK_CATEGORY_OPTIONS.find((option) => option.value === normalized)?.label || 'Uncategorized';
 }
 
+// Storage caps for saved-recipe content. These are DELIBERATELY GENEROUS.
+// A previous 240-char/step cap chopped detailed instruction steps mid-word (e.g. a real
+// step "...until they open. Discard any that don't open." was stored as "...Discard any th"),
+// and — because the update path re-applied the same cap — cookbook.update re-truncated to the
+// identical string and reported "unchanged", so the recipe could never be repaired. Real recipe
+// steps run long (a paragraph is normal); only bound against pathological input, never real text.
+const RECIPE_MAX_INGREDIENTS = 60;
+const RECIPE_MAX_INGREDIENT_LEN = 400;
+const RECIPE_MAX_STEPS = 40;
+const RECIPE_MAX_STEP_LEN = 2000;
+const RECIPE_MAX_NOTES = 30;
+const RECIPE_MAX_NOTE_LEN = 1000;
+
 function normalizeStringList(values, limit = 12, maxLength = 180) {
   const seen = new Set();
   const out = [];
@@ -581,9 +594,9 @@ export function parseCookbookRecipeText(raw, { preferredTitle = '', sourceUrl = 
   title = chooseRecipeTitleFromPreamble(preambleLines);
   const parsedTitle = normalizeCookbookTitle(title || 'Saved recipe');
   title = normalizeCookbookTitle(preferredTitle || parsedTitle || 'Saved recipe');
-  ingredients = normalizeStringList(ingredients, 40, 220);
-  instructions = normalizeStringList(instructions, 24, 320);
-  const parsedNotes = normalizeNotesList(notes, 20, 220);
+  ingredients = normalizeStringList(ingredients, RECIPE_MAX_INGREDIENTS, RECIPE_MAX_INGREDIENT_LEN);
+  instructions = normalizeStringList(instructions, RECIPE_MAX_STEPS, RECIPE_MAX_STEP_LEN);
+  const parsedNotes = normalizeNotesList(notes, RECIPE_MAX_NOTES, RECIPE_MAX_NOTE_LEN);
 
   if (!title || ingredients.length === 0 || instructions.length === 0) return null;
   const tags = title
@@ -713,13 +726,13 @@ export function buildCookbookRecordForStorage(raw) {
     summary,
     category,
     recipeType: normalizeCookbookType(raw.recipeType),
-    ingredients: normalizeStringList(raw.ingredients, 24, 180),
-    instructions: normalizeStringList(raw.instructions, 16, 240),
+    ingredients: normalizeStringList(raw.ingredients, RECIPE_MAX_INGREDIENTS, RECIPE_MAX_INGREDIENT_LEN),
+    instructions: normalizeStringList(raw.instructions, RECIPE_MAX_STEPS, RECIPE_MAX_STEP_LEN),
     tags: normalizeStringList(raw.tags, 12, 60).map((tag) => tag.toLowerCase()),
     sourceBookTitle: sanitizeCookbookSourceTitle(raw.sourceBookTitle, { title }).slice(0, 160),
     sourceTitle: sanitizeCookbookSourceTitle(raw.sourceTitle, { title }).slice(0, 160),
     sourceUrl: normalizeCookbookUrl(raw.sourceUrl),
-    notes: normalizeNotesList(raw.notes, 20, 220),
+    notes: normalizeNotesList(raw.notes, RECIPE_MAX_NOTES, RECIPE_MAX_NOTE_LEN),
     sourceKind: safeTrim(raw.sourceKind || 'manual').slice(0, 60) || 'manual',
     sourceChatId: Number.isFinite(Number(raw.sourceChatId)) ? Number(raw.sourceChatId) : null,
     lastUsedAt: raw.lastUsedAt ? String(raw.lastUsedAt) : null,
@@ -1096,14 +1109,14 @@ export function mergeCookbookRecord(existingItem, incomingItem) {
     ? normalizeCookbookSummary(incoming.summary) || normalizeCookbookSummary(existing.summary) || ''
     : summaryOptions.sort((a, b) => b.length - a.length)[0] || '';
   const ingredients = incomingWins
-    ? normalizeStringList(incoming.ingredients, 24, 180)
-    : normalizeStringList([...(existing.ingredients || []), ...(incoming.ingredients || [])], 24, 180);
+    ? normalizeStringList(incoming.ingredients, RECIPE_MAX_INGREDIENTS, RECIPE_MAX_INGREDIENT_LEN)
+    : normalizeStringList([...(existing.ingredients || []), ...(incoming.ingredients || [])], RECIPE_MAX_INGREDIENTS, RECIPE_MAX_INGREDIENT_LEN);
   const instructions = incomingWins
-    ? normalizeStringList(incoming.instructions, 16, 240)
-    : normalizeStringList([...(existing.instructions || []), ...(incoming.instructions || [])], 16, 240);
+    ? normalizeStringList(incoming.instructions, RECIPE_MAX_STEPS, RECIPE_MAX_STEP_LEN)
+    : normalizeStringList([...(existing.instructions || []), ...(incoming.instructions || [])], RECIPE_MAX_STEPS, RECIPE_MAX_STEP_LEN);
   const notes = incomingWins
-    ? normalizeNotesList(incoming.notes, 20, 220)
-    : normalizeNotesList([...(Array.isArray(existing.notes) ? existing.notes : []), ...(Array.isArray(incoming.notes) ? incoming.notes : [])], 20, 220);
+    ? normalizeNotesList(incoming.notes, RECIPE_MAX_NOTES, RECIPE_MAX_NOTE_LEN)
+    : normalizeNotesList([...(Array.isArray(existing.notes) ? existing.notes : []), ...(Array.isArray(incoming.notes) ? incoming.notes : [])], RECIPE_MAX_NOTES, RECIPE_MAX_NOTE_LEN);
   return buildCookbookRecordForStorage({
     title: incoming.title || existing.title,
     summary,

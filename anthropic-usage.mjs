@@ -68,6 +68,9 @@ export function classifyAnthropicUsageFunction(callPurpose) {
   if (purpose === 'web_search') return 'Web search';
   if (purpose === 'web_fetch') return 'Web fetch';
   if (purpose === 'chat_title') return 'Chat titles';
+  if (purpose === 'kb_agent_loop') return 'Conversation & reasoning';
+  if (purpose === 'kb_truthfulness_check') return 'Truthfulness checks';
+  if (purpose === 'cookbook_shape') return 'Cookbook';
   return 'Other';
 }
 
@@ -87,6 +90,7 @@ export function buildAnthropicUsageReport(rows) {
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
     estimatedCostUsd: 0,
+    estimatedCostWithoutCacheUsd: 0,
     estimatedCostAvailable: true,
     estimatedCostPartial: false,
     estimatedCostKnownCallCount: 0,
@@ -96,8 +100,6 @@ export function buildAnthropicUsageReport(rows) {
   const byHousehold = new Map();
   const byPurpose = new Map();
   const byFunction = new Map();
-  const byWebSearchEnabled = new Map();
-  const byWebSearchUsage = new Map();
 
   function bump(map, key, row, costUsd) {
     const k = String(key);
@@ -145,23 +147,15 @@ export function buildAnthropicUsageReport(rows) {
       totals.estimatedCostKnownCallCount += 1;
       totals.estimatedCostUsd += costUsd;
     }
+    const costWithoutCacheUsd = estimateAnthropicLedgerCostWithoutCacheUsd(row);
+    if (costWithoutCacheUsd != null) {
+      totals.estimatedCostWithoutCacheUsd += costWithoutCacheUsd;
+    }
     totals.estimatedCostAvailable = totals.estimatedCostKnownCallCount > 0;
     totals.estimatedCostPartial = totals.estimatedCostUnknownCallCount > 0;
     bump(byHousehold, row.household_id, row, costUsd);
     bump(byPurpose, row.call_purpose, row, costUsd);
     bump(byFunction, classifyAnthropicUsageFunction(row.call_purpose), row, costUsd);
-    bump(
-      byWebSearchEnabled,
-      Number(row.web_search_enabled_at_call) === 1 ? 'enabled' : 'disabled',
-      row,
-      costUsd
-    );
-    bump(
-      byWebSearchUsage,
-      Number(row.used_web_search_tool) === 1 ? 'used' : 'not_used',
-      row,
-      costUsd
-    );
   }
 
   function finalizeGroups(map) {
@@ -173,8 +167,6 @@ export function buildAnthropicUsageReport(rows) {
     byHousehold: finalizeGroups(byHousehold),
     byPurpose: finalizeGroups(byPurpose),
     byFunction: finalizeGroups(byFunction),
-    byWebSearchEnabled: finalizeGroups(byWebSearchEnabled),
-    byWebSearchUsage: finalizeGroups(byWebSearchUsage),
   };
 }
 
@@ -241,6 +233,29 @@ export function estimateAnthropicLedgerCostUsd(row) {
     (outputTokens / 1_000_000) * pricing.output +
     (cacheCreationInputTokens / 1_000_000) * pricing.cacheCreation +
     (cacheReadInputTokens / 1_000_000) * pricing.cacheRead
+  );
+}
+
+export function estimateAnthropicLedgerCostWithoutCacheUsd(row) {
+  const normalizedModel = normalizeAnthropicModelForPricing(row?.model);
+  const pricing = MODEL_PRICING_USD_PER_MILLION[normalizedModel];
+  if (!pricing) return null;
+  const inputTokens = Number(row?.input_tokens ?? row?.inputTokens ?? 0) || 0;
+  const outputTokens = Number(row?.output_tokens ?? row?.outputTokens ?? 0) || 0;
+  const cacheCreationInputTokens = Number(
+    row?.cache_creation_input_tokens ?? row?.cacheCreationInputTokens ?? 0
+  ) || 0;
+  const cacheReadInputTokens = Number(
+    row?.cache_read_input_tokens ?? row?.cacheReadInputTokens ?? 0
+  ) || 0;
+
+  // Hypothetical cost if prompt caching were OFF: every cache-read and cache-write
+  // token would instead be billed as ordinary fresh input. Diffed against the real
+  // cost, this is what caching is saving the household.
+  return (
+    ((inputTokens + cacheCreationInputTokens + cacheReadInputTokens) / 1_000_000) *
+      pricing.input +
+    (outputTokens / 1_000_000) * pricing.output
   );
 }
 

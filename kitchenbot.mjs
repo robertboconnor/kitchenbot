@@ -896,7 +896,6 @@ function buildAnthropicUsageReportResponse(rows, households, options = {}) {
     totals: report.totals,
     byFunction: report.byFunction,
     byHousehold,
-    byWebSearchUsage: report.byWebSearchUsage,
     byPurpose: report.byPurpose,
     recentRows,
     ...(options.household ? { household: options.household } : {}),
@@ -1453,7 +1452,6 @@ app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdmin
       callPurpose: req.query.callPurpose ? String(req.query.callPurpose).trim() : null,
       callSurface: req.query.callSurface ? String(req.query.callSurface).trim() : null,
       webSearchEnabledAtCall: normalizeUsageFilterBoolean(req.query.webSearchEnabled),
-      usedWebSearchTool: normalizeUsageFilterBoolean(req.query.usedWebSearchUsed),
     };
 
     const [rows, households] = await Promise.all([
@@ -1469,7 +1467,6 @@ app.get('/admin/usage-report', requireHousehold, requireAuth, requireGlobalAdmin
           callPurpose: filters.callPurpose || null,
           callSurface: filters.callSurface || null,
           webSearchEnabled: filters.webSearchEnabledAtCall,
-          usedWebSearchTool: filters.usedWebSearchTool,
         },
       })
     );
@@ -1488,7 +1485,6 @@ app.get('/settings/household/anthropic-usage', requireHousehold, requireAuth, as
       startDate,
       endDate: endDateExclusive,
       webSearchEnabledAtCall: normalizeUsageFilterBoolean(req.query.webSearchEnabled),
-      usedWebSearchTool: normalizeUsageFilterBoolean(req.query.usedWebSearchUsed),
     };
     const [rows, households, household] = await Promise.all([
       getAnthropicUsageLedgerAllRows(filters),
@@ -1506,7 +1502,6 @@ app.get('/settings/household/anthropic-usage', requireHousehold, requireAuth, as
           startDate: req.query.startDate ? String(req.query.startDate) : null,
           endDate: req.query.endDate ? String(req.query.endDate) : null,
           webSearchEnabled: filters.webSearchEnabledAtCall,
-          usedWebSearchTool: filters.usedWebSearchTool,
         },
         household: {
           id: household.id,
@@ -2559,11 +2554,6 @@ app.get('/', (req, res) => {
           border-color: var(--accent-strong);
           background: linear-gradient(135deg, rgba(var(--card-rgb), 0.98), rgba(var(--card-rgb), 0.98));
           box-shadow: 0 12px 28px rgba(var(--accent-rgb), 0.16);
-        }
-
-        .kitchen-section-btn--secondary {
-          opacity: 0.82;
-          background: rgba(250, 252, 255, 0.88);
         }
 
         .kitchen-section-panel {
@@ -3741,6 +3731,15 @@ app.get('/', (req, res) => {
           margin-bottom: 4px;
         }
 
+        /* This Week items: let the meal name fill the row so every title/description shares
+           one left edge (checkbox → name → ✕). Without flex:1 the name span floats in the
+           middle under justify-content:space-between, so longer meals drift further left. */
+        .g-item-name {
+          flex: 1 1 auto;
+          min-width: 0;
+          text-align: left;
+        }
+
         .g-left {
           display: flex;
           align-items: center;
@@ -4670,8 +4669,8 @@ app.get('/', (req, res) => {
               <div id="grocery-subtabs" class="kitchen-section-switcher">
                 <button id="grocery-subtab-cookbook" type="button" class="settings-subtab-btn kitchen-section-btn settings-subtab-active">Cookbook</button>
                 <button id="grocery-subtab-list" type="button" class="settings-subtab-btn kitchen-section-btn">Groceries</button>
-                <button id="grocery-subtab-pantry" type="button" class="settings-subtab-btn kitchen-section-btn kitchen-section-btn--secondary">Pantry</button>
-                <button id="grocery-subtab-thisweek" type="button" class="settings-subtab-btn kitchen-section-btn kitchen-section-btn--secondary">This Week</button>
+                <button id="grocery-subtab-pantry" type="button" class="settings-subtab-btn kitchen-section-btn">Pantry</button>
+                <button id="grocery-subtab-thisweek" type="button" class="settings-subtab-btn kitchen-section-btn">This Week</button>
               </div>
               <details class="kitchen-workspace-mobile-about">
                 <summary class="kitchen-mobile-about-summary">About Kitchen</summary>
@@ -4888,9 +4887,9 @@ app.get('/', (req, res) => {
             <div class="kitchen-section-header">
               <div class="kitchen-section-kicker">This Week</div>
               <div class="kitchen-section-title-row">
-                <h3 class="kitchen-section-title">The plan for this chat</h3>
+                <h3 class="kitchen-section-title">The plan for this week</h3>
               </div>
-              <p class="kitchen-section-copy">The meals you’re planning in the current chat. KitchenBot keeps this in sync as you plan — so it remembers the week even in a very long thread — and you can tick meals off or drop them here.</p>
+              <p class="kitchen-section-copy">Every meal on your plan for the week. It follows you across all your chats — so nothing gets lost, even in a very long thread — and you can tick meals off or drop them here.</p>
             </div>
             <ul class="g-list" id="thisweek-list"></ul>
             <p id="thisweek-empty" class="kitchen-section-copy" style="display:none;">No meals planned this week yet. Ask KitchenBot to plan the week and they’ll show up here (across every chat).</p>
@@ -5097,14 +5096,6 @@ app.get('/', (req, res) => {
                   <label for="owner-usage-end-date">End date</label>
                   <input id="owner-usage-end-date" type="date" />
                 </div>
-                <div class="settings-form-field" style="max-width: 180px;">
-                  <label for="owner-usage-websearch-used">Web search used</label>
-                  <select id="owner-usage-websearch-used">
-                    <option value="all">All</option>
-                    <option value="used">Used</option>
-                    <option value="not_used">Not used</option>
-                  </select>
-                </div>
                 <button type="button" id="owner-usage-refresh">Refresh usage</button>
               </div>
               <div id="owner-usage-msg" style="font-size: 13px; color: var(--accent-strong); margin-bottom: 8px;"></div>
@@ -5163,7 +5154,7 @@ app.get('/', (req, res) => {
                 <div class="settings-card-header">
                   <div>
                     <h3>Anthropic usage</h3>
-                    <p class="settings-card-subtitle">Review token, cost, and web-search usage with filters that make the underlying call ledger easier to scan.</p>
+                    <p class="settings-card-subtitle">Review token and cost usage with filters that make the underlying call ledger easier to scan.</p>
                   </div>
                 </div>
                 <div class="settings-admin-selectors" style="margin-bottom: 10px;">
@@ -5178,14 +5169,6 @@ app.get('/', (req, res) => {
                   <div class="settings-form-field" style="max-width: 200px;">
                     <label for="admin-usage-household-select">Household</label>
                     <select id="admin-usage-household-select"></select>
-                  </div>
-                  <div class="settings-form-field" style="max-width: 180px;">
-                    <label for="admin-usage-websearch-used">Web search used</label>
-                    <select id="admin-usage-websearch-used">
-                      <option value="all">All</option>
-                      <option value="used">Used</option>
-                      <option value="not_used">Not used</option>
-                    </select>
                   </div>
                   <button type="button" id="admin-usage-refresh">Refresh usage</button>
                 </div>
