@@ -2247,8 +2247,150 @@
             body.textContent = content;
           }
           div.appendChild(body);
+          const atts = Array.isArray(options.attachments) ? options.attachments : [];
+          if (atts.length) {
+            const attWrap = document.createElement('div');
+            attWrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;';
+            for (const a of atts) {
+              if (a.kind === 'image') {
+                const img = document.createElement('img');
+                img.src = a.id ? '/attachment/' + a.id : 'data:' + (a.mediaType || 'image/jpeg') + ';base64,' + (a.data || '');
+                img.alt = a.name || 'photo';
+                img.style.cssText =
+                  'max-width:180px;max-height:180px;border-radius:10px;border:1px solid var(--border-subtle);cursor:pointer;';
+                if (a.id) img.addEventListener('click', () => window.open('/attachment/' + a.id, '_blank'));
+                attWrap.appendChild(img);
+              } else {
+                const fileChip = document.createElement(a.id ? 'a' : 'span');
+                if (a.id) {
+                  fileChip.href = '/attachment/' + a.id;
+                  fileChip.target = '_blank';
+                  fileChip.rel = 'noopener';
+                }
+                fileChip.textContent = '📄 ' + (a.name || 'file');
+                fileChip.style.cssText =
+                  'display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border-radius:10px;border:1px solid var(--border-subtle);background:var(--card-bg-2);font-size:13px;text-decoration:none;color:var(--text);';
+                attWrap.appendChild(fileChip);
+              }
+            }
+            div.appendChild(attWrap);
+          }
           chat.appendChild(div);
           if (autoScroll) chat.scrollTop = chat.scrollHeight;
+        }
+
+        // --- Chat file attachments (photos + text/markdown) ---
+        const attachBtn = document.getElementById('attach-btn');
+        const attachInput = document.getElementById('attach-input');
+        const attachmentPreview = document.getElementById('attachment-preview');
+        let pendingAttachment = null;
+
+        async function downscaleImageToBase64(file, maxDim = 1600, quality = 0.85) {
+          const dataUrl = await new Promise((resolve, reject) => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(fr.result);
+            fr.onerror = reject;
+            fr.readAsDataURL(file);
+          });
+          const img = await new Promise((resolve, reject) => {
+            const im = new Image();
+            im.onload = () => resolve(im);
+            im.onerror = reject;
+            im.src = dataUrl;
+          });
+          let width = img.width;
+          let height = img.height;
+          if (width > maxDim || height > maxDim) {
+            const scale = maxDim / Math.max(width, height);
+            width = Math.round(width * scale);
+            height = Math.round(height * scale);
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+          return canvas.toDataURL('image/jpeg', quality).split(',')[1];
+        }
+
+        function renderAttachmentPreview() {
+          if (!attachmentPreview) return;
+          attachmentPreview.innerHTML = '';
+          if (!pendingAttachment) {
+            attachmentPreview.style.display = 'none';
+            return;
+          }
+          attachmentPreview.style.display = 'flex';
+          const chip = document.createElement('div');
+          chip.style.cssText =
+            'display:inline-flex;align-items:center;gap:8px;padding:6px 8px;border-radius:10px;border:1px solid var(--border-subtle);background:var(--accent-soft);max-width:100%;';
+          if (pendingAttachment.kind === 'image') {
+            const thumb = document.createElement('img');
+            thumb.src = 'data:' + pendingAttachment.mediaType + ';base64,' + pendingAttachment.data;
+            thumb.style.cssText = 'width:40px;height:40px;object-fit:cover;border-radius:6px;';
+            chip.appendChild(thumb);
+          }
+          const label = document.createElement('span');
+          label.textContent =
+            (pendingAttachment.kind === 'image' ? '📷 ' : '📄 ') +
+            (pendingAttachment.name || (pendingAttachment.kind === 'image' ? 'photo' : 'file'));
+          label.style.cssText = 'font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+          chip.appendChild(label);
+          const x = document.createElement('button');
+          x.type = 'button';
+          x.textContent = '×';
+          x.title = 'Remove attachment';
+          x.style.cssText = 'border:none;background:none;cursor:pointer;font-size:18px;line-height:1;color:var(--text-soft);padding:0 2px;';
+          x.addEventListener('click', () => {
+            pendingAttachment = null;
+            if (attachInput) attachInput.value = '';
+            renderAttachmentPreview();
+          });
+          chip.appendChild(x);
+          attachmentPreview.appendChild(chip);
+        }
+
+        async function handleAttachFile(file) {
+          if (!file) return;
+          const nameLower = (file.name || '').toLowerCase();
+          const isImage = (file.type || '').startsWith('image/');
+          const isText =
+            file.type === 'text/plain' ||
+            file.type === 'text/markdown' ||
+            nameLower.endsWith('.md') ||
+            nameLower.endsWith('.markdown') ||
+            nameLower.endsWith('.txt');
+          try {
+            if (isImage) {
+              const data = await downscaleImageToBase64(file);
+              pendingAttachment = { kind: 'image', mediaType: 'image/jpeg', name: file.name || 'photo.jpg', data };
+            } else if (isText) {
+              const text = await file.text();
+              if (text.length > 400000) {
+                alert('That file is a bit too big (max ~400KB of text).');
+                return;
+              }
+              pendingAttachment = {
+                kind: 'text',
+                mediaType: nameLower.endsWith('.md') || nameLower.endsWith('.markdown') ? 'text/markdown' : 'text/plain',
+                name: file.name || 'file.txt',
+                data: text,
+              };
+            } else {
+              alert('I can read photos and text/markdown files — that type is not supported.');
+              return;
+            }
+            renderAttachmentPreview();
+          } catch (e) {
+            alert('Could not read that file.');
+          }
+        }
+
+        if (attachBtn && attachInput) {
+          attachBtn.addEventListener('click', () => attachInput.click());
+          attachInput.addEventListener('change', () => {
+            const f = attachInput.files && attachInput.files[0];
+            if (f) handleAttachFile(f);
+          });
         }
 
         async function loadHistory(options = {}) {
@@ -2283,7 +2425,7 @@
           for (const ep of sortedEp) {
             while (dbEmitted < ep.anchor && pIdx < persisted.length) {
               const m = persisted[pIdx++];
-              addMessage(m.role, m.name, m.content, { autoScroll: false });
+              addMessage(m.role, m.name, m.content, { autoScroll: false, attachments: m.attachments });
               dbEmitted++;
             }
             addMessage('user', ep.userName, ep.user, { autoScroll: false });
@@ -4526,7 +4668,7 @@
           if (chatRequestInFlight) return;
           const prompt = promptInput.value.trim();
 
-          if (!prompt) return;
+          if (!prompt && !pendingAttachment) return;
 
           sendTyping(false);
           if (typingStopTimeout) {
@@ -4536,8 +4678,12 @@
 
           const speaker = speakerName.textContent || 'Rob';
           hideNewMessageIndicator();
-          addMessage('user', speaker, prompt);
+          const sentAttachment = pendingAttachment;
+          pendingAttachment = null;
+          addMessage('user', speaker, prompt, { attachments: sentAttachment ? [sentAttachment] : [] });
           promptInput.value = '';
+          if (attachInput) attachInput.value = '';
+          renderAttachmentPreview();
           resizePromptInput();
           weAreStreamingThisChat = true;
           chatRequestInFlight = true;
@@ -4571,6 +4717,7 @@
                 name: speaker,
                 chatId: currentChatId,
                 timeContext: buildClientTimeContext(),
+                attachment: sentAttachment,
               })
             });
 

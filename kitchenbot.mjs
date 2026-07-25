@@ -23,6 +23,10 @@ import {
   getMealPlanItems,
   updateMealPlanItem,
   deleteMealPlanItem,
+  addChatAttachment,
+  getChatAttachmentsForChat,
+  getChatAttachmentById,
+  deleteChatAttachments,
   listAllHouseholdsSummary,
   updateHouseholdUserChatColor,
   updateHouseholdUserPalette,
@@ -1337,7 +1341,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '12mb' })); // headroom for downscaled base64 image attachments on /chat
 app.use(express.static('public'));
 
 app.get('/bootstrap/status', async (req, res) => {
@@ -4036,6 +4040,18 @@ app.get('/', (req, res) => {
           flex-shrink: 0;
         }
 
+        #attachment-preview {
+          display: none;
+          padding: 0 0 8px;
+        }
+
+        #attach-btn {
+          padding: 8px 12px;
+          font-size: 18px;
+          line-height: 1;
+          align-self: flex-end;
+        }
+
         button {
           padding: 9px 14px;
           cursor: pointer;
@@ -5224,7 +5240,10 @@ app.get('/', (req, res) => {
           </div>
         </div>
 
+        <div id="attachment-preview"></div>
         <div id="input-area">
+          <button id="attach-btn" type="button" aria-label="Attach a photo or file" title="Attach a photo or file">📎</button>
+          <input id="attach-input" type="file" accept="image/*,.md,.markdown,.txt,text/markdown,text/plain" hidden />
           <textarea id="prompt" placeholder="What's cooking?" rows="1"></textarea>
           <button id="send" type="button" aria-label="Send">↑</button>
         </div>
@@ -6087,6 +6106,36 @@ app.post('/logout', (req, res) => {
   return res.json({ ok: true });
 });
 
+// Validate a chat attachment from the client. Returns {kind, mediaType, name, data, byteSize} or
+// null. Images arrive as base64 (already downscaled in the browser); text arrives as utf8.
+const ATTACHMENT_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const ATTACHMENT_TEXT_TYPES = new Set(['text/plain', 'text/markdown']);
+const MAX_IMAGE_BASE64_LEN = 9_000_000; // ~6.7MB decoded (Anthropic per-image cap is 5MB) + slack
+const MAX_TEXT_LEN = 400_000; // ~400KB of text
+function parseChatAttachment(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const kind = String(raw.kind ?? '').trim();
+  const mediaType = String(raw.mediaType ?? raw.media_type ?? '').trim().toLowerCase();
+  const name = String(raw.name ?? '').trim().slice(0, 200) || null;
+  const data = typeof raw.data === 'string' ? raw.data : '';
+  if (!data) return null;
+  if (kind === 'image') {
+    if (!ATTACHMENT_IMAGE_TYPES.has(mediaType) || data.length > MAX_IMAGE_BASE64_LEN) return null;
+    return { kind: 'image', mediaType, name, data, byteSize: Math.floor((data.length * 3) / 4) };
+  }
+  if (kind === 'text') {
+    if (data.length > MAX_TEXT_LEN) return null;
+    return {
+      kind: 'text',
+      mediaType: ATTACHMENT_TEXT_TYPES.has(mediaType) ? mediaType : 'text/plain',
+      name,
+      data,
+      byteSize: Buffer.byteLength(data, 'utf8'),
+    };
+  }
+  return null;
+}
+
 app.get('/history', requireHousehold, requireAuth, async (req, res) => {
   try {
     const chatId = Number(req.query.chatId);
@@ -6095,14 +6144,43 @@ app.get('/history', requireHousehold, requireAuth, async (req, res) => {
     }
     const conversation = await getMessages(chatId, req.householdId);
     const defaults = await getHouseholdDefaults(req.householdId).catch(() => ({}));
+    const attachments = await getChatAttachmentsForChat(req.householdId, chatId).catch(() => []);
+    const attachmentsByMessage = new Map();
+    for (const a of attachments) {
+      if (a.messageId == null) continue;
+      if (!attachmentsByMessage.has(a.messageId)) attachmentsByMessage.set(a.messageId, []);
+      attachmentsByMessage.get(a.messageId).push({ id: a.id, kind: a.kind, mediaType: a.mediaType, name: a.name });
+    }
     const conversationForClient = conversation.map((m) => ({
       ...m,
       content: stripStoredMessageContentForDisplay(m.content),
+      attachments: attachmentsByMessage.get(Number(m.id)) || [],
     }));
     res.json({ conversation: conversationForClient, assistantName: defaults.assistantName || DEFAULT_ASSISTANT_NAME });
   } catch (error) {
     console.error(error);
     res.status(500).json({ conversation: [] });
+  }
+});
+
+// Serve one attachment's bytes to household members (images render via <img src>; text inline).
+app.get('/attachment/:id', requireHousehold, requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).end();
+    const att = await getChatAttachmentById(req.householdId, id);
+    if (!att) return res.status(404).end();
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.setHeader('Content-Disposition', 'inline');
+    if (att.kind === 'image') {
+      res.setHeader('Content-Type', att.mediaType || 'image/jpeg');
+      return res.end(Buffer.from(att.data, 'base64'));
+    }
+    res.setHeader('Content-Type', `${att.mediaType || 'text/plain'}; charset=utf-8`);
+    return res.end(att.data);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).end();
   }
 });
 
@@ -6147,6 +6225,7 @@ app.post(
       if (!Number.isFinite(chatId)) {
         return res.status(400).json({ reply: 'chatId is required.' });
       }
+      req.kbAttachment = parseChatAttachment(req.body.attachment);
 
       const inventoryServices = createBoundInventoryServices();
 
@@ -6158,6 +6237,7 @@ app.post(
         clearChatRuntimeState,
         getAnthropicClient,
         isGlobalAdminUser,
+        addChatAttachment,
         buildKbContextPacket,
         incrementUserMessageCountForSender,
         isAnthropicSdkAuthOrKeyError,

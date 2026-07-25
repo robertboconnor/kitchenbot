@@ -190,6 +190,7 @@ export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false
     "Cookbook tags and category are YOURS to choose and are stored exactly as you pass them — nothing overrides them. When tagging, reuse an existing tag (cookbook.list returns the household's whole tag vocabulary as allTags) rather than coining a near-duplicate like 'breads' when 'bread' already exists.",
     "The 'This Week' plan strip is drawn by the app from the plan state — you don't render it. A planned meal automatically shows a '🍳 recipe' link once a saved cookbook recipe with a matching title exists (the app auto-links them by title), and its checkbox marks it cooked. plan.list gives you each meal's hasRecipe flag and status, so if someone asks what that 🍳 / recipe link or the checkmark means, explain the app is linking that meal to its saved recipe — never say you have no idea.",
     "Report an action (saved, added, updated, removed) ONLY after you have actually called the tool and seen its success THIS turn. Never narrate a tool result — \"the tool returned…\", \"saved!\" — before calling it; if you haven't called it yet, call it now, then report what actually came back. And don't over-correct: if a tool genuinely succeeded, state it plainly — you do not owe a confession or a walk-back for a real success.",
+    "Users can attach a photo or a text/markdown file to a message — you see photos directly and attached files as text, so just look and answer. Photos cost disk to keep, so when the user asks to remove or clear photos ('we don't need these anymore'), do it with attachments.clear (defaults to this chat's photos; pass scope 'household' to clear everywhere).",
   ];
   principles.push(capabilityIntroPrinciple());
   if (isSweetheartUser(name)) principles.push(sweetheartPrinciple());
@@ -208,7 +209,7 @@ export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false
     .join('\n');
 }
 
-function buildMessagesFromHistory(recentMessages, currentPrompt) {
+function buildMessagesFromHistory(recentMessages, currentPrompt, attachment = null) {
   const mapped = (Array.isArray(recentMessages) ? recentMessages : [])
     .map((m) => ({
       role: m?.role === 'assistant' ? 'assistant' : m?.role === 'user' ? 'user' : null,
@@ -220,8 +221,28 @@ function buildMessagesFromHistory(recentMessages, currentPrompt) {
   // The Anthropic API requires the first message to be from the user.
   while (mapped.length && mapped[0].role !== 'user') mapped.shift();
 
-  // The current prompt is not yet persisted, so append it as the final user turn.
-  mapped.push({ role: 'user', content: safeTrim(currentPrompt) });
+  // The current prompt is not yet persisted, so append it as the final user turn. If the user
+  // attached a file, THIS is the turn the brain sees it: a photo becomes a vision content block; a
+  // text/markdown file is folded into the prompt text. History turns stay text-only — we never
+  // re-send old images every turn (cost + context).
+  const promptText = safeTrim(currentPrompt);
+  if (attachment && attachment.kind === 'image' && attachment.data) {
+    mapped.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: promptText || 'Take a look at this photo.' },
+        { type: 'image', source: { type: 'base64', media_type: attachment.mediaType, data: attachment.data } },
+      ],
+    });
+  } else if (attachment && attachment.kind === 'text' && attachment.data) {
+    const label = attachment.name ? `Attached file "${attachment.name}"` : 'Attached file';
+    mapped.push({
+      role: 'user',
+      content: `${promptText}\n\n--- ${label} ---\n${attachment.data}\n--- end of file ---`.trim(),
+    });
+  } else {
+    mapped.push({ role: 'user', content: promptText });
+  }
   return mapped;
 }
 
@@ -254,8 +275,13 @@ export async function runKbAgentLoop({
 
   // Persist the user message once, up front. The reply path is told the user
   // message is already persisted so it does not double-write.
-  await deps.addMessage(chatId, householdId, 'user', name, promptText);
+  const userMsgId = await deps.addMessage(chatId, householdId, 'user', name, promptText);
   req.kbUserMessagePersisted = true;
+  // If the user attached a photo or text file, store it linked to that message (so it stays visible
+  // in the chat). It's fed to the brain THIS turn via buildMessagesFromHistory below.
+  if (req.kbAttachment && deps.addChatAttachment) {
+    await deps.addChatAttachment(householdId, chatId, userMsgId, req.kbAttachment).catch(() => {});
+  }
   await deps.incrementUserMessageCountForSender?.(req);
   deps.broadcastToChat?.(chatId, { type: 'chat_updated', householdId, chatId, user: name });
 
@@ -265,7 +291,7 @@ export async function runKbAgentLoop({
     : false;
   const system = buildLoopSystemPrompt({ memoryContext, name, isDeveloper });
   const tools = buildKbToolDefinitions({ webSearchEnabled });
-  const messages = buildMessagesFromHistory(recentMessages, promptText);
+  const messages = buildMessagesFromHistory(recentMessages, promptText, req.kbAttachment);
 
   // Context handed to every executor via kb-tools.executeKbToolCall.
   const toolContext = {
