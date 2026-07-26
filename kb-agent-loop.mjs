@@ -452,7 +452,7 @@ export async function runKbAgentLoop({
             `(${claimCorrections}/${MAX_CLAIM_CORRECTIONS}). e.g. ${claims[0]}`
         );
         messages.push({ role: 'assistant', content });
-        messages.push({ role: 'user', content: buildClaimCorrectionMessage(claims) });
+        messages.push({ role: 'user', content: buildClaimCorrectionMessage(claims, collectedOutcomes) });
         continue;
       }
       finalText = candidateText;
@@ -545,8 +545,8 @@ export async function runKbAgentLoop({
         `${finalClaims.length} unsupported claim(s) not backed by the tool trace. e.g. ${finalClaims[0]}`
     );
     finalText =
-      "Hold on — I started to say that was done, but I didn't actually complete it, so I won't claim it. " +
-      "Tell me to go ahead and I'll do it for real.";
+      "I got ahead of myself — that isn't actually done yet, and I won't pretend it is. " +
+      "Say the word and I'll do it for real.";
   }
 
   // Deliver through the existing reply machinery: streams NDJSON deltas, persists

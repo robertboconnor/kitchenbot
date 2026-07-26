@@ -135,6 +135,10 @@ const INPUT_SCHEMAS = {
             items: { type: 'string' },
             description: 'Optional labels for filtering, e.g. "kid-approved", "quick". Pass the full set you want on the recipe.',
           },
+          category: {
+            type: 'string',
+            description: 'Optional cookbook category (see inventory.sections for the allowed list, e.g. "grains", "meat", "poultry", "fish"). Set this to recategorize the recipe; omit to keep its current category.',
+          },
         },
         required: ['title', 'ingredients', 'instructions'],
       },
