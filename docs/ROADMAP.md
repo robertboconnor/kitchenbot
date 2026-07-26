@@ -391,22 +391,24 @@ tests added).
 
 ## Roadmap (phased) — what's left
 
-- **Phase 1 — Look & feel.** ~80% done (palettes, scalpel, tokens). **Remaining:** nav/IA cleanup
-  (one coherent way to reach chat/cookbook/groceries/pantry/settings), **make Settings reachable by
-  non-owner members** (today it's behind an owner-only "Household" button), fold the standalone
-  Recipe Importer into Cookbook, self-host the display font (currently `ui-rounded` = Apple-only),
-  wire the reserved `--accent-warm` (Sundress yellow / Egg Yolk) as a surgical "joy-pop" on wins.
+- **Phase 1 — Look & feel. ✅ DONE.** Palettes, scalpel, tokens, nav/IA (Chat · Kitchen · Settings),
+  self-hosted Nunito, `--accent-warm` joy-pop — all shipped. Settings is reachable by **every** member
+  (user roles were removed outright in the 2026-07-24 role cleanup, so there is no owner-only gate left).
+  The one deliberate carve-out: the standalone **Recipe Importer page stays** — see Phase 3.
 - **Phase 2 — Memory / people model (highest FUNCTIONAL value). PARTLY DONE 2026-07-20.**
   - ✅ **Structured per-person profiles** (`person_profiles` table + `person.profile.update`/`.get`):
     accepted/rejected foods, allergies, notes — queryable, appendable, accept↔reject auto-reconciles.
     This is the "first-class member with structured preferences" piece, and `person.profile.get` is the
     **memory read-tool** the brain never had. The non-login 4yo (Bizzy) is now a real, structured member.
   - ✅ Person-save-without-`key` silent no-op + brain-owned memory scope (one-brain pass).
-  - ⬜ **Still open:** retrieval **silently drops any household member who isn't the person typing**, so
-    "plan our family's dinners" can still lose Elle/Bizzy from *ambient* context — always-include the
-    household's people; and a **visible UI surface** for person profiles (inspectable/editable, like the
-    This Week panel — the "not silent" rule). A general `memory.list`/`search` over the freeform bucket is
-    still absent (only the structured profile is queryable). ~Medium.
+  - ✅ **Ambient roster — DONE.** Every household member + their food profile is included on **every**
+    turn (`buildHouseholdPeopleText`, kb-memory-store.mjs) — "plan our family's dinners" reasons about
+    Elle and Bizzy, not just whoever is typing.
+  - ✅ **Visible person-profile UI — DONE.** Settings → Family food (inspectable/editable, per the
+    "not silent" rule).
+  - ❌ **`memory.list`/`search` over a freeform bucket — WON'T DO.** The freeform memory store was
+    deliberately deleted on 2026-07-24 (Rob: no invisible "shadow" memory). Durable memory is ONLY the
+    structured `household_defaults` + `person_profiles`, both queryable and both visible in the UI.
 - **Phase 2b — Week-long-thread memory ("This Week's Plan"). ✅ v1 shipped to prod 2026-07-20.**
   Rob's #1 real-usage gap: he runs ONE chat per week (~100 msgs/meal), but the brain only sees the last
   **16** messages (`HISTORY_MESSAGE_LIMIT`), so day-1 meals fell out of view. Built a first-class,
@@ -424,10 +426,17 @@ tests added).
   (c) the cooked checkbox now uses the palette accent (`--accent-strong`), not browser blue.
   **Remaining polish:** a persisted meal→recipe pointer when the brain saves a recipe for a planned
   meal (today it's title-resolved on read, which is usually enough).
-- **Phase 3 — Recipe robustness. ✅ SSRF + fetch hardening DONE (2026-07-23; see the dated pass above).**
-  Private-IP/redirect guard, timeout, and streaming body cap now live in shared `safe-fetch.mjs`, used by
-  `fetchRecipePage`. **Remaining (deferred, deliberately):** unifying the two import pipelines is a
-  product call, not a security fix — see the Deferred note above (overlaps W2 / Phase 5).
+- **Phase 3 — Recipe robustness. ✅ DONE.** SSRF + fetch hardening (2026-07-23): private-IP/redirect
+  guard, timeout, and streaming body cap in shared `safe-fetch.mjs`. **Save-path convergence done
+  2026-07-25** — the importer had a private copy of the recipe caps that silently re-truncated
+  blog-length steps (the 4th truncation path), plus an OCR list-stripper that ate decimal quantities
+  ("1.5 pounds cod" → "5 pounds cod"). Caps now export from `cookbook-store.mjs` as one source of truth.
+  **Decision: the standalone importer page STAYS** (W2 closed as won't-do). A full audit found it clean
+  against the one-brain contract — it sits outside the chat loop entirely, and its two Haiku calls are
+  permitted parse/shape. It also does two things chat genuinely cannot: **multi-photo → one recipe**
+  (a cookbook spread, up to 8 images) and **Riveter paid scraping** for sites chat's free fetcher can't
+  reach. Rob (2026-07-25): photographing a cookbook in chat is unnecessary when the dedicated importer
+  exists. Folding its HTML into the Cookbook tab is cosmetic; revisit only during Phase 5.
 - **Phase 4 — Delete dead weight + split Settings. ✅ DONE (2026-07-23).** The orphaned
   deterministic-follow-up / next-action state machine is removed (see the dated pass above), and the
   Settings "disaster" is split into role-gated surfaces (My preferences / Family food / Household /
@@ -439,26 +448,35 @@ tests added).
 
 ## Open threads / known paper-cuts
 
-- **Stored XSS:** assistant messages render via `marked.parse()` → `innerHTML` with no sanitizer and
-  **no CSP header**. Imported-recipe / web-search text could inject script. Cheap fix, worth doing.
-- **"Move to pantry"** still shows the red *delete*-style base in its default state (only the
-  `-ready` variant got the neutral scalpel treatment). Minor CSS fix in `kitchenbot.mjs`.
-- **Non-owner members can't reach Settings at all** (see Phase 1) — so the self-service palette
-  picker is only reachable by owners today. Works for Rob + Elle (both owners).
+_All three long-standing paper-cuts (stored XSS + CSP, the "Move to pantry" red delete-base, and
+non-owner Settings access) are **fixed and shipped**. What's left:_
+
+- **Pre-fix recipe data is still damaged in the DB.** Recipes saved/imported before 2026-07-25 keep
+  their mid-word-truncated steps, and importer-saved ones may carry mangled decimal quantities
+  ("0.5 cup wine" stored as "5 cup wine"). The fixes stop new corruption but cannot repair old rows —
+  re-saving or re-importing a recipe rewrites it correctly. **A read-only audit pass** (flag saved
+  recipes whose steps end mid-word or whose quantities look implausible) would tell Rob which of his
+  real recipes to re-save. Worth doing — he cooks from these.
+- **Stray committed temp file:** `public/fonts/_nunito.css.tmp` (leftover from the font self-hosting
+  pass). Delete it.
+- **Nice-to-haves, explicitly declined:** a `plan.clear` / week-rollover tool (the `clearMealPlan`
+  DB function exists but is intentionally unexposed — Rob 2026-07-25: unnecessary), and ambient
+  plan-in-the-system-prompt (the brain reads the plan via `plan.list`, which is working fine).
 
 ## Recommended next step
 
-The big brain/one-brain arc and the two most-requested functional gaps (week-long-thread memory,
-structured per-person prefs) are **shipped**. Good next moves, by mood:
-- **Close the family-context gap (functional):** the Phase-2 remainder — always-include Elle & Bizzy
-  in ambient context (not just the person typing), plus a **visible person-profile UI** (inspectable/
-  editable, per the "not silent" rule). This is what makes "plan our family's dinners" fully reason
-  about everyone.
-- **Finish the "looks legit" story:** Phase 1 remainder (nav/IA + make Settings reachable to non-owner
-  members + fold in the Recipe Importer) and the **XSS + CSP** paper-cut — small, visible, closes the
-  most obvious "still a bit janky" gaps.
-- **Quick + fun:** redo the **Elle easter-egg examples** (Rob: the test examples were "lame as hell";
-  the feature works — it's the calibration/quality of the flirtation that needs a pass).
+**Status as of 2026-07-25: Phases 1, 2, 2b, 3, and 4 are all closed.** Everything the roadmap once
+listed as "remaining" has shipped — the tangential bug-hunts (truncation ×4, the truthfulness-guard
+redesign, attachments, cost/caching) also swept up the leftover roadmap work. Verified against the
+code, not just the doc.
+
+**The only phase left is Phase 5 — the frontend re-plumb.** Everything else is small:
+- the **pre-fix recipe-data audit** (above) — small, protects recipes Rob actually cooks from;
+- deleting `public/fonts/_nunito.css.tmp`.
+
+Phase 5 is the honest big one, and it is the *only* remaining multi-evening project. Note it delivers
+**zero new user-facing capability** — it is an investment in every future change being cheaper and in
+the app surviving on a phone/tablet. See the Phase 5 entry for what it actually involves.
 
 ## Run it locally
 

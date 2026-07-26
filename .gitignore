@@ -9,3 +9,5 @@ eng.traineddata
 
 # Claude Code session tooling (local-only, not shared)
 .claude/
+# Scratch files from asset-build steps (e.g. font subsetting)
+*.css.tmp
