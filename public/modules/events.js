@@ -29,6 +29,8 @@ export const EVENTS = {
   SESSION_EXPIRED: 'session:expired',
   /** A feature needs the whole authenticated app re-hydrated. detail: { me, options } */
   REHYDRATE_APP: 'app:rehydrate',
+  /** Ask chat to redraw the open thread (e.g. after chat colours changed). */
+  CHAT_RELOAD: 'chat:reload',
   /** Something wants the chat composer pre-filled and focused. detail: { text } */
   COMPOSE_PROMPT: 'compose:prompt',
 };

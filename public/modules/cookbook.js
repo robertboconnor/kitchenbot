@@ -9,7 +9,7 @@
 
 import { EVENTS, emit, on } from './events.js';
 import { isCookbookHash, setActiveTab, setKitchenView } from './navigation.js';
-import { isReadOnly } from './session.js';
+import { getUserId, isReadOnly } from './session.js';
 import { isMobile } from './device.js';
 import { COOKBOOK_CATEGORY_OPTIONS } from './boot-data.js';
 import {
@@ -775,7 +775,7 @@ function initializeCookbookUi() {
       }
       return;
     }
-    if (currentUserId == null) return;
+    if (getUserId() == null) return;
     if (Number(hashId) === Number(currentCookbookEntryId)) return;
     if (currentCookbookEntryId && Number(hashId) !== Number(currentCookbookEntryId) && cookbookDetailIsDirty()) {
       if (!confirm('Discard your cookbook edits?')) {

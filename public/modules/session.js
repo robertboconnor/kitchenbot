@@ -31,6 +31,31 @@ export const getAssistantName = () => state.assistantName;
 export const isOwner = () => state.isOwner;
 export const isReadOnly = () => state.readOnly;
 export const getNameColors = () => state.nameColors;
+
+/**
+ * The chat bubble colours a household can choose from. Lives here because both ends need it:
+ * settings renders the picker, chat renders the bubble.
+ */
+export const CHAT_COLOR_OPTIONS = [
+  { key: 'pink', label: 'Pink' },
+  { key: 'blue', label: 'Blue' },
+  { key: 'mint', label: 'Mint' },
+  { key: 'lavender', label: 'Lavender' },
+  { key: 'peach', label: 'Peach' },
+];
+
+/** Normalized key for a display name, so colour lookups survive case and stray whitespace. */
+export function normalizeDisplayNameKey(name) {
+  return String(name == null ? '' : name).trim().toLowerCase();
+}
+
+/** The CSS class for a user's chat bubble, from their configured colour (default blue). */
+export function userMessageBubbleClass(displayName) {
+  const nk = normalizeDisplayNameKey(displayName);
+  const raw = nk ? state.nameColors[nk] : undefined;
+  const k = typeof raw === 'string' && raw.trim() ? raw.trim().toLowerCase() : 'blue';
+  return 'user-msg-chat-' + (CHAT_COLOR_OPTIONS.some((o) => o.key === k) ? k : 'blue');
+}
 export const getRawMe = () => state.raw;
 
 /**
@@ -47,6 +72,13 @@ export function applyMe(me = {}) {
   state.assistantName = me.assistantName || 'KitchenBot';
   state.isOwner = !!me.isOwner;
   state.readOnly = !!(me.isImpersonating && me.impersonationReadOnly);
+  state.nameColors = {};
+  if (me.chatColors && typeof me.chatColors === 'object' && !Array.isArray(me.chatColors)) {
+    for (const k of Object.keys(me.chatColors)) {
+      const nk = normalizeDisplayNameKey(k);
+      if (nk) state.nameColors[nk] = me.chatColors[k];
+    }
+  }
 
   emit(EVENTS.SESSION_CHANGED, { session: getSession() });
   if (state.readOnly !== previousReadOnly) {
@@ -58,6 +90,16 @@ export function applyMe(me = {}) {
 /** Set the per-user chat colours (settings can change these without a full /me refresh). */
 export function setNameColors(map) {
   state.nameColors = map && typeof map === 'object' ? map : {};
+  emit(EVENTS.SESSION_CHANGED, { session: getSession() });
+}
+
+/**
+ * The assistant's name is a household default, so settings can change it without a /me round-trip.
+ */
+export function setAssistantName(name) {
+  const next = String(name || '').trim() || 'KitchenBot';
+  if (next === state.assistantName) return;
+  state.assistantName = next;
   emit(EVENTS.SESSION_CHANGED, { session: getSession() });
 }
 

@@ -164,7 +164,15 @@ test('main app runtime treats #cookbook as a first-class route into the cookbook
 
 test('settings UI includes household id and key slots for quick household-context debugging', async () => {
   const appHtml = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../views/app.html'), 'utf8');
-  const appSource = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../public/app.js'), 'utf8');
+  // Settings lives in its own module now, so scan the whole client (app.js + modules) rather than
+  // pinning this to whichever file happens to own the code today.
+  const clientDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../public');
+  const moduleDir = path.join(clientDir, 'modules');
+  const clientFiles = [
+    path.join(clientDir, 'app.js'),
+    ...(await fs.readdir(moduleDir)).filter((f) => f.endsWith('.js')).map((f) => path.join(moduleDir, f)),
+  ];
+  const appSource = (await Promise.all(clientFiles.map((f) => fs.readFile(f, 'utf8')))).join('\n');
   assert.match(appHtml, /id="my-settings-hh-id"/);
   assert.match(appHtml, /id="my-settings-hh-key"/);
   assert.match(appSource, /document\.getElementById\('my-settings-hh-id'\)/);

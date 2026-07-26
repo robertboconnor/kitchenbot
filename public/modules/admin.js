@@ -792,11 +792,11 @@ function initAdminUi() {
         if (!r.ok) return;
         const meR = await fetch('/me');
         if (!meR.ok) {
-          showLogin();
+          emit(EVENTS.SESSION_EXPIRED, {});
           return;
         }
         const meData = await meR.json();
-        await rehydrateAuthenticatedApp(meData, { forceChatTab: true, resetSessionView: true });
+        emit(EVENTS.REHYDRATE_APP, { me: meData, options: { forceChatTab: true, resetSessionView: true } });
       } catch (e) {}
     });
   }
@@ -804,6 +804,30 @@ function initAdminUi() {
 
 /** Bind DOM handles and wire this feature's own listeners. Called once at startup. */
 export function initAdmin() {
+  // Usage-report controls: the filters plus the owner-facing refresh/date inputs. These wired
+  // themselves from app.js until the extraction; they belong with the reports they drive.
+  initializeAdminUsageFilters();
+  initializeOwnerUsageFilters();
+  const ownerUsageRefresh = document.getElementById('owner-usage-refresh');
+  if (ownerUsageRefresh) {
+    ownerUsageRefresh.addEventListener('click', async () => {
+      await refreshOwnerAnthropicUsageReport();
+    });
+  }
+  const ownerUsageStartDate = document.getElementById('owner-usage-start-date');
+  if (ownerUsageStartDate) {
+    ownerUsageStartDate.addEventListener('change', () => {
+      refreshOwnerAnthropicUsageReport();
+    });
+  }
+  const ownerUsageEndDate = document.getElementById('owner-usage-end-date');
+  if (ownerUsageEndDate) {
+    ownerUsageEndDate.addEventListener('change', () => {
+      refreshOwnerAnthropicUsageReport();
+    });
+  }
+
+
   adminAnthropicShared = document.getElementById('admin-anthropic-mode-shared');
   adminAnthropicHousehold = document.getElementById('admin-anthropic-mode-household');
   adminAnthropicHouseholdSelect = document.getElementById('admin-anthropic-household-select');

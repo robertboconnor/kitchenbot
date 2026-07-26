@@ -5,7 +5,7 @@
 // move operations that stops a double-click moving the same item twice.
 
 import { EVENTS, on } from './events.js';
-import { isReadOnly } from './session.js';
+import { isOwner, isReadOnly } from './session.js';
 import { loadCookbook } from './cookbook.js';
 
 let lastDeletedGrocery = null;
@@ -242,7 +242,7 @@ export async function loadGroceries() {
       targetList.appendChild(li);
     }
 
-    groceryClearButton.style.display = isCurrentUserOwner ? '' : 'none';
+    groceryClearButton.style.display = isOwner() ? '' : 'none';
   } catch (e) {
     // ignore for now
   }
