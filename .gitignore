@@ -11,3 +11,8 @@ eng.traineddata
 .claude/
 # Scratch files from asset-build steps (e.g. font subsetting)
 *.css.tmp
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/

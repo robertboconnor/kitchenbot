@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -73,6 +74,29 @@ export function renderHtmlTemplate(name, replacements = {}) {
  * Deferral is safe for app.js: the tag sits at the end of <body> so the DOM is already parsed,
  * the vendored classic scripts still execute first, and no markup uses inline on* handlers.
  */
+/**
+ * CSP hashes for every inline <script> in the view templates, DERIVED from the templates rather
+ * than hardcoded.
+ *
+ * A hardcoded hash silently breaks the moment the script's bytes change by even one space — and
+ * it did exactly that on 2026-07-25, when lifting the markup into views/ re-indented the palette
+ * pre-paint block. The browser then blocked that script, so the app flashed the default palette
+ * and /recipe-importer never applied the user's palette at all. Deriving the hash makes that
+ * class of bug impossible: edit the script freely and the policy follows it.
+ */
+export function inlineScriptCspHashes() {
+  const hashes = new Set();
+  for (const name of ['app', 'recipe-importer']) {
+    const html = readFileSync(join(VIEWS_DIR, `${name}.html`), 'utf8');
+    for (const [, body] of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)) {
+      // Skip the JSON boot-data tag: type="application/json" is data, not executable script.
+      if (/"application\/json"/.test(html.slice(Math.max(0, html.indexOf(body) - 120), html.indexOf(body)))) continue;
+      hashes.add(`'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`);
+    }
+  }
+  return [...hashes];
+}
+
 export function renderClientBootTags(bootData = {}, { scriptSrc = '/app.js', asModule = false } = {}) {
   const src = String(scriptSrc || '/app.js');
   const versionedSrc = src.includes('?') ? src : `${src}?v=${APP_JS_VERSION}`;

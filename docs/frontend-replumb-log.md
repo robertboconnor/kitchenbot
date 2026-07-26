@@ -96,7 +96,38 @@ af88050  de-indent app.js, convert to module, extract cookbook-display
 `git revert <hash>` undoes one step without touching the others. Reverting all of them returns the
 frontend exactly to where it was this morning.
 
-## ⚠️ The one thing NOT verified — please check before deploying
+## UPDATE (same night): Playwright added — and it immediately caught a regression I caused
+
+The gap below was closed. `@playwright/test` now drives a real Chromium against a real server
+(`npm run test:e2e`, 10 tests, ~9s), logging into a **disposable test household** seeded in
+`playwright.config.mjs` — no real credential is involved, and chat tests stub `/chat` so they
+cost nothing.
+
+**Within minutes it found a bug I introduced earlier that night.** Rob had noticed by eye that
+`/recipe-importer` ignored his palette and asked that it be left alone. It turned out not to be a
+pre-existing quirk — it was self-inflicted:
+
+- The CSP pinned a **hardcoded sha256 of the inline palette pre-paint script**.
+- Lifting the markup into `views/` **re-indented** that script, changing its bytes.
+- The hash no longer matched, so the browser **blocked the script entirely**.
+- The main app masked it (`app.js` re-applies the palette after `/me` loads); the importer has no
+  such fallback, so it stayed on the default palette.
+
+Confirmed by hashing the pre-extraction template (`sha256-2WlGCY…`, matching the CSP) against the
+post-extraction one (`sha256-669et+…`, not matching).
+
+**Fixed properly rather than by pasting a new hash:** `app-shell.inlineScriptCspHashes()` now
+*derives* the hashes from the templates at startup, so editing an inline script can never again
+silently break the policy. The former "known bug" test is now a passing regression guard.
+
+This is the clearest possible argument for the harness: a real, user-visible bug, invisible to 197
+structural tests, caught by a real browser within minutes.
+
+**Render impact: none.** No Playwright package has an install script, so `npm install` never
+downloads a browser — binaries arrive only via an explicit `npx playwright install`. No dashboard
+change needed. Artifacts (`test-results/`, `playwright-report/`) are gitignored.
+
+## ⚠️ Originally NOT verified — now largely covered by the above
 
 **Static verification was thorough; runtime clicking was not possible.** The in-app browser preview
 tool hung twice tonight (two 300-second timeouts), so I could not load the app and click through it.

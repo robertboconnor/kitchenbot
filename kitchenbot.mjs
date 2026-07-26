@@ -116,7 +116,12 @@ import { createClient } from 'redis';
 import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
 import crypto from 'crypto';
-import { renderClientBootTags, renderHtmlTemplate, renderStylesheetLink } from './app-shell.mjs';
+import {
+  inlineScriptCspHashes,
+  renderClientBootTags,
+  renderHtmlTemplate,
+  renderStylesheetLink,
+} from './app-shell.mjs';
 
 async function incrementUserMessageCountForSender(req) {
   void req;
@@ -731,9 +736,12 @@ function parseThreadGrocerySummaryKeys(summaryText) {
 // script is the static palette no-flash bootstrap (whitelisted by its sha256), and marked +
 // DOMPurify are vendored under /vendor (script-src 'self'), so no CDN origin is trusted.
 // If the inline palette-boot script changes, recompute this hash.
+// Inline-script hashes are DERIVED from the view templates at startup, never hardcoded — a pinned
+// hash silently blocks the script the moment its bytes change (which is exactly what happened when
+// the markup moved into views/ and got re-indented).
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
-  "script-src 'self' 'sha256-2WlGCYkFT0X36gYjviA+w6amZw2frQQIyYL0r90p5SE='",
+  `script-src 'self' ${inlineScriptCspHashes().join(' ')}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
   "font-src 'self'",
