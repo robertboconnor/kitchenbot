@@ -54,9 +54,14 @@ export function collectConsoleErrors(page) {
  * On a 2xx the client reads the raw response body as a text stream and treats it as the reply
  * verbatim, UNLESS the NDJSON stream header is set — so a plain-text body is the correct stub.
  */
-export async function stubChatReply(page, replyText = 'Stubbed reply from the test harness.') {
+export async function stubChatReply(page, replyText = 'Stubbed reply from the test harness.', { delayMs = 0 } = {}) {
   await page.route('**/chat', async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
+    // delayMs holds the request open so assertions about the optimistic UI (the user's own
+    // bubble, the cleared composer) are deterministic. Without it there is a race: the reply
+    // resolves, the client refreshes history, and because a stubbed turn was never persisted
+    // server-side the bubbles legitimately vanish mid-assertion.
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     await route.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: replyText });
   });
 }

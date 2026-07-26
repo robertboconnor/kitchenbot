@@ -27,7 +27,8 @@ test('the chat composer wires up: sending posts the typed prompt and renders the
   // here is the wiring: if app.js failed to load as a module, clicking send would do nothing.
   const errors = collectConsoleErrors(page);
   await login(page);
-  await stubChatReply(page, 'Roast the squash at 425F.');
+  // Hold the reply open so the optimistic UI is stable while we assert on it.
+  await stubChatReply(page, 'Roast the squash at 425F.', { delayMs: 3000 });
 
   const chatPost = page.waitForRequest(
     (req) => req.url().endsWith('/chat') && req.method() === 'POST'
@@ -37,7 +38,7 @@ test('the chat composer wires up: sending posts the typed prompt and renders the
 
   const request = await chatPost;
   expect(request.postDataJSON()?.prompt).toBe('What temperature for the squash?');
-  // The composer clears on send, and the message renders optimistically.
+  // While the request is in flight: composer cleared, user's message rendered optimistically.
   await expect(page.locator('#prompt')).toHaveValue('');
   await expect(page.locator('#chat')).toContainText('What temperature for the squash?');
   expect(errors()).toEqual([]);
