@@ -1,5 +1,6 @@
 import { COOKBOOK_CATEGORY_OPTIONS, KB_BOOT } from './modules/boot-data.js';
 import { isMobile, useMobileEnterBehavior } from './modules/device.js';
+import { initInventory, loadGroceries, loadPantry, setGroceryMoveToPantryReadyState } from './modules/inventory.js';
 import { applyMe as applySession } from './modules/session.js';
 import { initPalette } from './modules/palette.js';
 import {
@@ -71,8 +72,6 @@ const tabChat = document.getElementById('tab-chat');
 const tabGroceries = document.getElementById('tab-groceries');
 const tabSettings = document.getElementById('tab-settings');
 const inputArea = document.getElementById('input-area');
-const groceryRefreshButton = document.getElementById('grocery-refresh');
-const groceryClearButton = document.getElementById('grocery-clear');
 const grocerySubtabList = document.getElementById('grocery-subtab-list');
 const grocerySubtabPantry = document.getElementById('grocery-subtab-pantry');
 const grocerySubtabCookbook = document.getElementById('grocery-subtab-cookbook');
@@ -84,14 +83,6 @@ const grocerySubviewThisweek = document.getElementById('grocery-subview-thisweek
 const thisweekList = document.getElementById('thisweek-list');
 const thisweekEmpty = document.getElementById('thisweek-empty');
 const thisweekStrip = document.getElementById('thisweek-strip');
-const groceryAddName = document.getElementById('grocery-add-name');
-const groceryAddAmount = document.getElementById('grocery-add-amount');
-const groceryAddSection = document.getElementById('grocery-add-section');
-const groceryAddSubmit = document.getElementById('grocery-add-submit');
-const pantryAddName = document.getElementById('pantry-add-name');
-const pantryAddAmount = document.getElementById('pantry-add-amount');
-const pantryAddSection = document.getElementById('pantry-add-section');
-const pantryAddSubmit = document.getElementById('pantry-add-submit');
 const promptInput = document.getElementById('prompt');
 const sendButton = document.getElementById('send');
 const logoutButton = document.getElementById('logout');
@@ -100,23 +91,6 @@ const chatNewMessageButton = document.getElementById('chat-new-message');
 let cachedAdminHouseholds = null;
 let currentSettingsSubView = 'my';
 
-const groceryLists = {
-  produce: document.getElementById('g-list-produce'),
-  meat: document.getElementById('g-list-meat'),
-  dairy: document.getElementById('g-list-dairy'),
-  frozen: document.getElementById('g-list-frozen'),
-  dry: document.getElementById('g-list-dry'),
-  other: document.getElementById('g-list-other'),
-};
-const pantryLists = {
-  spices_herbs: document.getElementById('p-list-spices_herbs'),
-  oils_vinegars: document.getElementById('p-list-oils_vinegars'),
-  baking: document.getElementById('p-list-baking'),
-  sweeteners: document.getElementById('p-list-sweeteners'),
-  condiments_sauces: document.getElementById('p-list-condiments_sauces'),
-  pasta_grains_dry_goods: document.getElementById('p-list-pasta_grains_dry_goods'),
-  other_pantry: document.getElementById('p-list-other_pantry'),
-};
 
 let currentChatId = null;
 let currentUserName = null;
@@ -173,8 +147,6 @@ function userMessageBubbleClass(displayName) {
   return 'user-msg-chat-' + (ok ? k : 'blue');
 }
 let chatsCache = [];
-let lastDeletedGrocery = null;
-let lastDeletedTimeout = null;
 let lastMePayload = null;
 /** Last persisted message count from /history per chat (DB rows only). */
 const lastPersistedMessageCountByChatId = new Map();
@@ -184,38 +156,7 @@ const lastPersistedMessageCountByChatId = new Map();
  */
 const ephemeralExchangesByChatId = new Map();
 const nextEphemeralSeqByChatId = new Map();
-const inventoryMoveInFlightKeys = new Set();
 
-function inventoryMoveKey(kind, id) {
-  return String(kind || '') + ':' + String(id ?? '');
-}
-
-function isInventoryMoveInFlight(kind, id) {
-  return inventoryMoveInFlightKeys.has(inventoryMoveKey(kind, id));
-}
-
-function setInventoryMoveButtonState(button, {
-  disabled = false,
-  inFlight = false,
-  idleText = '',
-  workingText = 'Moving…',
-  title = '',
-} = {}) {
-  if (!button) return;
-  button.disabled = disabled || inFlight;
-  button.textContent = inFlight ? workingText : idleText;
-  button.title = inFlight ? workingText : title || idleText;
-  button.classList.toggle('g-action-working', inFlight);
-  button.setAttribute('aria-busy', inFlight ? 'true' : 'false');
-}
-
-function setGroceryMoveToPantryReadyState(button, {
-  checked = false,
-  probablyPantryItem = false,
-} = {}) {
-  if (!button) return;
-  button.classList.toggle('g-move-to-pantry-ready', !!checked && !!probablyPantryItem);
-}
 
 /** @returns {'God mode' | 'Demo mode' | 'Read-only mode'} */
 function impersonationReadOnlyModeLabel() {
@@ -303,27 +244,7 @@ function applyGodModeFromMe(data) {
   if (sas) sas.disabled = ro;
   if (adminModeSave) adminModeSave.disabled = ro;
   if (adminNewHh) adminNewHh.disabled = ro;
-  if (groceryAddName) {
-    groceryAddName.readOnly = ro;
-    groceryAddName.style.opacity = ro ? '0.65' : '';
-  }
-  if (groceryAddAmount) {
-    groceryAddAmount.readOnly = ro;
-    groceryAddAmount.style.opacity = ro ? '0.65' : '';
-  }
-  if (groceryAddSection) groceryAddSection.disabled = ro;
-  if (groceryAddSubmit) groceryAddSubmit.disabled = ro;
-  if (groceryClearButton) groceryClearButton.disabled = ro;
-  if (pantryAddName) {
-    pantryAddName.readOnly = ro;
-    pantryAddName.style.opacity = ro ? '0.65' : '';
-  }
-  if (pantryAddAmount) {
-    pantryAddAmount.readOnly = ro;
-    pantryAddAmount.style.opacity = ro ? '0.65' : '';
-  }
-  if (pantryAddSection) pantryAddSection.disabled = ro;
-  if (pantryAddSubmit) pantryAddSubmit.disabled = ro;
+  // Inventory controls disable themselves via READ_ONLY_CHANGED (modules/inventory.js).
   // Cookbook controls disable themselves via READ_ONLY_CHANGED (see modules/cookbook.js).
 }
 
@@ -1932,279 +1853,6 @@ async function loadHistory(options = {}) {
   renderThisWeekStrip();
 }
 
-async function loadGroceries() {
-  try {
-    const response = await fetch('/groceries');
-    if (!response.ok) {
-      return;
-    }
-    const data = await response.json();
-
-    Object.values(groceryLists).forEach(list => {
-      list.innerHTML = '';
-    });
-
-    for (const item of data.items || []) {
-      const li = document.createElement('li');
-      li.className = 'g-item' + (item.checked ? ' g-item-checked' : '');
-      li.dataset.id = item.id;
-      li.dataset.section = item.section;
-
-      const left = document.createElement('div');
-      left.className = 'g-left';
-
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = !!item.checked;
-      checkbox.disabled = godModeReadOnly;
-      const probablyPantryItem = item.probablyPantryItem === true || Number(item.probably_pantry_item) === 1;
-      checkbox.addEventListener('change', async () => {
-        li.classList.toggle('g-item-checked', checkbox.checked);
-        setGroceryMoveToPantryReadyState(moveBtn, {
-          checked: checkbox.checked,
-          probablyPantryItem,
-        });
-        try {
-          await fetch('/groceries/' + item.id, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ checked: checkbox.checked })
-          });
-        } catch (e) {}
-      });
-      left.appendChild(checkbox);
-
-      const textContainer = document.createElement('div');
-      textContainer.className = 'g-text-wrap';
-      const main = document.createElement('div');
-      main.className = 'g-text-main';
-      main.textContent = item.name;
-      const amount = document.createElement('div');
-      amount.className = 'g-text-amount';
-      amount.textContent = item.amount || '';
-      textContainer.appendChild(main);
-      if (item.amount) {
-        textContainer.appendChild(amount);
-      }
-
-      left.appendChild(textContainer);
-
-      li.appendChild(left);
-
-      const actions = document.createElement('div');
-      actions.className = 'g-actions';
-
-      const moveBtn = document.createElement('button');
-      moveBtn.className = 'g-delete g-move';
-      setGroceryMoveToPantryReadyState(moveBtn, {
-        checked: !!item.checked,
-        probablyPantryItem,
-      });
-      setInventoryMoveButtonState(moveBtn, {
-        disabled: godModeReadOnly,
-        inFlight: isInventoryMoveInFlight('grocery', item.id),
-        idleText: 'Move to pantry',
-        workingText: 'Moving…',
-        title: 'Move to Pantry',
-      });
-      moveBtn.addEventListener('click', async () => {
-        const moveKey = inventoryMoveKey('grocery', item.id);
-        if (godModeReadOnly || inventoryMoveInFlightKeys.has(moveKey)) return;
-        inventoryMoveInFlightKeys.add(moveKey);
-        setInventoryMoveButtonState(moveBtn, {
-          disabled: godModeReadOnly,
-          inFlight: true,
-          idleText: 'Move to pantry',
-          workingText: 'Moving…',
-          title: 'Move to Pantry',
-        });
-        try {
-          await fetch('/groceries/' + item.id + '/move-to-pantry', { method: 'POST' });
-          await Promise.all([loadGroceries(), loadPantry()]);
-        } catch (e) {
-          setInventoryMoveButtonState(moveBtn, {
-            disabled: godModeReadOnly,
-            inFlight: false,
-            idleText: 'Move to pantry',
-            workingText: 'Moving…',
-            title: 'Move to Pantry',
-          });
-        } finally {
-          inventoryMoveInFlightKeys.delete(moveKey);
-        }
-      });
-      actions.appendChild(moveBtn);
-
-      const del = document.createElement('button');
-      del.className = 'g-delete';
-      del.textContent = '×';
-      del.disabled = godModeReadOnly;
-      del.addEventListener('click', async () => {
-        const removedItem = { ...item };
-        li.remove();
-        try {
-          await fetch('/groceries/' + item.id, { method: 'DELETE' });
-        } catch (e) {}
-
-        if (lastDeletedTimeout) {
-          clearTimeout(lastDeletedTimeout);
-          lastDeletedTimeout = null;
-        }
-        lastDeletedGrocery = removedItem;
-
-        let undoBar = document.getElementById('grocery-undo');
-        if (!undoBar) {
-          undoBar = document.createElement('div');
-          undoBar.id = 'grocery-undo';
-          undoBar.style.position = 'fixed';
-          undoBar.style.bottom = '16px';
-          undoBar.style.left = '50%';
-          undoBar.style.transform = 'translateX(-50%)';
-          undoBar.style.background = '#111827';
-          undoBar.style.color = '#f9fafb';
-          undoBar.style.padding = '6px 10px';
-          undoBar.style.borderRadius = '999px';
-          undoBar.style.fontSize = '12px';
-          undoBar.style.display = 'flex';
-          undoBar.style.alignItems = 'center';
-          undoBar.style.gap = '6px';
-          const textSpan = document.createElement('span');
-          textSpan.textContent = 'Item deleted';
-          const undoBtn = document.createElement('button');
-          undoBtn.textContent = 'Undo';
-          undoBtn.style.background = '#f9fafb';
-          undoBtn.style.color = '#111827';
-          undoBtn.style.borderRadius = '999px';
-          undoBtn.style.border = 'none';
-          undoBtn.style.fontSize = '12px';
-          undoBtn.style.padding = '3px 8px';
-          undoBtn.addEventListener('click', async () => {
-            if (!lastDeletedGrocery) return;
-            const toRestore = lastDeletedGrocery;
-            lastDeletedGrocery = null;
-            undoBar.remove();
-            try {
-              await fetch('/groceries', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ items: [toRestore] }),
-              });
-              await loadGroceries();
-            } catch (e) {}
-          });
-          undoBar.appendChild(textSpan);
-          undoBar.appendChild(undoBtn);
-          document.body.appendChild(undoBar);
-        }
-
-        lastDeletedTimeout = setTimeout(() => {
-          const bar = document.getElementById('grocery-undo');
-          if (bar) bar.remove();
-          lastDeletedGrocery = null;
-          lastDeletedTimeout = null;
-        }, 3000);
-      });
-      actions.appendChild(del);
-      li.appendChild(actions);
-
-      const targetList = groceryLists[item.section] || groceryLists.other;
-      targetList.appendChild(li);
-    }
-
-    groceryClearButton.style.display = isCurrentUserOwner ? '' : 'none';
-  } catch (e) {
-    // ignore for now
-  }
-}
-
-async function loadPantry() {
-  try {
-    const response = await fetch('/pantry');
-    if (!response.ok) return;
-    const data = await response.json();
-
-    Object.values(pantryLists).forEach((list) => {
-      list.innerHTML = '';
-    });
-
-    for (const item of data.items || []) {
-      const li = document.createElement('li');
-      li.className = 'g-item';
-      li.dataset.id = item.id;
-      li.dataset.section = item.section;
-
-      const left = document.createElement('div');
-      left.className = 'g-left';
-
-      const textContainer = document.createElement('div');
-      textContainer.className = 'g-text-wrap';
-      const main = document.createElement('div');
-      main.className = 'g-text-main';
-      main.textContent = item.name;
-      textContainer.appendChild(main);
-      left.appendChild(textContainer);
-      li.appendChild(left);
-
-      const actions = document.createElement('div');
-      actions.className = 'g-actions';
-
-      const moveBtn = document.createElement('button');
-      moveBtn.className = 'g-delete g-move';
-      setInventoryMoveButtonState(moveBtn, {
-        disabled: godModeReadOnly,
-        inFlight: isInventoryMoveInFlight('pantry', item.id),
-        idleText: 'Move to grocery',
-        workingText: 'Moving…',
-        title: 'Move to Grocery List',
-      });
-      moveBtn.addEventListener('click', async () => {
-        const moveKey = inventoryMoveKey('pantry', item.id);
-        if (godModeReadOnly || inventoryMoveInFlightKeys.has(moveKey)) return;
-        inventoryMoveInFlightKeys.add(moveKey);
-        setInventoryMoveButtonState(moveBtn, {
-          disabled: godModeReadOnly,
-          inFlight: true,
-          idleText: 'Move to grocery',
-          workingText: 'Moving…',
-          title: 'Move to Grocery List',
-        });
-        try {
-          await fetch('/pantry/' + item.id + '/move-to-groceries', { method: 'POST' });
-          await Promise.all([loadPantry(), loadGroceries()]);
-        } catch (e) {
-          setInventoryMoveButtonState(moveBtn, {
-            disabled: godModeReadOnly,
-            inFlight: false,
-            idleText: 'Move to grocery',
-            workingText: 'Moving…',
-            title: 'Move to Grocery List',
-          });
-        } finally {
-          inventoryMoveInFlightKeys.delete(moveKey);
-        }
-      });
-      actions.appendChild(moveBtn);
-
-      const del = document.createElement('button');
-      del.className = 'g-delete';
-      del.textContent = '×';
-      del.disabled = godModeReadOnly;
-      del.addEventListener('click', async () => {
-        try {
-          await fetch('/pantry/' + item.id, { method: 'DELETE' });
-          await loadPantry();
-        } catch (e) {}
-      });
-      actions.appendChild(del);
-      li.appendChild(actions);
-
-      const targetList = pantryLists[item.section] || pantryLists.other_pantry;
-      targetList.appendChild(li);
-    }
-  } catch (e) {
-    // ignore for now
-  }
-}
 
 
 
@@ -3425,72 +3073,10 @@ logoutButton.addEventListener('click', async () => {
   nextEphemeralSeqByChatId.clear();
 });
 
-groceryRefreshButton.addEventListener('click', async () => {
-  await Promise.all([loadGroceries(), loadPantry(), loadCookbook()]);
-});
-
-if (groceryAddSubmit) {
-  groceryAddSubmit.addEventListener('click', async () => {
-    const name = groceryAddName && groceryAddName.value.trim();
-    if (!name) return;
-    const amount = groceryAddAmount && groceryAddAmount.value.trim();
-    const section =
-      groceryAddSection ? groceryAddSection.value : '';
-    try {
-      const r = await fetch('/groceries', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: [{ name, section, amount: amount || '' }],
-        }),
-      });
-      if (!r.ok) return;
-      if (groceryAddAmount) groceryAddAmount.value = '';
-      if (groceryAddName) groceryAddName.value = '';
-      if (groceryAddSection) groceryAddSection.value = '';
-      await loadGroceries();
-      if (groceryAddName) groceryAddName.focus();
-    } catch (e) {}
-  });
-}
-
-if (pantryAddSubmit) {
-  pantryAddSubmit.addEventListener('click', async () => {
-    const name = pantryAddName && pantryAddName.value.trim();
-    if (!name) return;
-    const amount = pantryAddAmount && pantryAddAmount.value.trim();
-    const section =
-      pantryAddSection && pantryAddSection.value ? pantryAddSection.value : 'other';
-    try {
-      const r = await fetch('/pantry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: [{ name, section, amount: amount || '' }],
-        }),
-      });
-      if (!r.ok) return;
-      if (pantryAddAmount) pantryAddAmount.value = '';
-      if (pantryAddName) pantryAddName.value = '';
-      if (pantryAddSection) pantryAddSection.value = '';
-      await loadPantry();
-      if (pantryAddName) pantryAddName.focus();
-    } catch (e) {}
-  });
-}
-
-groceryClearButton.addEventListener('click', async () => {
-  if (!confirm('Clear entire grocery list?')) return;
-  try {
-    await fetch('/groceries/clear', { method: 'POST' });
-    Object.values(groceryLists).forEach(list => {
-      list.innerHTML = '';
-    });
-  } catch (e) {}
-});
 
 // --- feature modules ---
 initPalette();
+initInventory();
 initCookbook();
 initAttachments();
 
