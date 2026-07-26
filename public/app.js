@@ -127,8 +127,6 @@
         let cookbookDetailEditing = false;
         let godModeReadOnly = false;
         let loadHistoryRequestSeq = 0;
-        let editingSmartMemoryId = null;
-        let editingSmartMemoryNoteIndex = null;
         /** Normalized display name (trim + lower) -> chat color key */
         let displayNameToColor = {};
         const CHAT_COLOR_OPTIONS = [
@@ -421,14 +419,10 @@
           }
           const gas = document.getElementById('settings-anthropic-owner-key-save');
           const sas = document.getElementById('settings-add-submit');
-          const memSave = document.getElementById('my-settings-memory-save');
-          const memorySaveButton = document.getElementById('my-settings-memory-save');
           const adminModeSave = document.getElementById('admin-anthropic-mode-save');
           const adminNewHh = document.getElementById('admin-new-hh-submit');
           if (gas) gas.disabled = ro;
           if (sas) sas.disabled = ro;
-          if (memSave) memSave.disabled = ro;
-          if (memorySaveButton) memorySaveButton.disabled = ro;
           if (adminModeSave) adminModeSave.disabled = ro;
           if (adminNewHh) adminNewHh.disabled = ro;
           if (groceryAddName) {
@@ -808,7 +802,6 @@
         }
 
         function setActiveTab(tab) {
-          clearEntityMemoryUiMessage();
           tabChat.classList.toggle('tab-active', tab === 'chat');
           tabGroceries.classList.toggle('tab-active', tab === 'groceries');
           if (tabSettings) tabSettings.classList.toggle('tab-active', tab === 'settings');
@@ -850,19 +843,6 @@
           closeSidebar();
         }
 
-        function syncEntityMemoriesWrapVisibility(runtimeEnabled) {
-          const w = document.getElementById('my-settings-entity-memories-wrap');
-          if (w) w.style.display = isCurrentUserOwner && runtimeEnabled ? '' : 'none';
-        }
-
-        function syncMemoriesWrapVisibility() {
-          syncEntityMemoriesWrapVisibility(true);
-        }
-
-        function clearEntityMemoryUiMessage() {
-          const el = document.getElementById('my-settings-entity-memories-msg');
-          clearSettingsUiMessage(el);
-        }
 
         function clearHouseholdDefaultsUiMessage() {
           const el = document.getElementById('my-settings-defaults-msg');
@@ -883,254 +863,11 @@
         }
 
         function clearStickySettingsMessages() {
-          clearSettingsUiMessage(document.getElementById('my-settings-entity-memories-msg'), { force: true });
           clearSettingsUiMessage(document.getElementById('my-settings-defaults-msg'), { force: true });
           clearSettingsUiMessage(document.getElementById('my-settings-msg'), { force: true });
           clearSettingsUiMessage(document.getElementById('settings-anthropic-owner-key-msg'), { force: true });
         }
 
-        function resetSmartMemoryEditForm() {
-          editingSmartMemoryId = null;
-          editingSmartMemoryNoteIndex = null;
-          const typeIn = document.getElementById('my-settings-memory-type');
-          const labelIn = document.getElementById('my-settings-memory-label');
-          const summaryIn = document.getElementById('my-settings-memory-summary');
-          const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
-          if (typeIn) typeIn.value = 'person';
-          if (labelIn) labelIn.value = '';
-          if (summaryIn) summaryIn.value = '';
-          if (cancelBtn) cancelBtn.style.display = 'none';
-        }
-
-        function stripMemoryDisplayWrappers(s) {
-          let t = String(s ?? '').trim();
-          while (t.length >= 2 && t.startsWith('`') && t.endsWith('`')) {
-            t = t.slice(1, -1).trim();
-          }
-          if (t.length >= 2) {
-            const a = t[0];
-            const b = t[t.length - 1];
-            if ((a === '"' || a === "'") && a === b) {
-              t = t.slice(1, -1).trim();
-            }
-          }
-          return t;
-        }
-
-
-        async function loadMemoryNotesEditor() {
-          const listEl = document.getElementById('my-settings-entity-memories-list');
-          const memMsg = document.getElementById('my-settings-entity-memories-msg');
-          if (!listEl || !isCurrentUserOwner) return;
-          try {
-            const r = await fetch('/settings/household/memory-notes');
-            if (!r.ok) {
-              listEl.innerHTML = '';
-              if (memMsg) memMsg.textContent = 'Could not load saved memories.';
-              return;
-            }
-            const data = await r.json();
-            listEl.innerHTML = '';
-            listEl.className = 'settings-memory-list';
-            const all = Array.isArray(data.memories) ? data.memories : [];
-            const people = all.filter((m) => m.memoryType === 'person');
-            const householdNotes = all.filter((m) => m.memoryType !== 'person');
-
-            function buildSection(title, emptyText) {
-              const section = document.createElement('div');
-              section.className = 'settings-memory-group';
-              const heading = document.createElement('div');
-              heading.className = 'settings-memory-group-title';
-              heading.textContent = title;
-              section.appendChild(heading);
-              if (!emptyText) return section;
-              const empty = document.createElement('div');
-              empty.className = 'settings-memory-empty';
-              empty.textContent = emptyText;
-              section.appendChild(empty);
-              return section;
-            }
-
-            const peopleSection = buildSection('People', people.length ? '' : 'No people saved yet.');
-            if (people.length) {
-              const count = document.createElement('span');
-              count.className = 'count';
-              count.textContent = people.length + ' saved';
-              peopleSection.firstChild.appendChild(count);
-            }
-            for (const m of people) {
-              const card = document.createElement('div');
-              card.className = 'settings-memory-row';
-              const top = document.createElement('div');
-              top.className = 'settings-memory-row-main';
-              const label = document.createElement('strong');
-              label.className = 'settings-memory-row-title';
-              label.textContent = String(m.label || '');
-              const chip = document.createElement('span');
-              chip.className = 'settings-memory-chip';
-              chip.textContent = 'Person';
-              top.appendChild(chip);
-              top.appendChild(label);
-              const notes = Array.isArray(m.attributes && m.attributes.notes) ? m.attributes.notes : [];
-              const summary = document.createElement('div');
-              summary.className = 'settings-memory-row-body';
-              summary.textContent =
-                notes.length === 1 ? '1 saved preference' : notes.length + ' saved preferences';
-              top.appendChild(summary);
-              const actions = document.createElement('div');
-              actions.className = 'settings-memory-actions';
-              const delPersonBtn = document.createElement('button');
-              delPersonBtn.type = 'button';
-              delPersonBtn.textContent = 'Delete person';
-              delPersonBtn.addEventListener('click', async () => {
-                if (!confirm('Delete all Smart memory for "' + m.label + '"?')) return;
-                const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id), { method: 'DELETE' });
-                const errBody = await dr.json().catch(() => ({}));
-                setSettingsUiMessage(
-                  memMsg,
-                  dr.ok ? 'Person deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed',
-                  { sticky: dr.ok }
-                );
-                if (dr.ok) {
-                  resetSmartMemoryEditForm();
-                  await loadMemoryNotesEditor();
-                }
-              });
-              actions.appendChild(delPersonBtn);
-              card.appendChild(top);
-              card.appendChild(actions);
-              const noteList = document.createElement('div');
-              noteList.className = 'settings-memory-note-list';
-              if (!notes.length) {
-                const empty = document.createElement('div');
-                empty.className = 'settings-memory-empty';
-                empty.textContent = '(No saved notes yet)';
-                noteList.appendChild(empty);
-              }
-              notes.forEach((note, idx) => {
-                const row = document.createElement('div');
-                row.className = 'settings-memory-note-item';
-                const text = document.createElement('div');
-                text.className = 'settings-memory-row-body';
-                text.textContent = note && note.text ? note.text : '';
-                row.appendChild(text);
-                const noteActions = document.createElement('div');
-                noteActions.className = 'settings-memory-actions';
-                const editBtn = document.createElement('button');
-                editBtn.type = 'button';
-                editBtn.textContent = 'Edit';
-                editBtn.addEventListener('click', () => {
-                  editingSmartMemoryId = m.id;
-                  editingSmartMemoryNoteIndex = idx;
-                  const typeIn = document.getElementById('my-settings-memory-type');
-                  const labelIn = document.getElementById('my-settings-memory-label');
-                  const summaryIn = document.getElementById('my-settings-memory-summary');
-                  const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
-                  if (typeIn) typeIn.value = 'person';
-                  if (labelIn) labelIn.value = m.label || '';
-                  if (summaryIn) summaryIn.value = note && note.text ? note.text : '';
-                  if (cancelBtn) cancelBtn.style.display = '';
-                  clearEntityMemoryUiMessage();
-                });
-                noteActions.appendChild(editBtn);
-                const delBtn = document.createElement('button');
-                delBtn.type = 'button';
-                delBtn.textContent = 'Delete';
-                delBtn.addEventListener('click', async () => {
-                  if (!confirm('Delete this saved note for "' + m.label + '"?')) return;
-                  const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id) + '?noteIndex=' + encodeURIComponent(idx), { method: 'DELETE' });
-                  const errBody = await dr.json().catch(() => ({}));
-                  setSettingsUiMessage(
-                    memMsg,
-                    dr.ok ? 'Saved note deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed',
-                    { sticky: dr.ok }
-                  );
-                  if (dr.ok) {
-                    resetSmartMemoryEditForm();
-                    await loadMemoryNotesEditor();
-                  }
-                });
-                noteActions.appendChild(delBtn);
-                row.appendChild(noteActions);
-                noteList.appendChild(row);
-              });
-              card.appendChild(noteList);
-              peopleSection.appendChild(card);
-            }
-            listEl.appendChild(peopleSection);
-
-            const householdSection = buildSection('Household-wide', householdNotes.length ? '' : 'No household-wide memory saved yet.');
-            if (householdNotes.length) {
-              const count = document.createElement('span');
-              count.className = 'count';
-              count.textContent = householdNotes.length + ' saved';
-              householdSection.firstChild.appendChild(count);
-            }
-            for (const m of householdNotes) {
-              const row = document.createElement('div');
-              row.className = 'settings-memory-row';
-              const kv = document.createElement('div');
-              kv.className = 'settings-memory-row-main';
-              const chip = document.createElement('span');
-              chip.className = 'settings-memory-chip';
-              chip.textContent = 'Household';
-              kv.appendChild(chip);
-              const strong = document.createElement('strong');
-              strong.className = 'settings-memory-row-title';
-              strong.textContent = String(m.label || '');
-              kv.appendChild(strong);
-              const span = document.createElement('span');
-              span.className = 'settings-memory-row-body';
-              span.textContent = m.summary;
-              kv.appendChild(span);
-              row.appendChild(kv);
-              const actions = document.createElement('div');
-              actions.className = 'settings-memory-actions';
-              const editBtn = document.createElement('button');
-              editBtn.type = 'button';
-              editBtn.textContent = 'Edit';
-              editBtn.addEventListener('click', () => {
-                editingSmartMemoryId = m.id;
-                editingSmartMemoryNoteIndex = null;
-                const typeIn = document.getElementById('my-settings-memory-type');
-                const labelIn = document.getElementById('my-settings-memory-label');
-                const summaryIn = document.getElementById('my-settings-memory-summary');
-                const cancelBtn = document.getElementById('my-settings-memory-cancel-edit');
-                if (typeIn) typeIn.value = 'household_note';
-                if (labelIn) labelIn.value = m.label || '';
-                if (summaryIn) summaryIn.value = m.summary || '';
-                if (cancelBtn) cancelBtn.style.display = '';
-                clearEntityMemoryUiMessage();
-              });
-              actions.appendChild(editBtn);
-              const delBtn = document.createElement('button');
-              delBtn.type = 'button';
-              delBtn.textContent = 'Delete';
-              delBtn.addEventListener('click', async () => {
-                if (!confirm('Delete household preference "' + m.label + '"?')) return;
-                const dr = await fetch('/settings/household/memory-notes/' + encodeURIComponent(m.id), { method: 'DELETE' });
-                const errBody = await dr.json().catch(() => ({}));
-                setSettingsUiMessage(
-                  memMsg,
-                  dr.ok ? 'Household preference deleted.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Delete failed',
-                  { sticky: dr.ok }
-                );
-                if (dr.ok) {
-                  resetSmartMemoryEditForm();
-                  await loadMemoryNotesEditor();
-                }
-              });
-              actions.appendChild(delBtn);
-              row.appendChild(actions);
-              householdSection.appendChild(row);
-            }
-            listEl.appendChild(householdSection);
-            clearSettingsUiMessage(memMsg);
-          } catch (e) {
-            listEl.innerHTML = '';
-            setSettingsUiMessage(memMsg, 'Load failed.');
-          }
-        }
 
         async function loadHouseholdDefaultsEditor() {
           const portionsEl = document.getElementById('my-settings-defaults-portions');
@@ -1180,8 +917,6 @@
               (data.defaults && typeof data.defaults.assistantName === 'string' && data.defaults.assistantName.trim()) ||
               currentAssistantName ||
               'KitchenBot';
-            syncMemoriesWrapVisibility();
-            syncEntityMemoriesWrapVisibility(true);
             idEl.textContent = String(data.household.id ?? '');
             nameEl.textContent = data.household.name;
             keyEl.textContent = data.household.key;
@@ -1221,12 +956,10 @@
               }
               syncPinButton();
               pinIn.addEventListener('input', () => {
-                clearEntityMemoryUiMessage();
                 pinFeedback.textContent = '';
                 syncPinButton();
               });
               btn.addEventListener('click', async () => {
-                clearEntityMemoryUiMessage();
                 if (pinSaving) return;
                 const pin = pinIn.value.trim();
                 if (!pin) {
@@ -1298,7 +1031,6 @@
               colorFeedback.setAttribute('aria-live', 'polite');
               let chatColorSaving = false;
               colorSel.addEventListener('change', async () => {
-                clearEntityMemoryUiMessage();
                 if (chatColorSaving) return;
                 const attempted = colorSel.value;
                 chatColorSaving = true;
@@ -1346,7 +1078,6 @@
             }
             if (msgEl) msgEl.textContent = '';
             await loadHouseholdDefaultsEditor();
-            await loadMemoryNotesEditor();
           } catch (e) {
             if (msgEl) msgEl.textContent = 'Load failed.';
           }
@@ -1388,7 +1119,6 @@
         };
 
         function showSettingsSubView(view) {
-          clearEntityMemoryUiMessage();
           if (!SETTINGS_SUBVIEWS[view]) view = 'my';
           // A gated view whose tab is hidden (not owner/admin) falls back to My preferences.
           const reqBtn = document.getElementById(SETTINGS_SUBVIEWS[view].btn);
@@ -3866,7 +3596,6 @@
           currentUserId = meData.userId != null ? Number(meData.userId) : null;
           isCurrentUserOwner = true; // owner/member distinction removed
           applyGodModeFromMe(meData);
-          syncMemoriesWrapVisibility();
           applyPalette(meData.palette);
           rebuildDisplayNameToColorFromMeChatColors(meData.chatColors);
           showApp(meData.name);
@@ -4097,7 +3826,6 @@
         const settingsAnthropicOwnerKeySave = document.getElementById('settings-anthropic-owner-key-save');
         if (settingsAnthropicOwnerKeySave) {
           settingsAnthropicOwnerKeySave.addEventListener('click', async () => {
-            clearEntityMemoryUiMessage();
             const keyInput = document.getElementById('settings-anthropic-owner-key');
             const msgEl = document.getElementById('settings-anthropic-owner-key-msg');
             const key = keyInput && keyInput.value.trim();
@@ -4200,7 +3928,6 @@
 
         if (settingsAddSubmit) {
           settingsAddSubmit.addEventListener('click', async () => {
-            clearEntityMemoryUiMessage();
             const displayName = document.getElementById('settings-new-display').value.trim();
             const role = document.getElementById('settings-new-role').value;
             const pin = document.getElementById('settings-new-pin').value.trim();
@@ -4237,57 +3964,6 @@
         }
 
 
-        const memorySaveButton = document.getElementById('my-settings-memory-save');
-        const memoryCancelButton = document.getElementById('my-settings-memory-cancel-edit');
-        if (memorySaveButton) {
-          memorySaveButton.addEventListener('click', async () => {
-            clearEntityMemoryUiMessage();
-            const typeIn = document.getElementById('my-settings-memory-type');
-            const labelIn = document.getElementById('my-settings-memory-label');
-            const summaryIn = document.getElementById('my-settings-memory-summary');
-            const memMsg = document.getElementById('my-settings-entity-memories-msg');
-            const memoryType = typeIn && String(typeIn.value).trim();
-            const label = labelIn && String(labelIn.value).trim();
-            const summary = summaryIn && String(summaryIn.value).trim();
-            if (!memoryType || !label || !summary) {
-              if (memMsg) memMsg.textContent = 'Type, label, and summary are required.';
-              return;
-            }
-            try {
-              const r = await fetch('/settings/household/memory-notes', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  id: editingSmartMemoryId,
-                  memoryType,
-                  label,
-                  summary,
-                  noteIndex: editingSmartMemoryNoteIndex,
-                }),
-              });
-              const errBody = await r.json().catch(() => ({}));
-              if (memMsg) {
-                setSettingsUiMessage(
-                  memMsg,
-                  r.ok ? 'Saved.' : mapServerReadOnlyErrorMessage(errBody.error) || 'Save failed',
-                  { sticky: r.ok }
-                );
-              }
-              if (r.ok) {
-                resetSmartMemoryEditForm();
-                await loadMemoryNotesEditor();
-              }
-            } catch (e) {
-              setSettingsUiMessage(memMsg, 'Request failed.');
-            }
-          });
-        }
-        if (memoryCancelButton) {
-          memoryCancelButton.addEventListener('click', () => {
-            clearEntityMemoryUiMessage();
-            resetSmartMemoryEditForm();
-          });
-        }
         const defaultsSaveButton = document.getElementById('my-settings-defaults-save');
         if (defaultsSaveButton) {
           defaultsSaveButton.addEventListener('click', async () => {
@@ -4918,7 +4594,6 @@
           isCurrentUserOwner = false;
           lastMePayload = null;
           applyGodModeFromMe({ isImpersonating: false, impersonationReadOnly: false });
-          syncMemoriesWrapVisibility();
           displayNameToColor = {};
           cookbookCache = [];
           showLogin();
