@@ -62,11 +62,23 @@ export function renderHtmlTemplate(name, replacements = {}) {
   });
 }
 
-export function renderClientBootTags(bootData = {}, { scriptSrc = '/app.js' } = {}) {
+/**
+ * Boot-data JSON + the page's client bundle.
+ *
+ * `asModule` is opt-in per page, NOT a global default: type="module" also implies strict mode and
+ * removes top-level names from global scope, so a page whose runtime was written as a classic
+ * script must not be flipped without auditing it. app.js opts in (it has real imports);
+ * recipe-importer.js deliberately does not.
+ *
+ * Deferral is safe for app.js: the tag sits at the end of <body> so the DOM is already parsed,
+ * the vendored classic scripts still execute first, and no markup uses inline on* handlers.
+ */
+export function renderClientBootTags(bootData = {}, { scriptSrc = '/app.js', asModule = false } = {}) {
   const src = String(scriptSrc || '/app.js');
   const versionedSrc = src.includes('?') ? src : `${src}?v=${APP_JS_VERSION}`;
+  const typeAttr = asModule ? 'type="module" ' : '';
   return [
     `<script id="kb-boot-data" type="application/json">${safeJsonForHtml(bootData)}</script>`,
-    `<script src="${versionedSrc}"></script>`,
+    `<script ${typeAttr}src="${versionedSrc}"></script>`,
   ].join('\n      ');
 }

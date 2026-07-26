@@ -18,6 +18,11 @@ test('renderClientBootTags emits an external browser runtime and HTML-safe boot 
   assert.match(html, /<script id="kb-boot-data" type="application\/json">/);
   // app.js is cache-busted with a ?v=<deploy version> query so deploys never serve stale JS.
   assert.match(html, /<script src="\/app\.js(\?v=\d+)?"><\/script>/);
+  // type="module" is opt-in per page: it implies strict mode and removes top-level names from
+  // global scope, so a classic-script page must not inherit it by default.
+  assert.doesNotMatch(html, /type="module"/);
+  const moduleHtml = renderClientBootTags({}, { asModule: true });
+  assert.match(moduleHtml, /<script type="module" src="\/app\.js(\?v=\d+)?"><\/script>/);
   assert.doesNotMatch(html, /Pasta <\/script><script>alert\(1\)<\/script>/);
   assert.match(html, /\\u003c\/script\\u003e\\u003cscript\\u003ealert\(1\)\\u003c\/script\\u003e/);
 });
@@ -57,10 +62,14 @@ test('recipe importer runtime includes sticky save-state controls for saved and 
 });
 
 test('public app runtime includes cookbook display helpers used by cookbook rendering', async () => {
-  const source = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../public/app.js'), 'utf8');
-  assert.match(source, /function getCookbookDisplayTitle\(/);
-  assert.match(source, /function getCookbookDisplaySource\(/);
-  assert.match(source, /function getCookbookDisplayProvenance\(/);
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const source = await fs.readFile(path.resolve(here, '../public/app.js'), 'utf8');
+  // The pure display/search helpers now live in their own importable module; app.js imports them.
+  const displayModule = await fs.readFile(path.resolve(here, '../public/modules/cookbook-display.js'), 'utf8');
+  assert.match(displayModule, /export function getCookbookDisplayTitle\(/);
+  assert.match(displayModule, /export function getCookbookDisplaySource\(/);
+  assert.match(displayModule, /export function getCookbookDisplayProvenance\(/);
+  assert.match(source, /from '\.\/modules\/cookbook-display\.js'/);
   assert.match(source, /function buildCookbookOverflowMenu\(/);
   assert.match(source, /function buildCookbookCardTags\(/);
   assert.match(source, /function fitCookbookCardTags\(/);
@@ -90,7 +99,9 @@ test('root page template uses the extracted external client runtime hook', async
   assert.match(source, /renderHtmlTemplate\('recipe-importer', \{/);
   assert.match(source, /renderStylesheetLink\('app\.css'\)/);
   assert.match(source, /renderStylesheetLink\('recipe-importer\.css'\)/);
-  assert.match(source, /renderClientBootTags\(\{ cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS \}\)/);
+  assert.match(source, /renderClientBootTags\(\s*\{ cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS \}/);
+  // The app bundle opts into type="module"; the importer's classic runtime deliberately does not.
+  assert.match(source, /\{ asModule: true \}/);
   assert.match(source, /scriptSrc: '\/recipe-importer\.js'/);
   assert.match(source, /Content-Security-Policy/);
   assert.match(source, /app\.get\('\/recipe-importer', requireHousehold, requireAuth/);

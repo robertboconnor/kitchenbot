@@ -1161,7 +1161,10 @@ app.get('/', (req, res) => {
   res.send(
     renderHtmlTemplate('app', {
       stylesheet: renderStylesheetLink('app.css'),
-      clientBoot: renderClientBootTags({ cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS }),
+      clientBoot: renderClientBootTags(
+        { cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS },
+        { asModule: true }
+      ),
     })
   );
 });
