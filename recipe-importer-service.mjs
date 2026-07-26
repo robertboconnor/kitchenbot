@@ -2,6 +2,12 @@ import {
   buildCookbookRecordForStorage,
   COOKBOOK_CATEGORY_OPTIONS,
   parseCookbookRecipeText,
+  RECIPE_MAX_INGREDIENT_LEN,
+  RECIPE_MAX_INGREDIENTS,
+  RECIPE_MAX_NOTE_LEN,
+  RECIPE_MAX_NOTES,
+  RECIPE_MAX_STEP_LEN,
+  RECIPE_MAX_STEPS,
 } from './cookbook-store.mjs';
 import { createLoggedAnthropicMessage } from './anthropic-usage.mjs';
 import { resolveAnthropicModelForCallPurpose } from './anthropic-model-policy.mjs';
@@ -31,7 +37,10 @@ function normalizeStringList(values, limit = 40, maxLength = 320) {
     const text = safeTrim(value)
       .replace(/\r/g, '')
       .replace(/^\s*[\u2022*\-]+\s*/, '')
-      .replace(/^\s*\d+\.\s*/, '')
+      // Strip an OCR'd numbered-list marker ("1. Boil the pasta"), but REQUIRE the space after
+      // the period: without it this ate the leading digits of decimal quantities, so
+      // "1.5 pounds cod" was stored as "5 pounds cod" and "0.5 cup wine" as "5 cup wine".
+      .replace(/^\s*\d+\.\s+/, '')
       .replace(/\s+/g, ' ')
       .slice(0, maxLength);
     const key = text.toLowerCase();
@@ -44,10 +53,10 @@ function normalizeStringList(values, limit = 40, maxLength = 320) {
 }
 
 function normalizeNotesList(values) {
-  if (Array.isArray(values)) return normalizeStringList(values, 20, 220);
+  if (Array.isArray(values)) return normalizeStringList(values, RECIPE_MAX_NOTES, RECIPE_MAX_NOTE_LEN);
   const text = safeTrim(values);
   if (!text) return [];
-  return normalizeStringList(text.split(/\n+|\s+\|\s+/), 20, 220);
+  return normalizeStringList(text.split(/\n+|\s+\|\s+/), RECIPE_MAX_NOTES, RECIPE_MAX_NOTE_LEN);
 }
 
 function normalizeTags(values) {
@@ -70,8 +79,11 @@ function normalizeRecipeDraft(raw = {}, { sourceTitle = '' } = {}) {
   return {
     title,
     summary: safeTrim(record.summary).slice(0, 600),
-    ingredients: normalizeStringList(record.ingredients, 48, 240),
-    instructions: normalizeStringList(record.instructions, 32, 320),
+    // Use the SHARED caps (cookbook-store.mjs) — this draft is pre-trimmed before it reaches
+    // buildCookbookRecordForStorage, so a tighter cap here truncates blog-length steps mid-word
+    // and the generous shared caps can never restore them.
+    ingredients: normalizeStringList(record.ingredients, RECIPE_MAX_INGREDIENTS, RECIPE_MAX_INGREDIENT_LEN),
+    instructions: normalizeStringList(record.instructions, RECIPE_MAX_STEPS, RECIPE_MAX_STEP_LEN),
     notes: normalizeNotesList(record.notes),
     tags: normalizeTags(record.tags),
     category: normalizeCategory(record.category),

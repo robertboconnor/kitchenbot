@@ -613,6 +613,95 @@ test('manual recipe drafts can be created and then saved without any import sour
   });
 });
 
+test('NO TRUNCATION: importer drafts keep long blog-length steps intact through save', async () => {
+  // Regression: the importer kept its OWN copy of the list caps (ingredients 240 / instructions
+  // 320) and pre-trimmed the draft BEFORE handing it to buildCookbookRecordForStorage — so the
+  // generous shared caps could never restore what it had already chopped mid-word. Recipe-blog
+  // steps routinely run past 320 chars. The importer now trims to the SHARED caps.
+  await withTempDb('recipe-importer-long-step', async ({ importFresh }) => {
+    const { household } = await createHousehold(importFresh);
+    const service = await importFresh('../recipe-importer-service.mjs', 'recipe-importer-service-long-step');
+
+    const longStep =
+      'Push the succotash to one side of the pan, or pull it out temporarily. Add the wine to the pan, ' +
+      'bring to a simmer, then add the littlenecks in a single layer. Cover and steam 5-8 minutes, shaking ' +
+      'the pan occasionally, until they open. Discard any that do not open. Fold the succotash back in with ' +
+      'the clams and their liquor, tossing gently so the corn and beans soak up that clam broth.';
+    const longIngredient =
+      '1.5 pounds cod fillet, skin removed, cut into four even portions and patted very dry so it sears ' +
+      'instead of steaming (haddock or another firm white fish works just as well if the cod at the counter ' +
+      'looks tired — ask for the thick center cut rather than the thin tail end, which overcooks long before ' +
+      'the rest of the fillet is done)';
+    assert.ok(longStep.length > 320, 'the fixture step must exceed the old 320-char importer cap');
+    assert.ok(longIngredient.length > 240, 'the fixture ingredient must exceed the old 240-char importer cap');
+
+    const draft = await service.createManualRecipeImportDraft({
+      householdId: household.householdId,
+      userId: household.userId,
+      recipe: {
+        title: 'Cod and Corn Succotash with Littlenecks',
+        summary: 'A late-summer one-pan seafood supper.',
+        ingredients: [longIngredient, '2 ears corn'],
+        instructions: ['Render the bacon until crisp.', longStep],
+        notes: [],
+        tags: ['seafood'],
+        category: 'fish',
+      },
+    });
+
+    assert.equal(draft.recipe.instructions[1], longStep, 'the draft itself keeps the full step');
+    assert.equal(draft.recipe.ingredients[0], longIngredient, 'the draft keeps the full ingredient line');
+
+    const savedItem = await service.saveRecipeImportDraftToCookbook({
+      draftId: draft.id,
+      householdId: household.householdId,
+      userId: household.userId,
+    });
+
+    // savedItem is the stored cookbook row itself (the service returns getCookbookEntryById).
+    assert.equal(savedItem.instructions[1], longStep, 'the SAVED recipe keeps the full step (not cut mid-word)');
+    assert.equal(savedItem.ingredients[0], longIngredient, 'the SAVED recipe keeps the full ingredient line');
+    assert.ok(!/\bth$/.test(savedItem.instructions[1]), 'the saved step does not end mid-word');
+  });
+});
+
+test('importer keeps decimal quantities intact while still stripping numbered-list markers', async () => {
+  // Regression: the OCR numbered-list stripper (/^\s*\d+\.\s*/) did not require a space after the
+  // period, so it ate the leading digits of decimal amounts — "1.5 pounds cod" was stored as
+  // "5 pounds cod" and "0.5 cup wine" as "5 cup wine". Silent 3x/10x quantity corruption on any
+  // imported recipe with a decimal measurement.
+  await withTempDb('recipe-importer-decimals', async ({ importFresh }) => {
+    const { household } = await createHousehold(importFresh);
+    const service = await importFresh('../recipe-importer-service.mjs', 'recipe-importer-service-decimals');
+
+    const draft = await service.createManualRecipeImportDraft({
+      householdId: household.householdId,
+      userId: household.userId,
+      recipe: {
+        title: 'Decimal Quantities Check',
+        summary: 'Guards decimal amounts through import.',
+        ingredients: ['1.5 pounds cod fillet', '0.5 cup dry white wine', '2.25 cups jasmine rice'],
+        // A genuine numbered-list marker must STILL be stripped.
+        instructions: ['1. Rinse the rice until the water runs clear.', 'Simmer covered for 15 minutes.'],
+        notes: [],
+        tags: [],
+        category: 'fish',
+      },
+    });
+
+    assert.deepEqual(
+      draft.recipe.ingredients,
+      ['1.5 pounds cod fillet', '0.5 cup dry white wine', '2.25 cups jasmine rice'],
+      'decimal quantities survive the list cleaner',
+    );
+    assert.equal(
+      draft.recipe.instructions[0],
+      'Rinse the rice until the water runs clear.',
+      'a real numbered-list marker is still stripped',
+    );
+  });
+});
+
 test('saving a duplicate-title importer draft returns a structured conflict instead of a raw database error', async () => {
   await withTempDb('recipe-importer-duplicate-conflict', async ({ importFresh }) => {
     const { household } = await createHousehold(importFresh);

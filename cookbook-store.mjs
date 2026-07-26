@@ -239,12 +239,16 @@ export function getCookbookCategoryLabel(category) {
 // and — because the update path re-applied the same cap — cookbook.update re-truncated to the
 // identical string and reported "unchanged", so the recipe could never be repaired. Real recipe
 // steps run long (a paragraph is normal); only bound against pathological input, never real text.
-const RECIPE_MAX_INGREDIENTS = 60;
-const RECIPE_MAX_INGREDIENT_LEN = 400;
-const RECIPE_MAX_STEPS = 40;
-const RECIPE_MAX_STEP_LEN = 2000;
-const RECIPE_MAX_NOTES = 30;
-const RECIPE_MAX_NOTE_LEN = 1000;
+// Exported so every recipe-writing path shares ONE set of caps. The recipe importer keeps its
+// own list-cleaner (it strips OCR bullets/numbering) but must trim to these same lengths — it
+// pre-trims before calling buildCookbookRecordForStorage, so a private tighter cap there silently
+// truncates recipes the shared caps would have kept whole.
+export const RECIPE_MAX_INGREDIENTS = 60;
+export const RECIPE_MAX_INGREDIENT_LEN = 400;
+export const RECIPE_MAX_STEPS = 40;
+export const RECIPE_MAX_STEP_LEN = 2000;
+export const RECIPE_MAX_NOTES = 30;
+export const RECIPE_MAX_NOTE_LEN = 1000;
 
 function normalizeStringList(values, limit = 12, maxLength = 180) {
   const seen = new Set();
