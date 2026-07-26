@@ -16,7 +16,21 @@ const ID_PART = /[\w$]/;
  * length and newlines so byte offsets and line numbers still line up with the original source.
  * Template-literal `${...}` EXPRESSIONS are kept — they are real code that can reference real names.
  */
-export function blankNonCode(src) {
+export function blankNonCode(source) {
+  // Operate on CODE POINTS, not UTF-16 units. The client source contains astral characters (emoji
+  // inside string literals); splitting them into surrogate halves makes the blanked output count
+  // differently than the original for any consumer that measures in characters, which silently
+  // breaks offset alignment. Astral chars are never syntax, so standing in a placeholder for the
+  // scan and restoring the original characters afterwards is exact.
+  const chars = Array.from(source);
+  const hasAstral = chars.length !== source.length;
+  if (hasAstral) {
+    const scanned = blankNonCode(chars.map((c) => (c.length > 1 ? '\u00b7' : c)).join(''));
+    return Array.from(scanned)
+      .map((c, i) => (chars[i].length > 1 ? (c === '\u00b7' ? chars[i] : c) : c))
+      .join('');
+  }
+  const src = source;
   const out = src.split('');
   const blank = (from, to) => {
     for (let k = from; k < to && k < out.length; k += 1) {

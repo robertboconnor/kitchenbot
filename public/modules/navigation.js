@@ -82,3 +82,56 @@ export function setKitchenView(view) {
 
   emit(EVENTS.KITCHEN_VIEW_CHANGED, { view: currentKitchenView });
 }
+
+/**
+ * Restore whichever tab was on screen. Called on pageshow, because iOS restores a bfcache page
+ * with the DOM intact but our in-memory notion of "current tab" reset. Reads the panels' own
+ * visibility rather than borrowing a handle from settings or the kitchen.
+ */
+export function reapplyVisibleAppTab() {
+  const appArea = document.getElementById('app');
+  if (!appArea || appArea.style.display === 'none') return;
+  if (isCookbookHash()) {
+    setActiveTab('groceries');
+    setKitchenView('cookbook');
+    return;
+  }
+  const settingsPanel = document.getElementById('settings-panel');
+  if (settingsPanel && settingsPanel.style.display === 'flex') {
+    setActiveTab('settings');
+    return;
+  }
+  const groceryPanel = document.getElementById('grocery-panel');
+  const tabGroceries = document.getElementById('tab-groceries');
+  if (
+    (groceryPanel && groceryPanel.style.display === 'flex') ||
+    (tabGroceries && tabGroceries.classList.contains('tab-active'))
+  ) {
+    setActiveTab('groceries');
+    return;
+  }
+  setActiveTab('chat');
+}
+
+/**
+ * Wire the tab bar and the Kitchen sub-tabs. These buttons only ever change where you are, so they
+ * live with the thing that owns "where you are" — features react to TAB_CHANGED / KITCHEN_VIEW_CHANGED.
+ * The data loads that used to sit inline here now hang off those events in the feature modules.
+ */
+export function initNavigation() {
+  const tabChat = document.getElementById('tab-chat');
+  const tabGroceries = document.getElementById('tab-groceries');
+  const tabSettings = document.getElementById('tab-settings');
+  const grocerySubtabList = document.getElementById('grocery-subtab-list');
+  const grocerySubtabPantry = document.getElementById('grocery-subtab-pantry');
+  const grocerySubtabCookbook = document.getElementById('grocery-subtab-cookbook');
+  const grocerySubtabThisweek = document.getElementById('grocery-subtab-thisweek');
+
+  if (tabChat) tabChat.addEventListener('click', () => setActiveTab('chat'));
+  if (tabGroceries) tabGroceries.addEventListener('click', () => setActiveTab('groceries'));
+  if (tabSettings) tabSettings.addEventListener('click', () => setActiveTab('settings'));
+  if (grocerySubtabList) grocerySubtabList.addEventListener('click', () => setKitchenView('list'));
+  if (grocerySubtabPantry) grocerySubtabPantry.addEventListener('click', () => setKitchenView('pantry'));
+  if (grocerySubtabCookbook) grocerySubtabCookbook.addEventListener('click', () => setKitchenView('cookbook'));
+  if (grocerySubtabThisweek) grocerySubtabThisweek.addEventListener('click', () => setKitchenView('thisweek'));
+}

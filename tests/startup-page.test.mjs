@@ -32,11 +32,19 @@ test('renderClientBootTags supports a dedicated client runtime per page', async 
   assert.match(html, /<script src="\/recipe-importer\.js(\?v=\d+)?"><\/script>/);
 });
 
-test('public app runtime parses as a standalone browser file', async () => {
-  await execFileAsync(process.execPath, [
-    '--check',
-    path.resolve(path.dirname(new URL(import.meta.url).pathname), '../public/app.js'),
-  ]);
+test('every client file parses as a standalone browser file', async () => {
+  // app.js AND each feature module. These only ever run in a browser, so without this a syntax
+  // error in a module is invisible to the node suite until a Playwright run notices the app is
+  // simply gone.
+  const clientDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../public');
+  const moduleDir = path.join(clientDir, 'modules');
+  const files = [
+    path.join(clientDir, 'app.js'),
+    ...(await fs.readdir(moduleDir)).filter((f) => f.endsWith('.js')).map((f) => path.join(moduleDir, f)),
+  ];
+  for (const file of files) {
+    await execFileAsync(process.execPath, ['--check', file]);
+  }
 });
 
 test('recipe importer runtime parses as a standalone browser file', async () => {
@@ -66,10 +74,13 @@ test('public app runtime includes cookbook display helpers used by cookbook rend
   const source = await fs.readFile(path.resolve(here, '../public/app.js'), 'utf8');
   // The pure display/search helpers now live in their own importable module; app.js imports them.
   const displayModule = await fs.readFile(path.resolve(here, '../public/modules/cookbook-display.js'), 'utf8');
+  const cookbookFeatureSource = await fs.readFile(path.resolve(here, '../public/modules/cookbook.js'), 'utf8');
   assert.match(displayModule, /export function getCookbookDisplayTitle\(/);
   assert.match(displayModule, /export function getCookbookDisplaySource\(/);
   assert.match(displayModule, /export function getCookbookDisplayProvenance\(/);
-  assert.match(source, /from '\.\/modules\/cookbook-display\.js'/);
+  // cookbook.js is the only consumer now that app.js is a composition root, so assert the import
+  // where it actually lives rather than pinning it to whichever file used to hold the rendering.
+  assert.match(cookbookFeatureSource, /from '\.\/cookbook-display\.js'/);
   // Card/detail rendering moved into the cookbook feature module.
   const cookbookModule = await fs.readFile(path.resolve(here, '../public/modules/cookbook.js'), 'utf8');
   assert.match(cookbookModule, /function buildCookbookOverflowMenu\(/);
@@ -152,9 +163,10 @@ test('main app runtime treats #cookbook as a first-class route into the cookbook
   // stripped first — the module's own header explains what it no longer calls, by name.
   const navCode = nav.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   assert.doesNotMatch(navCode, /loadSettingsPanel|renderThisWeekStrip|loadThisWeek|syncCookbookWorkspaceLayout/);
-  assert.match(source, /function reapplyVisibleAppTab\(/);
+  // reapplyVisibleAppTab decides which tab to restore, so it lives with navigation now.
+  assert.match(nav, /export function reapplyVisibleAppTab\(/);
+  assert.match(nav, /if \(isCookbookHash\(\)\) \{/);
   assert.match(source, /const shouldOpenCookbookFromHash = isCookbookHash\(\)/);
-  assert.match(source, /if \(isCookbookHash\(\)\) \{/);
   const cookbookFeature = await fs.readFile(path.resolve(here, '../public/modules/cookbook.js'), 'utf8');
   assert.match(cookbookFeature, /export function syncCookbookWorkspaceLayout\(/);
   // The old sidebar "Household" settings button was removed (Settings is a first-class tab now).

@@ -849,9 +849,15 @@ export function initCookbook() {
   cookbookDetailMessage = document.getElementById('cookbook-detail-message');
   cookbookDetailActions = document.getElementById('cookbook-detail-actions');
   initializeCookbookUi();
-  // The cookbook keeps its split layout in step with the Kitchen sub-view instead of navigation
-  // reaching in to call syncCookbookWorkspaceLayout() directly.
-  on(EVENTS.KITCHEN_VIEW_CHANGED, () => syncCookbookWorkspaceLayout());
+  // The cookbook keeps its split layout in step with the Kitchen sub-view, and refreshes itself
+  // when that sub-view IS the cookbook — instead of navigation reaching in to call loadCookbook()
+  // and syncCookbookWorkspaceLayout() directly.
+  on(EVENTS.KITCHEN_VIEW_CHANGED, ({ view }) => {
+    syncCookbookWorkspaceLayout();
+    if (view === 'cookbook') {
+      loadCookbook().catch((e) => console.error('Cookbook refresh failed:', e));
+    }
+  });
   on(EVENTS.READ_ONLY_CHANGED, () => syncCookbookReadOnly());
   on(EVENTS.SESSION_CHANGED, () => syncCookbookReadOnly());
 }

@@ -51,12 +51,18 @@ function declaredNames(src) {
     for (const part of m[1].split(',')) for (const n of part.split(/\s+as\s+/)) names.add(n.trim());
   }
   for (const m of src.matchAll(/import\s+([A-Za-z_$][\w$]*)\s+from/g)) names.add(m[1]);
-  // Parameters, destructuring and labels — approximate, but only ever ADDS names, so it cannot
-  // cause a false positive; at worst it hides one.
-  for (const m of src.matchAll(/\(([^()]*)\)\s*(?:=>|\{)/g)) {
-    for (const p of m[1].split(',')) {
-      for (const n of p.match(/[A-Za-z_$][\w$]*/g) || []) names.add(n);
-    }
+  // Parameter lists. Deliberately NOT the generic `(...) {` shape: that also matches `if (x) {`
+  // and `while (x) {`, which would declare every name tested in a condition and silently hide
+  // exactly the bug this tool exists to find (it did — `if (settingsPanel && ...)` made a moved
+  // DOM handle look declared). Only real parameter positions count.
+  for (const m of src.matchAll(/function\s*\*?\s*[A-Za-z_$][\w$]*\s*\(([^()]*)\)/g)) {
+    for (const n of m[1].match(/[A-Za-z_$][\w$]*/g) || []) names.add(n);
+  }
+  for (const m of src.matchAll(/function\s*\(([^()]*)\)/g)) {
+    for (const n of m[1].match(/[A-Za-z_$][\w$]*/g) || []) names.add(n);
+  }
+  for (const m of src.matchAll(/\(([^()]*)\)\s*=>/g)) {
+    for (const n of m[1].match(/[A-Za-z_$][\w$]*/g) || []) names.add(n);
   }
   for (const m of src.matchAll(/(?:catch|for)\s*\(\s*(?:const|let|var)?\s*([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
   for (const m of src.matchAll(/([A-Za-z_$][\w$]*)\s*=>/g)) names.add(m[1]);

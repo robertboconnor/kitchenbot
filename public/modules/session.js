@@ -10,6 +10,13 @@
 
 import { EVENTS, emit } from './events.js';
 
+/** Ids arrive from /me as numbers or numeric strings; normalize so consumers can compare freely. */
+function toIdOrNull(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 const state = {
   userId: null,
   userName: null,
@@ -66,9 +73,9 @@ export function applyMe(me = {}) {
   const previousReadOnly = state.readOnly;
 
   state.raw = me;
-  state.userId = me.userId ?? me.id ?? null;
+  state.userId = toIdOrNull(me.userId ?? me.id);
   state.userName = me.displayName ?? me.name ?? null;
-  state.householdId = me.householdId ?? null;
+  state.householdId = toIdOrNull(me.householdId);
   state.assistantName = me.assistantName || 'KitchenBot';
   state.isOwner = !!me.isOwner;
   state.readOnly = !!(me.isImpersonating && me.impersonationReadOnly);

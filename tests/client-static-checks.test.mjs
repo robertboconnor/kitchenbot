@@ -31,7 +31,7 @@ test('js-scan: blanks comments, strings and regexes but keeps the code around th
   assert.ok(!out.includes('trailing'), 'line comment must be gone');
   assert.ok(!out.includes('block'), 'block comment must be gone');
   assert.ok(out.includes('callMe'), 'real code after a regex literal must survive');
-  assert.equal(out.length, src.length, 'offsets must be preserved');
+  assert.equal(Array.from(out).length, Array.from(src).length, 'offsets must be preserved');
   assert.equal(out.split('\n').length, src.split('\n').length, 'line numbers must be preserved');
 });
 
@@ -54,6 +54,17 @@ test('js-scan: a template literal with nested braces does not swallow the rest o
   assert.ok(out.includes('items') && out.includes('join'), 'template expressions are real code');
 });
 
+test('js-scan: an emoji in a string literal does not shift every offset after it', () => {
+  // The client source has emoji inside string literals. JS strings measure in UTF-16 units, so a
+  // naive blank turns one astral character into two spaces and every later offset is off by one —
+  // which silently misaligns any tool that pairs the blanked text with the original.
+  const src = 'const chip = "\u{1F4C4} file"; afterEmoji();';
+  const out = blankNonCode(src);
+  assert.equal(Array.from(out).length, Array.from(src).length, 'character count must match');
+  assert.ok(out.includes('afterEmoji'), 'code after the emoji string must survive');
+  assert.ok(!out.includes('file'), 'the string contents must still be blanked');
+});
+
 test('js-scan: survives division vs regex ambiguity without eating code', () => {
   const src = 'const half = total / 2; const r = /x/; keepMe();';
   const out = blankNonCode(src);
@@ -74,7 +85,14 @@ test('js-scan: the real client files tokenize without collapsing', async () => {
   for (const file of files) {
     const raw = await fs.readFile(file, 'utf8');
     const out = blankNonCode(raw);
-    assert.equal(out.length, raw.length, `${path.basename(file)}: length must be preserved`);
+    // Code points, not UTF-16 units: an astral character (emoji in a string literal) collapses to
+    // one blank, so offsets stay aligned for consumers that count characters.
+    assert.equal(
+      Array.from(out).length,
+      Array.from(raw).length,
+      `${path.basename(file)}: character count must be preserved`
+    );
+    assert.equal(out.split('\n').length, raw.split('\n').length, `${path.basename(file)}: line count`);
     // Braces are a decent proxy for "the structure survived". Comments legitimately contain braces
     // (JSDoc like `detail: { chatId }`), so they come out of the baseline first — with a blunt
     // regex, which is fine here because it only affects the number we compare against.

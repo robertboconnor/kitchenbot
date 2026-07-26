@@ -49,6 +49,22 @@ test('checking a grocery item survives a reload', async ({ page }) => {
   await expect(rowAfter.locator('input[type="checkbox"]').first()).toBeChecked({ timeout: 10000 });
 });
 
+test('opening the cookbook sub-tab actually loads the recipes (not just the empty panel)', async ({ page }) => {
+  // Regression guard. During the module split the Kitchen sub-tab wiring moved into navigation.js,
+  // which only ANNOUNCES the change — and for a while nothing subscribed to reload the cookbook, so
+  // the panel appeared but stayed empty until a full reload. Asserting the panel is *visible* did
+  // not catch it; asserting it has CONTENT does.
+  const errors = collectConsoleErrors(page);
+  await login(page);
+  await page.click('#tab-groceries');
+  await page.click('#grocery-subtab-list');
+  await page.click('#grocery-subtab-cookbook');
+
+  await expect(page.locator('#cookbook-list .cookbook-card').first()).toBeVisible({ timeout: 10000 });
+  expect(await page.locator('#cookbook-list .cookbook-card').count()).toBeGreaterThan(0);
+  expect(errors()).toEqual([]);
+});
+
 test('the Kitchen tab switches between its sub-views', async ({ page }) => {
   const errors = collectConsoleErrors(page);
   await login(page);
