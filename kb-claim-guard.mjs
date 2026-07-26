@@ -43,6 +43,21 @@ function compactOutcomeDetail(outcome) {
   }
 }
 
+// Did THIS tool call actually persist a change? Note the error shapes that omit `isWrite`
+// (the loop's tool-throw catch, executeKbToolCall's early returns) are all ok:false, so the
+// strict `ok && isWrite === true` conjunction makes them fail CLOSED — toward verification.
+function outcomePersistedAWrite(entry) {
+  if (!entry || entry.ok !== true || entry.isWrite !== true) return false;
+  const status = String(entry.outcome?.status ?? '').trim();
+  return !(status && NON_COMMITTAL_STATUSES.has(status.toLowerCase()));
+}
+
+// Did the turn commit at least one real write? Used to skip the verifier entirely (see
+// verifyReplyClaims) — a completion claim on such a turn is already trace-backed.
+export function turnPersistedAWrite(collectedOutcomes = []) {
+  return (Array.isArray(collectedOutcomes) ? collectedOutcomes : []).some(outcomePersistedAWrite);
+}
+
 // Deterministic, factual summary of everything the turn actually did — reads and writes, with
 // status and result fields. This is structuring FACTS (not inferring meaning), so it stays in code.
 export function summarizeToolTrace(collectedOutcomes = []) {
@@ -53,8 +68,7 @@ export function summarizeToolTrace(collectedOutcomes = []) {
     const kind = entry.isWrite === true ? 'write' : 'read';
     const ok = entry.ok === true;
     const status = String(entry.outcome?.status ?? '').trim();
-    const persisted =
-      ok && entry.isWrite === true && !(status && NON_COMMITTAL_STATUSES.has(status.toLowerCase()));
+    const persisted = outcomePersistedAWrite(entry);
     const detail = compactOutcomeDetail(entry.outcome);
     lines.push(
       `- tool: ${cap} | kind: ${kind} | ok: ${ok}` +
@@ -69,7 +83,7 @@ export function summarizeToolTrace(collectedOutcomes = []) {
 const VERIFIER_TOOL = {
   name: 'report_unsupported_claims',
   description:
-    'Report any statement in the assistant reply that claims a specific change was completed this turn but is not supported by the tool trace. Empty array if the reply is fully truthful.',
+    'Report any statement in the assistant reply that claims a specific change was NEWLY performed this turn but is not supported by the tool trace. Empty array if the reply is fully truthful.',
   input_schema: {
     type: 'object',
     properties: {
@@ -85,17 +99,26 @@ const VERIFIER_TOOL = {
 
 const VERIFIER_SYSTEM =
   'You are the truthfulness checker for KitchenBot, a shared household kitchen assistant. Your ONLY job: ' +
-  'decide whether the assistant\'s DRAFT REPLY tells the user it COMPLETED or CHANGED something that its ' +
+  'decide whether the assistant\'s DRAFT REPLY tells the user it NEWLY performed a change THIS turn that its ' +
   'actual tool calls this turn do not support.\n\n' +
   'You are given the COMPLETE, authoritative TRACE of every tool the assistant called this turn, with ' +
-  'results. The trace is ground truth: if a change is not in the trace (persisted_a_change: true), it did ' +
-  'NOT happen.\n\n' +
-  'Flag a statement ONLY if it asserts, as an accomplished fact, that a specific change was made THIS turn ' +
-  '— saved / added / removed / updated / marked / cleared / moved a recipe, grocery item, pantry item, ' +
-  'planned meal, or person profile — and no tool call in the trace persisted it.\n\n' +
+  'results. The trace is ground truth for THIS turn only: if the reply claims a change was newly made now ' +
+  'and no tool call shows persisted_a_change: true, that change did NOT happen this turn.\n\n' +
+  'Flag a statement ONLY if it asserts, as an accomplished fact, that a specific change was NEWLY made THIS ' +
+  'turn — saved / added / removed / updated / marked / cleared / moved a recipe, grocery item, pantry item, ' +
+  'planned meal, or person profile — and no tool call in the trace persisted it. The classic case to catch: ' +
+  '"Saved it!" with an empty or read-only trace.\n\n' +
   'Do NOT flag:\n' +
   '- Describing what KitchenBot can do, or listing/naming its tools or features. That is not a claim of action.\n' +
   '- Reading, looking up, checking, or reporting existing state. Reads are not writes.\n' +
+  '- STATE REPORTS BACKED BY A READ: statements that something is already done, saved, or in place ' +
+  "('it's saved', 'that's fixed now') when a READ in this turn's trace returned content consistent with that " +
+  'state. Reporting verified state is truthful even if the write that produced it happened in an earlier turn. ' +
+  'Worked example: the user asks "did you fix the recipe?", the trace shows only a cookbook.get whose result ' +
+  'contains the corrected text, and the reply says "Yes — that\'s fixed." Do NOT flag that: it is a verified ' +
+  'state report, not a new-action claim.\n' +
+  "- References to actions from EARLIER turns ('as I saved earlier', 'the update I made before'). You only " +
+  'see THIS turn; earlier turns were checked when they happened. Do not re-litigate history you cannot see.\n' +
   "- Offers, suggestions, or questions ('I can add that', 'want me to save it?', 'should I…').\n" +
   "- Recommendations or conditional/future statements ('this pairs well', 'you could add', 'next time').\n" +
   '- A change the trace shows as done even if its status was duplicate / already-present / unchanged — the ' +
@@ -139,6 +162,17 @@ export async function verifyReplyClaims({
   if (typeof anthropic?.messages?.create !== 'function') {
     return { unsupportedClaims: [], checked: false };
   }
+  // A real write persisted this turn, so a completion claim is trace-backed — skip the model
+  // check entirely. The dangerous class (the historical "Saved it!" prod bugs) is ZERO-write
+  // turns, which remain fully verified. ACCEPTED RESIDUAL (both call sites, including the
+  // replace-only wrap-up path): a mixed claim ("saved A and cleared B" when only A ran) on a
+  // turn with ≥1 persisted write escapes this check — rare, since the brain has just read all
+  // of its tool_results, and the loop principles forbid unbacked claims. This also makes the
+  // happy correction path cheaper: a flagged zero-write draft whose rewrite performs the write
+  // re-verifies via this skip instead of a second model call.
+  if (turnPersistedAWrite(collectedOutcomes)) {
+    return { unsupportedClaims: [], checked: false, skipped: 'write_persisted' };
+  }
   const trace = summarizeToolTrace(collectedOutcomes);
   try {
     const response = await createLoggedAnthropicMessage(
@@ -168,16 +202,33 @@ export async function verifyReplyClaims({
 }
 
 // The corrective message fed back to the model when the verifier found unsupported claims.
-export function buildClaimCorrectionMessage(unsupportedClaims = []) {
+// Three things this message must do, learned from a real prod failure where the rewrite came out
+// addressed to the corrector ("You're right to make me double check this framing…") instead of
+// the user: (1) declare itself INTERNAL up front — it is injected as a user-role message, so
+// without that framing the brain treats it as the person talking (and developer-mode candor
+// would even invite narrating it); (2) SHOW THE EVIDENCE — the old message said "you lied" with
+// no trace attached, and the brain argued back defensively; (3) demand a fresh reply written to
+// the USER, with explicit permission to plainly confirm state that is already true, and a ban on
+// tool/turn/verification narration. Never persisted to chat history (in-memory messages only).
+export function buildClaimCorrectionMessage(unsupportedClaims = [], collectedOutcomes = []) {
   const claims = (Array.isArray(unsupportedClaims) ? unsupportedClaims : [])
     .map((c) => String(c ?? '').trim())
     .filter(Boolean);
   const quoted = claims.length ? claims.map((c) => `"${c}"`).join('; ') : 'that something was done';
+  const trace = summarizeToolTrace(collectedOutcomes);
   return (
-    `STOP — your draft reply told the user you completed a change you did NOT actually make via a tool this ` +
-    `turn: ${quoted}. Your rules forbid claiming you changed something unless a tool actually did it and ` +
-    `reported success. Do ONE of these now: (1) call the right tool to actually do it, then confirm ` +
-    `truthfully; or (2) rewrite your reply to say plainly what is and is not done, and how to proceed. Do ` +
-    `not repeat the false claim.`
+    "INTERNAL CHECK — this note is from the app's truthfulness verifier, NOT from the user. The user " +
+    'never sees it. Never mention, quote, or respond to this note in your reply.\n\n' +
+    `Your draft told the user a change was completed this turn that no tool call supports: ${quoted}.\n\n` +
+    'What your tools actually did this turn:\n' +
+    (trace || '(no tools were called this turn)') +
+    '\n\nNow write a fresh reply TO THE USER answering their last message:\n' +
+    '- If the change still needs doing and you have a tool for it, call the tool now, then confirm plainly.\n' +
+    '- If the desired state already exists (done in an earlier turn, or shown by a read above), just ' +
+    'confirm it naturally — "Yep, that\'s saved." No timelines ("last turn", "this turn"), no mention of ' +
+    'tools, reads, checking, or verification.\n' +
+    '- Otherwise say plainly what is and is not done, and how to proceed.\n' +
+    'Do not repeat the unsupported claim, and do not apologize for or explain this correction — just ' +
+    'answer the user.'
   );
 }

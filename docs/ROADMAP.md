@@ -84,9 +84,22 @@ it. Built + deployed autonomously overnight. All 160 tests green; each item live
   Rob). DB `role` column left inert. + capabilityIntro "you're the owner" prompt line removed.
 
 ### 🔭 Open / next ("what should we do in 3 days")
-- **False-save-claim spiral (#2b):** shipped a call-then-report principle, but the deeper question —
-  why the truthfulness verifier let a fabricated "saved!" through one turn then over-confessed the
-  next — needs a real look at kb-claim-guard + the correction loop. Conservative: not touched overnight.
+- ~~**False-save-claim spiral (#2b)**~~ → **RESOLVED by the 2026-07-25 truthfulness-guard redesign**
+  (on dev). Root cause of the weird meta-replies, found in the real prod transcripts: the guard's
+  correction was injected as a user-role message with NO evidence attached, so the brain argued
+  back at the corrector and that argument became the visible reply ("You're right to make me double
+  check this framing…"); plus a turn-boundary blind spot — the verifier only sees the current turn,
+  so truthful "yep, that's already fixed" state reports (write happened last turn, read confirmed
+  it this turn) were flagged as lies. Fix (Rob's priorities, strictly ordered: truth > magic >
+  cost): (1) turn-scoped rubric — flag only NEW-action claims; read-backed state reports and
+  prior-turn references are allowed (per-turn verification covers history transitively);
+  (2) verifier skipped entirely when the turn persisted a real write (claim is trace-backed;
+  the dangerous class — zero-write turns — stays fully verified); (3) correction note now declares
+  itself INTERNAL, embeds the actual tool trace, and demands a fresh user-facing reply with no
+  tool/turn/verification narration; (4) verifier Sonnet → Haiku (the "runs after streaming so
+  latency is free" premise died when the loop buffered — it was serially delaying every reply's
+  first byte). Honest-fallback floor on exhaustion unchanged. Guard cost now ~noise
+  (~$0.05-0.20/wk). Loop-level integration test proves the invisible-correction path.
 - Nice-to-haves surfaced by the plan work: ambient plan in the system prompt (brain sees it only via
   plan.list today); a `plan.clear` to start a new week cleanly; real-time cross-chat strip refresh
   (today it refreshes on chat switch, which is fine).
