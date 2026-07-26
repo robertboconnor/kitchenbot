@@ -1,9 +1,9 @@
 // "This Week" — the household meal plan, shown as a Kitchen panel and as a compact strip above
 // the chat.
 //
-// The plan itself is household-wide, but the /plan routes still REQUIRE a chatId query parameter
-// (they 400 without one) even though the database layer ignores it. Rather than read a shared
-// variable, this module keeps its own copy of which chat is open, updated by CHAT_CHANGED.
+// The plan is household-wide, so the panel does not depend on which chat is open. The strip does:
+// it sits above a conversation, so no conversation means no strip. This module keeps its own copy
+// of which chat is open, updated by CHAT_CHANGED, rather than reading a shared variable.
 
 import { EVENTS, on } from './events.js';
 import { setActiveTab, setKitchenView } from './navigation.js';
@@ -19,17 +19,9 @@ let chat = null;
 
 export async function loadThisWeek() {
   if (!thisweekList) return;
-  if (activeChatId == null) {
-    thisweekList.innerHTML = '';
-    if (thisweekEmpty) {
-      thisweekEmpty.textContent = 'Open or start a chat to see this week’s plan.';
-      thisweekEmpty.style.display = '';
-    }
-    return;
-  }
   let items = [];
   try {
-    const res = await fetch('/plan?chatId=' + encodeURIComponent(activeChatId), { credentials: 'same-origin' });
+    const res = await fetch('/plan', { credentials: 'same-origin' });
     if (res.ok) items = (await res.json()).items || [];
   } catch (err) {
     /* leave empty on failure */
@@ -54,7 +46,7 @@ export async function loadThisWeek() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ chatId: activeChatId, status: nowCooked ? 'cooked' : 'planned' }),
+        body: JSON.stringify({ status: nowCooked ? 'cooked' : 'planned' }),
       }).catch(() => {});
       if (nowCooked) {
         // one small celebratory beat, then refresh
@@ -101,7 +93,7 @@ export async function loadThisWeek() {
     remove.textContent = '✕';
     remove.title = 'Remove from this week';
     remove.addEventListener('click', async () => {
-      await fetch('/plan/' + item.id + '?chatId=' + encodeURIComponent(activeChatId), {
+      await fetch('/plan/' + item.id, {
         method: 'DELETE',
         credentials: 'same-origin',
       }).catch(() => {});
@@ -122,7 +114,7 @@ export async function renderThisWeekStrip() {
   }
   let items = [];
   try {
-    const res = await fetch('/plan?chatId=' + encodeURIComponent(activeChatId), { credentials: 'same-origin' });
+    const res = await fetch('/plan', { credentials: 'same-origin' });
     if (res.ok) items = (await res.json()).items || [];
   } catch (err) {
     /* leave empty */

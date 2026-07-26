@@ -497,10 +497,13 @@ non-owner Settings access) are **fixed and shipped**. What's left:_
   re-saving or re-importing a recipe rewrites it correctly. **A read-only audit pass** (flag saved
   recipes whose steps end mid-word or whose quantities look implausible) would tell Rob which of his
   real recipes to re-save. Worth doing — he cooks from these.
-- **`/plan` routes demand a `chatId` they ignore.** `GET`, `PATCH` and `DELETE /plan` all 400
-  without a `chatId`, even though the meal plan is household-wide now and `getMealPlanItems`
-  discards the value. Harmless today (the UI always sends one), vestigial from when plans were
-  per-chat. Found during the Phase 5 split and deliberately left alone to keep that diff reviewable.
+- ~~**`/plan` routes demand a `chatId` they ignore.**~~ **FIXED 2026-07-26.** `GET /plan` quietly
+  returned an EMPTY plan without a `chatId` (so the app looked like nothing was planned rather than
+  erroring) and `PATCH`/`DELETE` 400'd — all while the database layer discarded the value, because
+  the plan has been household-wide since 2026-07-25. The vestigial parameter is gone from the three
+  routes, from `updateMealPlanItem` / `deleteMealPlanItem` / `findMealPlanItemByName`, and from the
+  client; `addMealPlanItems` keeps it, where it is real (write provenance). Covered by three new
+  HTTP-level tests — there had been none for `/plan` at all.
 - **Nice-to-haves, explicitly declined:** a `plan.clear` / week-rollover tool (the `clearMealPlan`
   DB function exists but is intentionally unexposed — Rob 2026-07-25: unnecessary), and ambient
   plan-in-the-system-prompt (the brain reads the plan via `plan.list`, which is working fine).

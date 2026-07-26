@@ -7,7 +7,11 @@ import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+
+const execFileAsync = promisify(execFileCb);
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -87,4 +91,67 @@ export async function withKitchenbotServer(label, run) {
     });
     await fs.rm(tempDir, { recursive: true, force: true });
   }
+}
+
+// ── Signing in, for tests that need a route behind requireAuth ───────────────────
+// The server boots with no household (the helper above clears the INITIAL_* seed vars), so a test
+// creates its own throwaway one over the app's real bootstrap + login routes. The PIN here is
+// fixture data for a temp database that is deleted at the end of the test — it is not anyone's
+// credential.
+const FIXTURE = {
+  householdName: 'Test Kitchen',
+  householdKey: 'test-kitchen',
+  ownerDisplayName: 'Tester',
+  pin: '4321',
+};
+
+/**
+ * Bootstrap a household and sign in. Returns `{ headers, householdId, userId }` — spread `headers`
+ * into any fetch that needs to be authenticated.
+ */
+export async function signInAsFixtureOwner(baseUrl) {
+  const boot = await fetch(`${baseUrl}/bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(FIXTURE),
+  });
+  if (!boot.ok) throw new Error(`bootstrap failed (${boot.status}): ${await boot.text()}`);
+
+  const login = await fetch(`${baseUrl}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      householdKey: FIXTURE.householdKey,
+      displayName: FIXTURE.ownerDisplayName,
+      pin: FIXTURE.pin,
+    }),
+  });
+  if (!login.ok) throw new Error(`login failed (${login.status}): ${await login.text()}`);
+
+  // node's fetch does not keep a cookie jar, so carry the session cookie by hand.
+  const cookie = (login.headers.getSetCookie?.() || [])
+    .map((c) => c.split(';')[0])
+    .join('; ');
+  const headers = { cookie };
+
+  const me = await (await fetch(`${baseUrl}/me`, { headers })).json();
+  return { headers, householdId: me.householdId, userId: me.userId };
+}
+
+/**
+ * Run a snippet against the server's database, in its own process. Used to seed state that has no
+ * HTTP route of its own (the meal plan is only ever written by the brain). `body` gets `db` and
+ * whatever it needs from it.
+ */
+export async function runAgainstDb(dbPath, body) {
+  const script = `
+    const db = await import(new URL('./db.mjs?child=' + Date.now(), 'file://' + process.cwd() + '/').href);
+    ${body}
+  `;
+  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: REPO_ROOT,
+    env: { ...process.env, DB_PATH: dbPath },
+  });
+  const trimmed = stdout.trim();
+  return trimmed ? JSON.parse(trimmed) : null;
 }

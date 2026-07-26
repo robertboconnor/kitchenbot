@@ -134,14 +134,27 @@ All 22 browser tests still passed — because they asserted the panel was *visib
 anything in it. Fixed, and `e2e/kitchen.spec.mjs` now asserts the recipes are actually there. That
 test would have caught it.
 
-## Pre-existing bugs found and deliberately NOT fixed
+## Pre-existing bugs found
 
-Per your "fix mine, log theirs" rule:
+I proposed, and you agreed up front, that I'd fix regressions I caused and only *log* anything that
+predated tonight — so the refactor stayed reviewable. One thing came up:
 
-- **`/plan` routes still demand a `chatId`** they don't use. `GET`, `PATCH` and `DELETE` all return
-  a 400 without one, even though the meal plan is household-wide now and the code that reads it
-  ignores the value entirely. Harmless today because the UI always sends one. Vestigial from when
-  plans were per-chat.
+- **The `/plan` routes demanded a `chatId` they then threw away.** Logged here first, then fixed on
+  your say-so afterwards, as its own commit.
+
+  Worth correcting something I told you when I first wrote this up: I said all three routes returned
+  a 400 without a `chatId`. That was wrong, and wrong in the more interesting direction. `PATCH` and
+  `DELETE` did 400 — but **`GET /plan` quietly returned an empty plan**, so the app would have shown
+  "no meals planned this week" rather than an error. A silent wrong answer beats a loud one for
+  finding bugs, and this was the silent kind.
+
+  The plan stopped being per-chat on 2026-07-25; the parameter survived in the routes, in three
+  database functions that accepted and ignored it, and in the client. All gone now, except on
+  `addMealPlanItems` where it is real (it records which conversation a meal was planned in).
+
+  There had been **no HTTP-level test for `/plan` at all** — every existing test went straight to
+  the executors underneath. That's why nothing caught it. Three now exist, and I checked they fail
+  against the old code before keeping them.
 
 ## How to undo any of it
 

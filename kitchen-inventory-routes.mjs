@@ -43,14 +43,12 @@ export function registerKitchenInventoryRoutes(app, deps) {
     }
   });
 
-  // This Week's Plan — scoped to a chat (= a week). chatId comes from the client's current chat.
+  // This Week's Plan — HOUSEHOLD-WIDE. These routes used to demand a chatId and then discard it:
+  // GET quietly returned an empty plan without one (so the app looked like it had nothing planned),
+  // and PATCH/DELETE 400'd. The plan has not been per-chat since 2026-07-25, so they no longer ask.
   app.get('/plan', requireHousehold, requireAuth, async (req, res) => {
     try {
-      const chatId = Number(req.query.chatId);
-      if (!Number.isFinite(chatId)) {
-        return res.json({ items: [] });
-      }
-      const rawItems = await getMealPlanItems(req.householdId, chatId);
+      const rawItems = await getMealPlanItems(req.householdId);
       const items = await enrichMealsWithRecipeLinks(req.householdId, rawItems);
       res.json({ items });
     } catch (error) {
@@ -62,9 +60,8 @@ export function registerKitchenInventoryRoutes(app, deps) {
   app.patch('/plan/:id', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const chatId = Number(req.body.chatId);
-      if (!Number.isFinite(id) || !Number.isFinite(chatId)) {
-        return res.status(400).json({ error: 'Invalid id or chatId.' });
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ error: 'Invalid id.' });
       }
       const fields = {};
       if (req.body.status === 'cooked' || req.body.status === 'planned') fields.status = req.body.status;
@@ -72,7 +69,7 @@ export function registerKitchenInventoryRoutes(app, deps) {
       if (Object.keys(fields).length === 0) {
         return res.status(400).json({ error: 'Nothing to update.' });
       }
-      await updateMealPlanItem(req.householdId, chatId, id, fields);
+      await updateMealPlanItem(req.householdId, id, fields);
       res.json({ ok: true });
     } catch (error) {
       console.error(error);
@@ -83,11 +80,10 @@ export function registerKitchenInventoryRoutes(app, deps) {
   app.delete('/plan/:id', requireHousehold, requireAuth, requireNotImpersonatingReadOnly, async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const chatId = Number(req.query.chatId);
-      if (!Number.isFinite(id) || !Number.isFinite(chatId)) {
-        return res.status(400).json({ error: 'Invalid id or chatId.' });
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ error: 'Invalid id.' });
       }
-      await deleteMealPlanItem(req.householdId, chatId, id);
+      await deleteMealPlanItem(req.householdId, id);
       res.json({ ok: true });
     } catch (error) {
       console.error(error);

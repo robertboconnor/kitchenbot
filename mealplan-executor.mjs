@@ -112,13 +112,12 @@ function normalizeMealList(raw) {
 // ambiguous/missing so the brain can ask or re-state.
 async function resolveMeal(capability, runtimeAction, context) {
   const householdId = context?.req?.householdId;
-  const chatId = context?.chatId;
   const input = planInput(runtimeAction);
   const name = safeTrim(input.meal || input.name || input.title);
   if (!name) {
     return { outcome: { capability, status: 'invalid', error: 'Tell me which meal on the plan you mean.' } };
   }
-  const meals = await getMealPlanItems(householdId, chatId);
+  const meals = await getMealPlanItems(householdId);
   if (meals.length === 0) {
     return { outcome: { capability, status: 'empty_plan', error: "This week's plan is empty — nothing to change yet." } };
   }
@@ -159,10 +158,11 @@ export async function executePlanAdd(runtimeAction, context) {
       note: "Pass the meals for this week's plan as meals: [{ name }] — you decide them.",
     };
   }
-  const before = await getMealPlanItems(householdId, chatId);
+  const before = await getMealPlanItems(householdId);
   const beforeKeys = new Set(before.map((m) => m.normalizedName));
+  // chatId is real here and only here: it is stored as provenance for where a meal was planned.
   const addedCount = await addMealPlanItems(householdId, chatId, meals);
-  const after = await getMealPlanItems(householdId, chatId);
+  const after = await getMealPlanItems(householdId);
   const afterByKey = new Map(after.map((m) => [m.normalizedName, m]));
 
   const addedMeals = [];
@@ -192,7 +192,6 @@ export async function executePlanUpdate(runtimeAction, context) {
   const resolved = await resolveMeal('plan.update', runtimeAction, context);
   if (!resolved.item) return resolved.outcome;
   const householdId = context?.req?.householdId;
-  const chatId = context?.chatId;
   const input = planInput(runtimeAction);
 
   const fields = {};
@@ -209,8 +208,8 @@ export async function executePlanUpdate(runtimeAction, context) {
   if (Object.keys(fields).length === 0) {
     return { capability: 'plan.update', status: 'invalid', mealName: resolved.item.name, error: 'Nothing to change was specified (status, name, or note).' };
   }
-  const changed = await updateMealPlanItem(householdId, chatId, resolved.item.id, fields);
-  const after = await getMealPlanItems(householdId, chatId);
+  const changed = await updateMealPlanItem(householdId, resolved.item.id, fields);
+  const after = await getMealPlanItems(householdId);
   const nowName = fields.name || resolved.item.name;
   const nowRow = after.find((m) => m.id === resolved.item.id) || null;
   return {
@@ -228,9 +227,8 @@ export async function executePlanRemove(runtimeAction, context) {
   const resolved = await resolveMeal('plan.remove', runtimeAction, context);
   if (!resolved.item) return resolved.outcome;
   const householdId = context?.req?.householdId;
-  const chatId = context?.chatId;
-  await deleteMealPlanItem(householdId, chatId, resolved.item.id);
-  const after = await getMealPlanItems(householdId, chatId);
+  await deleteMealPlanItem(householdId, resolved.item.id);
+  const after = await getMealPlanItems(householdId);
   return {
     capability: 'plan.remove',
     status: 'removed',
