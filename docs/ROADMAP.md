@@ -441,8 +441,9 @@ tests added).
   deterministic-follow-up / next-action state machine is removed (see the dated pass above), and the
   Settings "disaster" is split into role-gated surfaces (My preferences / Family food / Household /
   Anthropic usage / God Mode).
-- **Phase 5 — Frontend re-plumb. 🚧 IN PROGRESS — mechanical two-thirds done 2026-07-25 (night 1,
-  on `dev`).** Full record: `docs/frontend-replumb-log.md`.
+- **Phase 5 — Frontend re-plumb. 🚧 The restructure is DONE (2026-07-26, on `dev`, PR open); the
+  responsive/a11y half remains.** Full record: `docs/frontend-replumb-log.md` (night 1) and
+  `docs/frontend-replumb-log-night2.md` (night 2).
   - ✅ **Frontend safety net** (`tests/frontend-shell.test.mjs`, +6 tests): boots the real server and
     asserts the HTTP contract — every `getElementById` id exists in the served HTML; the applied CSS
     is byte-identical *including cascade order*; snapshot inventories of selectors + element ids;
@@ -459,14 +460,31 @@ tests added).
     and the first real module extracted: `public/modules/cookbook-display.js` (+ `boot-data.js`),
     which made that logic unit-testable for the first time (`tests/cookbook-display.test.mjs`).
   - `kitchenbot.mjs` 6,530 → 2,401 lines; `app.js` 4,994 → 4,473. **197 tests green** (was 182).
-  - ⬜ **Remaining (the judgment-heavy part):** 37 module-level mutable variables are read AND
-    written across chat/grocery/pantry/settings, so splitting `app.js` by feature changes real
-    behaviour — and the net verifies structure, not runtime interaction. Needs runtime tests (or
-    hands-on verification) FIRST. Then: real responsive + a11y, and only then the framework
-    question (vanilla-modular / Svelte / React), which stays deliberately open.
-  - ⚠️ **Not yet runtime-verified**: the in-app browser preview hung on 2026-07-25, so no click-
-    through happened. See the checklist at the end of `docs/frontend-replumb-log.md` before merging
-    Phase 5 work to `main`.
+  - ✅ **Runtime safety net first** (2026-07-26): Playwright + real Chromium, a disposable seeded
+    household and a stubbed `/chat`, `npm run test:e2e`. **23 browser tests** covering login, the
+    composer, attachments, palettes, the cookbook (list/detail/deep-link/filter/search), grocery,
+    pantry, This Week and settings. This is what made splitting the remaining `app.js` verifiable
+    rather than hopeful.
+  - ✅ **The feature split, one module per commit** (2026-07-25 night 1 → 2026-07-26 night 2). Full
+    record: `docs/frontend-replumb-log-night2.md`. `public/app.js` **4,994 → 144 lines** and holds
+    no feature logic at all — it builds the features, wires the two sequences that genuinely span
+    them (re-hydrate after an identity change, sign out), and starts.
+    Modules: `chat` (incl. realtime), `cookbook`, `admin`, `settings`, `inventory` (grocery +
+    pantry), `auth`, `plan`, `session`, `navigation`, `attachments`, `palette`, `events`, plus the
+    pure helpers.
+  - ✅ **The 37-variable problem, resolved**: classified them all; most were already feature-local.
+    Only identity was genuinely cross-cutting and lives in `session.js` behind getters. Features
+    talk through the event bus (`modules/events.js`) instead of reading each other's state.
+  - ✅ **Static checkers** (`tools/check-client-refs.mjs`, `tools/check-client-imports.mjs`, built on
+    `tools/js-scan.mjs`), wired into `npm test` with their own tests. Rebuilding the first one
+    mid-refactor exposed **five real defects** that green test runs had hidden — including a
+    silently broken grocery "Clear" button. Read the night-2 log; the lesson (a tool that
+    under-reports is worse than no tool) is worth more than the tool.
+  - ✅ **Runtime-verified**: 212 node + 23 browser tests green, and the real app booted in a browser
+    against a copy of the production database — all 15 modules load, zero console errors.
+  - ⬜ **Remaining in Phase 5:** real responsive + a11y, and only then the framework question
+    (vanilla-modular / Svelte / React), which stays deliberately open. The restructure is done; what
+    is left is the part that changes how the app *looks and feels* on a phone.
 
 ## Open threads / known paper-cuts
 
@@ -479,8 +497,10 @@ non-owner Settings access) are **fixed and shipped**. What's left:_
   re-saving or re-importing a recipe rewrites it correctly. **A read-only audit pass** (flag saved
   recipes whose steps end mid-word or whose quantities look implausible) would tell Rob which of his
   real recipes to re-save. Worth doing — he cooks from these.
-- **Stray committed temp file:** `public/fonts/_nunito.css.tmp` (leftover from the font self-hosting
-  pass). Delete it.
+- **`/plan` routes demand a `chatId` they ignore.** `GET`, `PATCH` and `DELETE /plan` all 400
+  without a `chatId`, even though the meal plan is household-wide now and `getMealPlanItems`
+  discards the value. Harmless today (the UI always sends one), vestigial from when plans were
+  per-chat. Found during the Phase 5 split and deliberately left alone to keep that diff reviewable.
 - **Nice-to-haves, explicitly declined:** a `plan.clear` / week-rollover tool (the `clearMealPlan`
   DB function exists but is intentionally unexposed — Rob 2026-07-25: unnecessary), and ambient
   plan-in-the-system-prompt (the brain reads the plan via `plan.list`, which is working fine).
@@ -492,13 +512,18 @@ listed as "remaining" has shipped — the tangential bug-hunts (truncation ×4, 
 redesign, attachments, cost/caching) also swept up the leftover roadmap work. Verified against the
 code, not just the doc.
 
-**The only phase left is Phase 5 — the frontend re-plumb.** Everything else is small:
-- the **pre-fix recipe-data audit** (above) — small, protects recipes Rob actually cooks from;
-- deleting `public/fonts/_nunito.css.tmp`.
+**Phase 5's restructure landed on 2026-07-26** — `app.js` went 4,994 → 144 lines, the frontend has
+23 browser tests where it had none, and the codebase now has real seams. What remains:
 
-Phase 5 is the honest big one, and it is the *only* remaining multi-evening project. Note it delivers
-**zero new user-facing capability** — it is an investment in every future change being cheaper and in
-the app surviving on a phone/tablet. See the Phase 5 entry for what it actually involves.
+- **Merge the open PR** (nothing is in production yet). Click through chat yourself first — see the
+  end of `docs/frontend-replumb-log-night2.md`.
+- **Phase 5's second half: real responsive + a11y.** This is the part that actually changes how the
+  app feels on a phone. The framework question (vanilla-modular / Svelte / React) stays open and
+  should be decided *after* the responsive pass, not before.
+- the **pre-fix recipe-data audit** (above) — small, protects recipes Rob actually cooks from.
+
+Everything before this delivered zero new user-facing capability on purpose — it was the investment
+that makes the responsive work, and every change after it, cheap instead of frightening.
 
 ## Run it locally
 
