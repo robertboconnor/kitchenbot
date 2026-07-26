@@ -6,6 +6,7 @@
 
 import { EVENTS, on } from './events.js';
 import { isReadOnly } from './session.js';
+import { loadCookbook } from './cookbook.js';
 
 let lastDeletedGrocery = null;
 let lastDeletedTimeout = null;

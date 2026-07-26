@@ -86,3 +86,19 @@ export function clearSession() {
   state.raw = null;
   emit(EVENTS.SESSION_CHANGED, { session: getSession() });
 }
+
+/**
+ * Server errors about read-only mode are unhelpful out of context ("God Mode is read-only"), so
+ * swap them for the friendlier impersonation notice when we ARE impersonating. Lives here because
+ * it depends only on session state.
+ */
+export function mapServerReadOnlyErrorMessage(rawError) {
+  const text = rawError == null ? '' : String(rawError);
+  if (!isReadOnly() || !state.raw || !state.raw.isImpersonating) {
+    return text || 'Request failed.';
+  }
+  if (/God Mode is read-only|Exit God Mode to make changes/i.test(text)) {
+    return 'This session is read-only. Exit to make changes.';
+  }
+  return text || 'Request failed.';
+}

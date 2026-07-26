@@ -94,7 +94,16 @@ test('served app shell: every element id the client JS looks up actually exists 
     const $ = cheerio.load(html);
     const presentIds = new Set($('[id]').map((_, el) => $(el).attr('id')).get());
 
-    const appJs = await fs.readFile(path.join(HERE, '..', 'public', 'app.js'), 'utf8');
+    // Scan app.js AND every feature module — otherwise this test's coverage silently shrinks as
+    // features are extracted out of app.js, which is exactly when it is most needed.
+    const clientDir = path.join(HERE, '..', 'public');
+    const moduleDir = path.join(clientDir, 'modules');
+    const files = [
+      path.join(clientDir, 'app.js'),
+      ...(await fs.readdir(moduleDir)).filter((f) => f.endsWith('.js')).map((f) => path.join(moduleDir, f)),
+    ];
+    const appJs = (await Promise.all(files.map((f) => fs.readFile(f, 'utf8')))).join('\n');
+
     const referenced = new Set(
       [...appJs.matchAll(/getElementById\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1])
     );
