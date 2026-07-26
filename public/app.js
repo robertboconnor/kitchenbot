@@ -2,7 +2,7 @@ import { COOKBOOK_CATEGORY_OPTIONS, KB_BOOT } from './modules/boot-data.js';
 import { isMobile, useMobileEnterBehavior } from './modules/device.js';
 import { initInventory, loadGroceries, loadPantry, setGroceryMoveToPantryReadyState } from './modules/inventory.js';
 import { initPlan, loadThisWeek, renderThisWeekStrip } from './modules/plan.js';
-import { applyMe as applySession } from './modules/session.js';
+import { applyMe as applySession, clearSession, getRawMe, isReadOnly } from './modules/session.js';
 import { initPalette } from './modules/palette.js';
 import {
   getKitchenView,
@@ -106,7 +106,6 @@ let currentHouseholdId = null;
 let currentUserId = null;
 let currentAssistantName = 'KitchenBot';
 let isCurrentUserOwner = false;
-let godModeReadOnly = false;
 let loadHistoryRequestSeq = 0;
 /** Normalized display name (trim + lower) -> chat color key */
 let displayNameToColor = {};
@@ -155,7 +154,6 @@ function userMessageBubbleClass(displayName) {
   return 'user-msg-chat-' + (ok ? k : 'blue');
 }
 let chatsCache = [];
-let lastMePayload = null;
 /** Last persisted message count from /history per chat (DB rows only). */
 const lastPersistedMessageCountByChatId = new Map();
 /**
@@ -168,8 +166,8 @@ const nextEphemeralSeqByChatId = new Map();
 
 /** @returns {'God mode' | 'Demo mode' | 'Read-only mode'} */
 function impersonationReadOnlyModeLabel() {
-  if (!lastMePayload || !lastMePayload.isImpersonating) return 'Read-only mode';
-  return lastMePayload.isGlobalAdmin === true ? 'God mode' : 'Demo mode';
+  if (!getRawMe() || !getRawMe().isImpersonating) return 'Read-only mode';
+  return getRawMe().isGlobalAdmin === true ? 'God mode' : 'Demo mode';
 }
 
 function impersonationReadOnlyNoticeText() {
@@ -186,7 +184,7 @@ function impersonationReadOnlyNoticeText() {
 /** Maps server 403 God Mode copy to Demo Mode when the session is read-only Demo impersonation. */
 function mapServerReadOnlyErrorMessage(rawError) {
   const s = rawError == null ? '' : String(rawError);
-  if (!godModeReadOnly || !lastMePayload || !lastMePayload.isImpersonating) {
+  if (!isReadOnly() || !getRawMe() || !getRawMe().isImpersonating) {
     return s || 'Request failed.';
   }
   if (/God Mode is read-only|Exit God Mode to make changes/i.test(s)) {
@@ -196,11 +194,7 @@ function mapServerReadOnlyErrorMessage(rawError) {
 }
 
 function applyGodModeFromMe(data) {
-  if (data && typeof data.name === 'string' && data.householdId != null) {
-    lastMePayload = data;
-  }
   const ro = !!(data && data.impersonationReadOnly && data.isImpersonating);
-  godModeReadOnly = ro;
   const banner = document.getElementById('god-mode-banner');
   const textEl = document.getElementById('god-mode-banner-text');
   if (banner && textEl) {
@@ -888,7 +882,7 @@ async function loadSettingsPanel() {
     await loadGlobalAdminView();
   }
   showSettingsSubView(currentSettingsSubView);
-  if (lastMePayload) applyGodModeFromMe(lastMePayload);
+  if (getRawMe()) applyGodModeFromMe(getRawMe());
 }
 
 function loadGlobalAdminView() {
@@ -941,7 +935,7 @@ async function loadFamilyProfiles() {
         ? 'No household members yet.'
         : 'No food notes yet — add likes, dislikes, or allergies below, or just tell KitchenBot in chat.';
   }
-  const readOnly = !!godModeReadOnly;
+  const readOnly = !!isReadOnly();
   const postJson = (url, body) =>
     fetch(url, {
       method: 'POST',
@@ -1374,12 +1368,12 @@ function renderAdminHouseholdDetail(detailData) {
       pinIn.placeholder = 'new PIN';
       pinIn.autocomplete = 'new-password';
       pinIn.style.maxWidth = '120px';
-      pinIn.disabled = godModeReadOnly;
+      pinIn.disabled = isReadOnly();
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = 'Set PIN';
       btn.style.marginLeft = '8px';
-      btn.disabled = godModeReadOnly;
+      btn.disabled = isReadOnly();
       btn.addEventListener('click', async () => {
         const pin = pinIn.value.trim();
         if (!pin) {
@@ -1405,7 +1399,7 @@ function renderAdminHouseholdDetail(detailData) {
       td3.appendChild(pinIn);
       td3.appendChild(btn);
       const td4 = document.createElement('td');
-      if (!godModeReadOnly) {
+      if (!isReadOnly()) {
         const viewAsBtn = document.createElement('button');
         viewAsBtn.type = 'button';
         viewAsBtn.textContent = 'View as';
@@ -1665,7 +1659,7 @@ async function refreshOwnerAnthropicUsageView() {
 }
 
 function sendTyping(isTyping) {
-  if (godModeReadOnly) return;
+  if (isReadOnly()) return;
   if (!typingWs || typingWs.readyState !== 1 || !currentChatId) return;
   if (currentHouseholdId == null || !Number.isFinite(Number(currentHouseholdId))) return;
   typingWs.send(
@@ -1704,7 +1698,7 @@ promptInput.addEventListener('keydown', (event) => {
 
 promptInput.addEventListener('input', () => {
   resizePromptInput();
-  if (godModeReadOnly) return;
+  if (isReadOnly()) return;
   if (!currentChatId) return;
   sendTyping(true);
   if (typingStopTimeout) clearTimeout(typingStopTimeout);
@@ -1890,7 +1884,7 @@ function renderChats() {
 
     li.appendChild(contentDiv);
 
-    if (isCurrentUserOwner && !godModeReadOnly) {
+    if (isCurrentUserOwner && !isReadOnly()) {
       const delBtn = document.createElement('button');
       delBtn.textContent = '×';
       delBtn.className = 'g-delete';
@@ -1941,7 +1935,7 @@ async function loadChatsAndEnsureOne() {
   const data = await response.json();
   chatsCache = data.chats || [];
   if (chatsCache.length === 0) {
-    if (godModeReadOnly) {
+    if (isReadOnly()) {
       setCurrentChatId(null);
       chat.innerHTML = '';
       renderChats();
@@ -2682,7 +2676,7 @@ if (godModeExitBtn) {
 }
 
 sendButton.addEventListener('click', async () => {
-  if (godModeReadOnly) return;
+  if (isReadOnly()) return;
   if (chatRequestInFlight) return;
   const prompt = promptInput.value.trim();
 
@@ -2878,7 +2872,7 @@ sendButton.addEventListener('click', async () => {
     weAreStreamingThisChat = false;
   } finally {
     chatRequestInFlight = false;
-    if (sendButton && !godModeReadOnly) {
+    if (sendButton && !isReadOnly()) {
       sendButton.disabled = false;
       sendButton.style.opacity = '';
     }
@@ -2899,7 +2893,8 @@ logoutButton.addEventListener('click', async () => {
   currentHouseholdId = null;
   currentUserId = null;
   isCurrentUserOwner = false;
-  lastMePayload = null;
+  // Session owns identity + the read-only flag; clearing it announces the change.
+  clearSession();
   applyGodModeFromMe({ isImpersonating: false, impersonationReadOnly: false });
   displayNameToColor = {};
   resetCookbook();
