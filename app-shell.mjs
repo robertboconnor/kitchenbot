@@ -11,17 +11,30 @@ function safeJsonForHtml(value) {
     .replace(/\u2029/g, '\\u2029');
 }
 
-// Cache-bust the client bundle so a deploy never leaves a browser on a stale app.js
-// (which would show new server-rendered HTML but old client JS). app.js's mtime changes
-// on every checkout/deploy; computed once at startup, so no per-request stat.
-const APP_JS_VERSION = (() => {
+// Cache-bust client assets so a deploy never leaves a browser on a stale file (which would
+// pair new server-rendered HTML with old client JS, or new markup with old styles). An asset's
+// mtime changes on every checkout/deploy; computed once at startup, so no per-request stat.
+const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), 'public');
+
+function assetVersion(relativePath) {
   try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    return String(Math.floor(statSync(join(here, 'public', 'app.js')).mtimeMs));
+    return String(Math.floor(statSync(join(PUBLIC_DIR, relativePath)).mtimeMs));
   } catch {
     return String(Date.now());
   }
-})();
+}
+
+const APP_JS_VERSION = assetVersion('app.js');
+
+/**
+ * A versioned <link> for a stylesheet in public/. Stylesheets live in real .css files rather
+ * than an inline <style> block so editors can lint them, the browser can cache them separately
+ * from the HTML, and a component's rules can be found by name.
+ */
+export function renderStylesheetLink(href) {
+  const clean = String(href || '').replace(/^\//, '');
+  return `<link rel="stylesheet" href="/${clean}?v=${assetVersion(clean)}" />`;
+}
 
 export function renderClientBootTags(bootData = {}, { scriptSrc = '/app.js' } = {}) {
   const src = String(scriptSrc || '/app.js');

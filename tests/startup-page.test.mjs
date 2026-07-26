@@ -74,7 +74,14 @@ test('public app runtime includes cookbook display helpers used by cookbook rend
 });
 
 test('root page template uses the extracted external client runtime hook', async () => {
-  const source = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../kitchenbot.mjs'), 'utf8');
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const source = await fs.readFile(path.resolve(here, '../kitchenbot.mjs'), 'utf8');
+  // Styles now live in real stylesheets instead of an inline <style> block in the template
+  // string, so selector assertions read the .css files (see app-shell.renderStylesheetLink).
+  const appCss = await fs.readFile(path.resolve(here, '../public/app.css'), 'utf8');
+  const importerCss = await fs.readFile(path.resolve(here, '../public/recipe-importer.css'), 'utf8');
+  assert.match(source, /renderStylesheetLink\("app\.css"\)/);
+  assert.match(source, /renderStylesheetLink\("recipe-importer\.css"\)/);
   assert.match(source, /renderClientBootTags\(\{ cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS \}\)/);
   // marked + DOMPurify are vendored locally (no unpinned CDN), and a hash-based CSP is set.
   assert.match(source, /<script src="\/vendor\/marked\.min\.js"><\/script>/);
@@ -84,21 +91,21 @@ test('root page template uses the extracted external client runtime hook', async
   assert.match(source, /Kitchen workspace/);
   assert.match(source, /Recipe library/);
   assert.match(source, /Import Recipe/);
-  assert.match(source, /\.cookbook-card-more-toggle/);
-  assert.match(source, /\.cookbook-card-summary/);
-  assert.match(source, /\.cookbook-card--mobile/);
-  assert.match(source, /\.cookbook-card-mobile-row/);
-  assert.match(source, /\.cookbook-detail-actions/);
+  assert.match(appCss, /\.cookbook-card-more-toggle/);
+  assert.match(appCss, /\.cookbook-card-summary/);
+  assert.match(appCss, /\.cookbook-card--mobile/);
+  assert.match(appCss, /\.cookbook-card-mobile-row/);
+  assert.match(appCss, /\.cookbook-detail-actions/);
   assert.match(source, /id="tab-chat"/);
   assert.match(source, /id="tab-groceries"/);
-  assert.match(source, /max-height: calc\(100vh - 118px\)/);
+  assert.match(appCss, /max-height: calc\(100vh - 118px\)/);
   assert.match(source, /app\.get\('\/recipe-importer', requireHousehold, requireAuth/);
   assert.match(source, /You can also type one in by hand\./);
   assert.match(source, /<a href="\/#cookbook">Back to KitchenBot<\/a>/);
   assert.match(source, /Overwrite existing recipe/);
   assert.match(source, /importer-conflict-state/);
-  assert.match(source, /\.importer-action-state\[data-state-visible="true"\]\s*\{\s*display: flex !important;/);
-  assert.doesNotMatch(source, /\.cookbook-card-mobile-body/);
+  assert.match(importerCss, /\.importer-action-state\[data-state-visible="true"\]\s*\{\s*display: flex !important;/);
+  assert.doesNotMatch(appCss, /\.cookbook-card-mobile-body/);
   assert.match(source, /id="tab-settings"/);
 });
 
