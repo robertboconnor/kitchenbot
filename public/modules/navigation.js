@@ -44,6 +44,23 @@ export function isCookbookHash() {
   return /^#cookbook(?:\/\d+)?$/i.test(String(window.location.hash || ''));
 }
 
+/**
+ * Drop a #cookbook deep link once the user has navigated somewhere else.
+ *
+ * The hash is an instruction for where to OPEN, not a permanent statement of where you are — but
+ * reapplyVisibleAppTab() reads it as the latter, and runs on every pageshow. Android fires a
+ * pageshow each time you return to the app, so a stale #cookbook would silently drag you off chat
+ * (and take the composer with it) minutes after you left the cookbook. The importer's
+ * "Back to KitchenBot" link points at /#cookbook, which is how you end up with a sticky one.
+ *
+ * replaceState, so this leaves no history entry and fires no hashchange — the cookbook's own
+ * deep-link handling is untouched.
+ */
+function clearCookbookHash() {
+  if (!isCookbookHash()) return;
+  window.history.replaceState(null, '', window.location.pathname + window.location.search);
+}
+
 export function setActiveTab(tab) {
   el('tab-chat')?.classList.toggle('tab-active', tab === 'chat');
   el('tab-groceries')?.classList.toggle('tab-active', tab === 'groceries');
@@ -60,6 +77,7 @@ export function setActiveTab(tab) {
 
   // Re-assert the sub-view so the Kitchen panel is never shown in a stale state.
   if (tab === 'groceries') setKitchenView(currentKitchenView);
+  else clearCookbookHash();
   // The This Week strip belongs to chat; hide it everywhere else. The plan feature decides
   // whether to render it when it hears TAB_CHANGED.
   if (tab !== 'chat') {
@@ -73,6 +91,7 @@ export function setActiveTab(tab) {
 export function setKitchenView(view) {
   currentKitchenView = KITCHEN_VIEWS.includes(view) ? view : 'list';
   persistKitchenSectionPreference(currentKitchenView);
+  if (currentKitchenView !== 'cookbook') clearCookbookHash();
 
   for (const name of KITCHEN_VIEWS) {
     el(`grocery-subtab-${name}`)?.classList.toggle('settings-subtab-active', currentKitchenView === name);

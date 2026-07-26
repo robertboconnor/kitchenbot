@@ -142,6 +142,28 @@ All 22 browser tests still passed — because they asserted the panel was *visib
 anything in it. Fixed, and `e2e/kitchen.spec.mjs` now asserts the recipes are actually there. That
 test would have caught it.
 
+## A second pre-existing bug, found by you, fixed here
+
+**Symptom (yours):** chatting → recipe importer → back to chat, and the message box at the bottom
+is gone.
+
+**Cause:** the importer's "Back to KitchenBot" link points at `/#cookbook`. That `#cookbook` stays
+in the address bar afterwards, and the code that restores your tab reads the hash as *"you are on
+the cookbook"* rather than *"open the cookbook"*. It re-runs every time the browser re-shows the
+page — which on Android is every time you switch back to the app. So chat looks fine, and then some
+time later it silently flips you to the Kitchen and the composer goes with it.
+
+That also explains why it felt random: the trigger isn't leaving the importer, it's the *next* time
+you come back to the app after having left it.
+
+**Fix:** navigating away from the cookbook clears the hash (`replaceState`, so no history entry and
+no interference with the cookbook's own deep links). Arriving at `/#cookbook` or `/#cookbook/12`
+still works exactly as before — four browser tests cover both halves, and I confirmed two of them
+fail without the fix.
+
+**This is a production bug, not one I introduced** — `origin/main` has the identical link and the
+identical logic. It has presumably been doing this for a while. It rides along in this PR.
+
 ## Pre-existing bugs found
 
 I proposed, and you agreed up front, that I'd fix regressions I caused and only *log* anything that
