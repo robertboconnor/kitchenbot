@@ -1,6 +1,7 @@
 import { COOKBOOK_CATEGORY_OPTIONS, KB_BOOT } from './modules/boot-data.js';
 import { isMobile, useMobileEnterBehavior } from './modules/device.js';
 import { initInventory, loadGroceries, loadPantry, setGroceryMoveToPantryReadyState } from './modules/inventory.js';
+import { initPlan, loadThisWeek, renderThisWeekStrip } from './modules/plan.js';
 import { applyMe as applySession } from './modules/session.js';
 import { initPalette } from './modules/palette.js';
 import {
@@ -10,7 +11,7 @@ import {
   setActiveTab,
   setKitchenView,
 } from './modules/navigation.js';
-import { EVENTS, on as onAppEvent } from './modules/events.js';
+import { EVENTS, emit as emitAppEvent, on as onAppEvent } from './modules/events.js';
 import {
   initCookbook,
   loadCookbook,
@@ -80,9 +81,6 @@ const grocerySubviewPantry = document.getElementById('grocery-subview-pantry');
 const grocerySubviewCookbook = document.getElementById('grocery-subview-cookbook');
 const grocerySubtabThisweek = document.getElementById('grocery-subtab-thisweek');
 const grocerySubviewThisweek = document.getElementById('grocery-subview-thisweek');
-const thisweekList = document.getElementById('thisweek-list');
-const thisweekEmpty = document.getElementById('thisweek-empty');
-const thisweekStrip = document.getElementById('thisweek-strip');
 const promptInput = document.getElementById('prompt');
 const sendButton = document.getElementById('send');
 const logoutButton = document.getElementById('logout');
@@ -93,6 +91,16 @@ let currentSettingsSubView = 'my';
 
 
 let currentChatId = null;
+
+/**
+ * Change the active chat and announce it. Features that care about which chat is open (the meal
+ * plan, and later anything else) listen for CHAT_CHANGED rather than reading this variable.
+ */
+function setCurrentChatId(id) {
+  if (currentChatId === id) return;
+  currentChatId = id;
+  emitAppEvent(EVENTS.CHAT_CHANGED, { chatId: id });
+}
 let currentUserName = null;
 let currentHouseholdId = null;
 let currentUserId = null;
@@ -1857,181 +1865,10 @@ async function loadHistory(options = {}) {
 
 
 
-async function loadThisWeek() {
-  if (!thisweekList) return;
-  if (currentChatId == null) {
-    thisweekList.innerHTML = '';
-    if (thisweekEmpty) {
-      thisweekEmpty.textContent = 'Open or start a chat to see this week’s plan.';
-      thisweekEmpty.style.display = '';
-    }
-    return;
-  }
-  let items = [];
-  try {
-    const res = await fetch('/plan?chatId=' + encodeURIComponent(currentChatId), { credentials: 'same-origin' });
-    if (res.ok) items = (await res.json()).items || [];
-  } catch (err) {
-    /* leave empty on failure */
-  }
-  thisweekList.innerHTML = '';
-  if (thisweekEmpty) {
-    thisweekEmpty.textContent = 'No meals planned this week yet. Ask KitchenBot to plan the week and they’ll show up here (across every chat).';
-    thisweekEmpty.style.display = items.length === 0 ? '' : 'none';
-  }
-  for (const item of items) {
-    const li = document.createElement('li');
-    li.className = 'g-item' + (item.status === 'cooked' ? ' g-item-checked' : '');
-
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.checked = item.status === 'cooked';
-    checkbox.style.accentColor = 'var(--accent-strong)';
-    checkbox.title = item.status === 'cooked' ? 'Mark as still to cook' : 'Mark as cooked';
-    checkbox.addEventListener('change', async () => {
-      const nowCooked = checkbox.checked;
-      await fetch('/plan/' + item.id, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ chatId: currentChatId, status: nowCooked ? 'cooked' : 'planned' }),
-      }).catch(() => {});
-      if (nowCooked) {
-        // one small celebratory beat, then refresh
-        li.classList.add('kb-joy');
-        setTimeout(() => loadThisWeek(), 480);
-      } else {
-        loadThisWeek();
-      }
-    });
-    li.appendChild(checkbox);
-
-    const nameWrap = document.createElement('span');
-    nameWrap.className = 'g-item-name';
-    const nameText = document.createElement('span');
-    nameText.textContent = item.name;
-    if (item.status === 'cooked') nameText.style.textDecoration = 'line-through';
-    nameWrap.appendChild(nameText);
-    if (item.cookbookEntryId) {
-      const tag = document.createElement('button');
-      tag.type = 'button';
-      tag.textContent = '🍳 recipe';
-      tag.title = 'Open ' + (item.cookbookTitle || 'the saved recipe');
-      tag.style.cssText =
-        'margin-left:8px;background:none;border:none;color:var(--accent-strong);font-size:12px;cursor:pointer;padding:0;text-decoration:underline;';
-      tag.addEventListener('click', (e) => {
-        e.stopPropagation();
-        setKitchenView('cookbook');
-        if (typeof openCookbookDetail === 'function') openCookbookDetail(item.cookbookEntryId);
-      });
-      nameWrap.appendChild(tag);
-    }
-    if (item.note) {
-      const note = document.createElement('div');
-      note.textContent = item.note;
-      note.style.color = 'var(--text-soft)';
-      note.style.fontSize = '12px';
-      nameWrap.appendChild(note);
-    }
-    li.appendChild(nameWrap);
-
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'g-item-remove';
-    remove.textContent = '✕';
-    remove.title = 'Remove from this week';
-    remove.addEventListener('click', async () => {
-      await fetch('/plan/' + item.id + '?chatId=' + encodeURIComponent(currentChatId), {
-        method: 'DELETE',
-        credentials: 'same-origin',
-      }).catch(() => {});
-      loadThisWeek();
-    });
-    li.appendChild(remove);
-
-    thisweekList.appendChild(li);
-  }
-}
 
 // Compact, glanceable "This Week" strip pinned above the chat messages — the plan
 // right where you're cooking. Reads the same /plan data; refreshed by loadHistory
 // (chat open/switch, after a turn, co-viewer updates) and by setActiveTab('chat').
-async function renderThisWeekStrip() {
-  if (!thisweekStrip) return;
-  const onChatTab = chat && chat.style.display !== 'none';
-  if (!onChatTab || currentChatId == null) {
-    thisweekStrip.style.display = 'none';
-    return;
-  }
-  let items = [];
-  try {
-    const res = await fetch('/plan?chatId=' + encodeURIComponent(currentChatId), { credentials: 'same-origin' });
-    if (res.ok) items = (await res.json()).items || [];
-  } catch (err) {
-    /* leave empty */
-  }
-  if (items.length === 0) {
-    thisweekStrip.innerHTML = '';
-    thisweekStrip.style.display = 'none';
-    return;
-  }
-  thisweekStrip.innerHTML = '';
-  // Collapsed by DEFAULT — the meal chips ate ~1/5 of a phone screen. One line + a chevron
-  // when collapsed; expands to the chips. State persists across chats/sessions.
-  const collapsed = localStorage.getItem('kb_thisweek_collapsed') !== '0';
-  thisweekStrip.style.cssText =
-    'display:block;margin:0 0 6px;background:var(--accent-soft);border-radius:12px;overflow:hidden;';
-
-  const header = document.createElement('button');
-  header.type = 'button';
-  header.setAttribute('aria-expanded', String(!collapsed));
-  header.style.cssText =
-    'display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:8px 12px;background:none;border:none;cursor:pointer;text-align:left;';
-  const label = document.createElement('span');
-  label.style.cssText =
-    'font-size:12px;font-weight:700;color:var(--accent-strong);text-transform:uppercase;letter-spacing:.04em;';
-  const cookedCount = items.filter((i) => i.status === 'cooked').length;
-  label.textContent = 'This week · ' + items.length + (cookedCount ? ' · ' + cookedCount + ' cooked' : '');
-  const chevron = document.createElement('span');
-  chevron.textContent = collapsed ? '▾' : '▴';
-  chevron.setAttribute('aria-hidden', 'true');
-  chevron.style.cssText = 'font-size:13px;color:var(--accent-strong);flex:none;';
-  header.appendChild(label);
-  header.appendChild(chevron);
-  header.addEventListener('click', () => {
-    localStorage.setItem('kb_thisweek_collapsed', collapsed ? '0' : '1');
-    renderThisWeekStrip();
-  });
-  thisweekStrip.appendChild(header);
-
-  if (!collapsed) {
-    const body = document.createElement('div');
-    body.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 12px 10px;';
-    for (const item of items) {
-      const cooked = item.status === 'cooked';
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.style.cssText =
-        'display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;border:1px solid var(--border-subtle);background:#fff;font-size:13px;cursor:pointer;' +
-        (cooked ? 'opacity:.6;text-decoration:line-through;' : '');
-      chip.textContent = (cooked ? '✓ ' : '') + item.name + (item.cookbookEntryId ? ' 🍳' : '');
-      chip.title =
-        item.name + (cooked ? ' — cooked' : ' — planned') + (item.cookbookEntryId ? ' · has a saved recipe' : '');
-      chip.addEventListener('click', () => {
-        setActiveTab('groceries');
-        if (item.cookbookEntryId) {
-          setKitchenView('cookbook');
-          if (typeof openCookbookDetail === 'function') openCookbookDetail(item.cookbookEntryId);
-        } else {
-          setKitchenView('thisweek');
-        }
-      });
-      body.appendChild(chip);
-    }
-    thisweekStrip.appendChild(body);
-  }
-  thisweekStrip.style.display = 'block';
-}
 
 function renderChats() {
   chatListEl.innerHTML = '';
@@ -2071,7 +1908,7 @@ function renderChats() {
           if (!resp.ok) return;
           chatsCache = chatsCache.filter(c => c.id !== chatInfo.id);
           if (currentChatId === chatInfo.id) {
-            currentChatId = chatsCache.length ? chatsCache[0].id : null;
+            setCurrentChatId(chatsCache.length ? chatsCache[0].id : null);
             chat.innerHTML = '';
             if (currentChatId) {
               await loadHistory();
@@ -2087,7 +1924,7 @@ function renderChats() {
     }
 
     li.addEventListener('click', async () => {
-      currentChatId = chatInfo.id;
+      setCurrentChatId(chatInfo.id);
       closeSidebarAndGoToChatTab();
       renderChats();
       await loadHistory();
@@ -2105,7 +1942,7 @@ async function loadChatsAndEnsureOne() {
   chatsCache = data.chats || [];
   if (chatsCache.length === 0) {
     if (godModeReadOnly) {
-      currentChatId = null;
+      setCurrentChatId(null);
       chat.innerHTML = '';
       renderChats();
       return;
@@ -2117,10 +1954,10 @@ async function loadChatsAndEnsureOne() {
     });
     if (!createResp.ok) throw new Error('Failed to create chat');
     const created = await createResp.json();
-    currentChatId = created.id;
+    setCurrentChatId(created.id);
     chatsCache.unshift({ id: created.id, owner: created.owner, title: created.title, created_at: new Date().toISOString() });
   } else {
-    currentChatId = chatsCache[0].id;
+    setCurrentChatId(chatsCache[0].id);
   }
   renderChats();
 }
@@ -2166,7 +2003,7 @@ async function rehydrateAuthenticatedApp(meData, opts = {}) {
   const resetSessionView = opts.resetSessionView !== false;
   teardownRealtimeUi();
   if (resetSessionView) {
-    currentChatId = null;
+    setCurrentChatId(null);
     chatsCache = [];
     chat.innerHTML = '';
     sidebar.classList.remove('open');
@@ -2542,7 +2379,7 @@ newChatButton.addEventListener('click', async () => {
     });
     if (!resp.ok) return;
     const created = await resp.json();
-    currentChatId = created.id;
+    setCurrentChatId(created.id);
     sendTypingViewing();
     chatsCache.unshift({
       id: created.id,
@@ -3076,6 +2913,7 @@ logoutButton.addEventListener('click', async () => {
 
 // --- feature modules ---
 initPalette();
+initPlan();
 initInventory();
 initCookbook();
 initAttachments();
