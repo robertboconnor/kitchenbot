@@ -2,6 +2,14 @@ import { COOKBOOK_CATEGORY_OPTIONS, KB_BOOT } from './modules/boot-data.js';
 import { applyMe as applySession } from './modules/session.js';
 import { initPalette } from './modules/palette.js';
 import {
+  getKitchenView,
+  isCookbookHash,
+  readKitchenSectionPreference,
+  setActiveTab,
+  setKitchenView,
+} from './modules/navigation.js';
+import { EVENTS, on as onAppEvent } from './modules/events.js';
+import {
   clearPendingAttachment,
   getPendingAttachment,
   initAttachments,
@@ -135,8 +143,6 @@ let currentHouseholdId = null;
 let currentUserId = null;
 let currentAssistantName = 'KitchenBot';
 let isCurrentUserOwner = false;
-const KITCHEN_SECTION_STORAGE_KEY = 'kb_kitchen_active_section';
-let currentGroceriesSubview = readKitchenSectionPreference();
 let cookbookCache = [];
 let currentCookbookCategoryFilter = '';
 let currentCookbookTagFilter = '';
@@ -157,21 +163,6 @@ const CHAT_COLOR_OPTIONS = [
   { key: 'peach', label: 'Peach' },
 ];
 
-function readKitchenSectionPreference() {
-  try {
-    const saved = sessionStorage.getItem(KITCHEN_SECTION_STORAGE_KEY);
-    return saved === 'list' || saved === 'pantry' || saved === 'cookbook' || saved === 'thisweek' ? saved : 'cookbook';
-  } catch (error) {
-    return 'cookbook';
-  }
-}
-
-function persistKitchenSectionPreference(value) {
-  const normalized = value === 'list' || value === 'pantry' || value === 'cookbook' ? value : 'cookbook';
-  try {
-    sessionStorage.setItem(KITCHEN_SECTION_STORAGE_KEY, normalized);
-  } catch (error) {}
-}
 function normalizeDisplayNameKey(name) {
   return String(name ?? '').trim().toLowerCase();
 }
@@ -592,7 +583,7 @@ function connectTypingWs() {
           const shouldStickToBottom = isChatNearBottom();
           void loadHistory({ preserveViewport: true }).catch(() => {});
           if (!shouldStickToBottom) showNewMessageIndicator();
-          if (currentGroceriesSubview === 'thisweek') {
+          if (getKitchenView() === 'thisweek') {
             loadThisWeek();
           }
           return;
@@ -715,25 +706,11 @@ function showLogin() {
   setActiveTab('chat');
 }
 
-function setActiveTab(tab) {
-  tabChat.classList.toggle('tab-active', tab === 'chat');
-  tabGroceries.classList.toggle('tab-active', tab === 'groceries');
-  if (tabSettings) tabSettings.classList.toggle('tab-active', tab === 'settings');
-  chat.style.display = tab === 'chat' ? 'flex' : 'none';
-  groceryPanel.style.display = tab === 'groceries' ? 'flex' : 'none';
-  if (settingsPanel) settingsPanel.style.display = tab === 'settings' ? 'flex' : 'none';
-  if (inputArea) inputArea.style.display = tab === 'chat' ? 'flex' : 'none';
-  if (tab === 'groceries') setGroceriesSubview(currentGroceriesSubview);
-  if (tab === 'settings') loadSettingsPanel();
-  if (tab === 'chat') renderThisWeekStrip();
-  else if (thisweekStrip) thisweekStrip.style.display = 'none';
-}
-
 function reapplyVisibleAppTab() {
   if (!appArea || appArea.style.display === 'none') return;
   if (isCookbookHash()) {
     setActiveTab('groceries');
-    setGroceriesSubview('cookbook');
+    setKitchenView('cookbook');
     return;
   }
   if (settingsPanel && settingsPanel.style.display === 'flex') {
@@ -2611,10 +2588,6 @@ function syncCookbookWorkspaceLayout() {
   }
 }
 
-function isCookbookHash() {
-  return /^#cookbook(?:\/\d+)?$/i.test(String(window.location.hash || ''));
-}
-
 function parseCookbookDetailHash() {
   const match = String(window.location.hash || '').match(/^#cookbook\/(\d+)$/);
   return match ? Number(match[1]) : null;
@@ -2712,7 +2685,7 @@ async function openCookbookDetail(id, { edit = false, pushHash = true } = {}) {
     const data = await response.json();
     if (!data || !data.item) throw new Error('Missing recipe');
     setActiveTab('groceries');
-    setGroceriesSubview('cookbook');
+    setKitchenView('cookbook');
     renderCookbookDetail(data.item, { edit });
     if (pushHash && window.location.hash !== cookbookDetailHash(numericId)) {
       window.location.hash = cookbookDetailHash(numericId);
@@ -2907,22 +2880,6 @@ async function loadCookbook() {
   }
 }
 
-function setGroceriesSubview(view) {
-  currentGroceriesSubview =
-    view === 'pantry' || view === 'cookbook' || view === 'thisweek' ? view : 'list';
-  persistKitchenSectionPreference(currentGroceriesSubview);
-  if (grocerySubtabList) grocerySubtabList.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'list');
-  if (grocerySubtabPantry) grocerySubtabPantry.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'pantry');
-  if (grocerySubtabCookbook) grocerySubtabCookbook.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'cookbook');
-  if (grocerySubtabThisweek) grocerySubtabThisweek.classList.toggle('settings-subtab-active', currentGroceriesSubview === 'thisweek');
-  if (grocerySubviewList) grocerySubviewList.style.display = currentGroceriesSubview === 'list' ? '' : 'none';
-  if (grocerySubviewPantry) grocerySubviewPantry.style.display = currentGroceriesSubview === 'pantry' ? '' : 'none';
-  if (grocerySubviewCookbook) grocerySubviewCookbook.style.display = currentGroceriesSubview === 'cookbook' ? '' : 'none';
-  if (grocerySubviewThisweek) grocerySubviewThisweek.style.display = currentGroceriesSubview === 'thisweek' ? '' : 'none';
-  if (currentGroceriesSubview === 'thisweek') loadThisWeek();
-  syncCookbookWorkspaceLayout();
-}
-
 async function loadThisWeek() {
   if (!thisweekList) return;
   if (currentChatId == null) {
@@ -2987,7 +2944,7 @@ async function loadThisWeek() {
         'margin-left:8px;background:none;border:none;color:var(--accent-strong);font-size:12px;cursor:pointer;padding:0;text-decoration:underline;';
       tag.addEventListener('click', (e) => {
         e.stopPropagation();
-        setGroceriesSubview('cookbook');
+        setKitchenView('cookbook');
         if (typeof openCookbookDetail === 'function') openCookbookDetail(item.cookbookEntryId);
       });
       nameWrap.appendChild(tag);
@@ -3086,10 +3043,10 @@ async function renderThisWeekStrip() {
       chip.addEventListener('click', () => {
         setActiveTab('groceries');
         if (item.cookbookEntryId) {
-          setGroceriesSubview('cookbook');
+          setKitchenView('cookbook');
           if (typeof openCookbookDetail === 'function') openCookbookDetail(item.cookbookEntryId);
         } else {
-          setGroceriesSubview('thisweek');
+          setKitchenView('thisweek');
         }
       });
       body.appendChild(chip);
@@ -3253,7 +3210,7 @@ async function rehydrateAuthenticatedApp(meData, opts = {}) {
   const shouldOpenCookbookFromHash = isCookbookHash();
   if (shouldOpenCookbookFromHash) {
     setActiveTab('groceries');
-    setGroceriesSubview('cookbook');
+    setKitchenView('cookbook');
   } else if (forceChatTab) {
     setActiveTab('chat');
   }
@@ -3261,7 +3218,7 @@ async function rehydrateAuthenticatedApp(meData, opts = {}) {
   await loadHistory();
   if (shouldOpenCookbookFromHash) {
     setActiveTab('groceries');
-    setGroceriesSubview('cookbook');
+    setKitchenView('cookbook');
     await loadCookbook();
   }
   connectTypingWs();
@@ -3284,23 +3241,23 @@ if (tabSettings) {
 
 if (grocerySubtabList) {
   grocerySubtabList.addEventListener('click', () => {
-    setGroceriesSubview('list');
+    setKitchenView('list');
   });
 }
 if (grocerySubtabPantry) {
   grocerySubtabPantry.addEventListener('click', () => {
-    setGroceriesSubview('pantry');
+    setKitchenView('pantry');
   });
 }
 if (grocerySubtabCookbook) {
   grocerySubtabCookbook.addEventListener('click', async () => {
-    setGroceriesSubview('cookbook');
+    setKitchenView('cookbook');
     await loadCookbook();
   });
 }
 if (grocerySubtabThisweek) {
   grocerySubtabThisweek.addEventListener('click', () => {
-    setGroceriesSubview('thisweek');
+    setKitchenView('thisweek');
   });
 }
 function initializeCookbookUi() {
@@ -3352,7 +3309,7 @@ function initializeCookbookUi() {
   window.addEventListener('hashchange', async () => {
     if (isCookbookHash()) {
       setActiveTab('groceries');
-      setGroceriesSubview('cookbook');
+      setKitchenView('cookbook');
       await loadCookbook();
       return;
     }
@@ -4293,3 +4250,15 @@ groceryClearButton.addEventListener('click', async () => {
 // --- feature modules ---
 initPalette();
 initAttachments();
+
+// Navigation announces where the user went; each feature decides what that means for it.
+// These subscriptions replace the direct calls navigation used to make into settings, the meal
+// plan, and the cookbook — the coupling that previously made those inextricable.
+onAppEvent(EVENTS.TAB_CHANGED, ({ tab }) => {
+  if (tab === 'settings') loadSettingsPanel();
+  if (tab === 'chat') renderThisWeekStrip();
+});
+onAppEvent(EVENTS.KITCHEN_VIEW_CHANGED, ({ view }) => {
+  if (view === 'thisweek') loadThisWeek();
+  syncCookbookWorkspaceLayout();
+});

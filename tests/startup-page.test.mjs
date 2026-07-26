@@ -135,14 +135,24 @@ test('root page template uses the extracted external client runtime hook', async
 });
 
 test('main app runtime treats #cookbook as a first-class route into the cookbook subview', async () => {
-  const source = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../public/app.js'), 'utf8');
-  assert.match(source, /function isCookbookHash\(/);
-  assert.match(source, /\^#cookbook\(\?:\\\/\\d\+\)\?\$\//);
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const source = await fs.readFile(path.resolve(here, '../public/app.js'), 'utf8');
+  // Tab / Kitchen sub-view routing now lives in its own module, which only ANNOUNCES navigation
+  // (TAB_CHANGED / KITCHEN_VIEW_CHANGED) instead of calling into settings, plan, and cookbook.
+  const nav = await fs.readFile(path.resolve(here, '../public/modules/navigation.js'), 'utf8');
+  assert.match(nav, /export function isCookbookHash\(/);
+  assert.match(nav, /\^#cookbook\(\?:\\\/\\d\+\)\?\$\//);
+  assert.match(nav, /const KITCHEN_SECTION_STORAGE_KEY = 'kb_kitchen_active_section'/);
+  assert.match(nav, /let currentKitchenView = readKitchenSectionPreference\(\)/);
+  assert.match(nav, /emit\(EVENTS\.TAB_CHANGED/);
+  assert.match(nav, /emit\(EVENTS\.KITCHEN_VIEW_CHANGED/);
+  // Navigation must not reach back into the features it used to call directly. Comments are
+  // stripped first — the module's own header explains what it no longer calls, by name.
+  const navCode = nav.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(navCode, /loadSettingsPanel|renderThisWeekStrip|loadThisWeek|syncCookbookWorkspaceLayout/);
   assert.match(source, /function reapplyVisibleAppTab\(/);
   assert.match(source, /const shouldOpenCookbookFromHash = isCookbookHash\(\)/);
   assert.match(source, /if \(isCookbookHash\(\)\) \{/);
-  assert.match(source, /const KITCHEN_SECTION_STORAGE_KEY = 'kb_kitchen_active_section'/);
-  assert.match(source, /let currentGroceriesSubview = readKitchenSectionPreference\(\)/);
   assert.match(source, /function syncCookbookWorkspaceLayout\(/);
   // The old sidebar "Household" settings button was removed (Settings is a first-class tab now).
   assert.doesNotMatch(source, /sidebar-household/);
