@@ -62,18 +62,26 @@ of text containing certain nested characters made it lose track of where the tex
 skipped **80% of `app.js`** and reported "all clear."
 
 I only caught it because a result looked too clean to be true. When I rebuilt the checker properly
-and re-ran it, it immediately found **five real defects that earlier green test runs had hidden**:
+and re-ran it, it immediately found **five real defects that earlier green test runs had hidden**.
+
+To be precise about whose fault they were, because it matters: **all five were introduced by this
+refactor and were sitting on `dev`, unshipped.** None of them ever reached production. The checker
+caught my own mistakes before you could see them — which is what it is for, but it is not the same
+as finding latent bugs in the live app, and I described it loosely enough the first time to invite
+that reading.
 
 1. **The grocery list's "Clear" button visibility was broken** — the code that shows or hides it
    referenced something that had moved, and the error was being swallowed by a surrounding
-   catch-all. Silently, invisibly broken.
+   catch-all, so it failed silently on every render. (Introduced when grocery + pantry were pulled
+   into `inventory.js`; production is unaffected.)
 2. The cookbook's hash-navigation guard referenced state that had moved.
 3. Settings referenced five things that had moved.
 4. God Mode's "exit impersonation" called into the login shell directly instead of announcing.
 5. `app.js` called a settings function that had moved.
 
 None of these were caught by 206 node tests and 22 browser tests, because the node tests never run
-browser code and the browser tests didn't happen to click those exact controls.
+browser code and the browser tests didn't happen to click those exact controls. Had they shipped,
+several would have been the kind of bug you'd hit mid-cooking and have no way to describe.
 
 The rebuilt checker now: uses a real tokenizer instead of pattern matching, checks plain references
 as well as function calls, **refuses to report "all clear" if it can't read the whole file**, and
