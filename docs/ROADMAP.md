@@ -441,10 +441,32 @@ tests added).
   deterministic-follow-up / next-action state machine is removed (see the dated pass above), and the
   Settings "disaster" is split into role-gated surfaces (My preferences / Family food / Household /
   Anthropic usage / God Mode).
-- **Phase 5 — Frontend re-plumb (the long pole, Large).** The entire client is template strings
-  inside the 212 KB `kitchenbot.mjs` + a 4,580-line global-scope `public/app.js`. Lift HTML/CSS out
-  into real files/components, move JS off global scope, real responsive + a11y. Framework TBD
-  (vanilla-modular / Svelte / React). This is the genuinely multi-week job.
+- **Phase 5 — Frontend re-plumb. 🚧 IN PROGRESS — mechanical two-thirds done 2026-07-25 (night 1,
+  on `dev`).** Full record: `docs/frontend-replumb-log.md`.
+  - ✅ **Frontend safety net** (`tests/frontend-shell.test.mjs`, +6 tests): boots the real server and
+    asserts the HTTP contract — every `getElementById` id exists in the served HTML; the applied CSS
+    is byte-identical *including cascade order*; snapshot inventories of selectors + element ids;
+    palettes/font/CSP/script tags present; no 404'd assets. Regenerate snapshots deliberately with
+    `UPDATE_FRONTEND_SNAPSHOTS=1`. It found real dead code on its first run (−325 lines of client
+    code driving the deleted freeform-memory UI).
+  - ✅ **CSS → real files**: `public/app.css` + `public/recipe-importer.css`, cache-busted via
+    `app-shell.renderStylesheetLink()`. Zero inline `<style>` remains.
+  - ✅ **Markup → real templates**: `views/app.html` + `views/recipe-importer.html` via
+    `app-shell.renderHtmlTemplate()` with `<!--KB:token-->` placeholders (throws on a missing
+    value). `views/` is NOT static-served. The `/` route is 8 lines instead of 710.
+  - ✅ **`app.js`**: de-indented (an 8-space fossil from living inside the HTML string), converted to
+    `type="module"` (opt-in per page — the importer's classic runtime is deliberately untouched),
+    and the first real module extracted: `public/modules/cookbook-display.js` (+ `boot-data.js`),
+    which made that logic unit-testable for the first time (`tests/cookbook-display.test.mjs`).
+  - `kitchenbot.mjs` 6,530 → 2,401 lines; `app.js` 4,994 → 4,473. **197 tests green** (was 182).
+  - ⬜ **Remaining (the judgment-heavy part):** 37 module-level mutable variables are read AND
+    written across chat/grocery/pantry/settings, so splitting `app.js` by feature changes real
+    behaviour — and the net verifies structure, not runtime interaction. Needs runtime tests (or
+    hands-on verification) FIRST. Then: real responsive + a11y, and only then the framework
+    question (vanilla-modular / Svelte / React), which stays deliberately open.
+  - ⚠️ **Not yet runtime-verified**: the in-app browser preview hung on 2026-07-25, so no click-
+    through happened. See the checklist at the end of `docs/frontend-replumb-log.md` before merging
+    Phase 5 work to `main`.
 
 ## Open threads / known paper-cuts
 
