@@ -70,16 +70,18 @@ test('public app runtime includes cookbook display helpers used by cookbook rend
   assert.match(displayModule, /export function getCookbookDisplaySource\(/);
   assert.match(displayModule, /export function getCookbookDisplayProvenance\(/);
   assert.match(source, /from '\.\/modules\/cookbook-display\.js'/);
-  assert.match(source, /function buildCookbookOverflowMenu\(/);
-  assert.match(source, /function buildCookbookCardTags\(/);
-  assert.match(source, /function fitCookbookCardTags\(/);
-  assert.match(source, /function renderCookbookDetailActions\(/);
-  assert.match(source, /cookbookDetailActions/);
-  assert.match(source, /cookbook-card-mobile-row/);
-  assert.match(source, /summary\.textContent = 'More'/);
-  assert.doesNotMatch(source, /let currentCookbookExpandedCardId = null/);
-  assert.doesNotMatch(source, /Tap to preview/);
-  assert.doesNotMatch(source, /cookbook-card-mobile-body/);
+  // Card/detail rendering moved into the cookbook feature module.
+  const cookbookModule = await fs.readFile(path.resolve(here, '../public/modules/cookbook.js'), 'utf8');
+  assert.match(cookbookModule, /function buildCookbookOverflowMenu\(/);
+  assert.match(cookbookModule, /function buildCookbookCardTags\(/);
+  assert.match(cookbookModule, /function fitCookbookCardTags\(/);
+  assert.match(cookbookModule, /function renderCookbookDetailActions\(/);
+  assert.match(cookbookModule, /cookbookDetailActions/);
+  assert.match(cookbookModule, /cookbook-card-mobile-row/);
+  assert.match(cookbookModule, /summary\.textContent = 'More'/);
+  assert.doesNotMatch(cookbookModule, /let currentCookbookExpandedCardId = null/);
+  assert.doesNotMatch(cookbookModule, /Tap to preview/);
+  assert.doesNotMatch(cookbookModule, /cookbook-card-mobile-body/);
 });
 
 test('root page template uses the extracted external client runtime hook', async () => {
@@ -153,7 +155,8 @@ test('main app runtime treats #cookbook as a first-class route into the cookbook
   assert.match(source, /function reapplyVisibleAppTab\(/);
   assert.match(source, /const shouldOpenCookbookFromHash = isCookbookHash\(\)/);
   assert.match(source, /if \(isCookbookHash\(\)\) \{/);
-  assert.match(source, /function syncCookbookWorkspaceLayout\(/);
+  const cookbookFeature = await fs.readFile(path.resolve(here, '../public/modules/cookbook.js'), 'utf8');
+  assert.match(cookbookFeature, /export function syncCookbookWorkspaceLayout\(/);
   // The old sidebar "Household" settings button was removed (Settings is a first-class tab now).
   assert.doesNotMatch(source, /sidebar-household/);
   assert.match(source, /window\.addEventListener\('pageshow', \(\) => \{\s*reapplyVisibleAppTab\(\);/);

@@ -25,6 +25,8 @@ export const EVENTS = {
   READ_ONLY_CHANGED: 'readonly:changed',
   /** The meal plan was mutated and any view of it should refresh. */
   PLAN_CHANGED: 'plan:changed',
+  /** Something wants the chat composer pre-filled and focused. detail: { text } */
+  COMPOSE_PROMPT: 'compose:prompt',
 };
 
 export function on(event, handler) {
