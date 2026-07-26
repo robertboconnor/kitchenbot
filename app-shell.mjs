@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -34,6 +34,32 @@ const APP_JS_VERSION = assetVersion('app.js');
 export function renderStylesheetLink(href) {
   const clean = String(href || '').replace(/^\//, '');
   return `<link rel="stylesheet" href="/${clean}?v=${assetVersion(clean)}" />`;
+}
+
+// Page markup lives in real .html files under views/ rather than inside a JS template literal,
+// so editors highlight and lint it and an unclosed tag is visible. views/ is NOT served
+// statically — these are server-side templates, read once at startup (edit one, restart the
+// server, exactly as when the markup lived in kitchenbot.mjs).
+const VIEWS_DIR = join(dirname(fileURLToPath(import.meta.url)), 'views');
+const templateCache = new Map();
+
+/**
+ * Render a views/<name>.html template, substituting `<!--KB:token-->` comment placeholders.
+ * HTML comments are the placeholder syntax on purpose: an un-substituted one is inert in the
+ * browser rather than printing stray text, and it keeps the file valid HTML for tooling.
+ */
+export function renderHtmlTemplate(name, replacements = {}) {
+  let html = templateCache.get(name);
+  if (html === undefined) {
+    html = readFileSync(join(VIEWS_DIR, `${name}.html`), 'utf8');
+    templateCache.set(name, html);
+  }
+  return html.replace(/<!--KB:([a-zA-Z0-9_]+)-->/g, (match, token) => {
+    if (!(token in replacements)) {
+      throw new Error(`views/${name}.html has placeholder "${token}" with no value supplied`);
+    }
+    return String(replacements[token] ?? '');
+  });
 }
 
 export function renderClientBootTags(bootData = {}, { scriptSrc = '/app.js' } = {}) {

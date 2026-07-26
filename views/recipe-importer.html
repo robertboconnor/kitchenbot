@@ -1,0 +1,168 @@
+<!doctype html>
+<html>
+  <head>
+    <title>KitchenBot Recipe Importer</title>
+    <link rel="icon" href="/logo.png" type="image/png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <script>
+      /* Apply the user's palette BEFORE first paint (no flash). Authoritative value
+         comes from /me after load and rewrites localStorage; this reads the cache. */
+      try {
+        var kbP = localStorage.getItem('kb-palette');
+        var kbAllowed = { 'cotton-candy': 1, 'sweetwater': 1, 'sous-chef': 1 };
+        document.documentElement.setAttribute('data-palette', kbAllowed[kbP] ? kbP : 'sweetwater');
+      } catch (e) {
+        document.documentElement.setAttribute('data-palette', 'sweetwater');
+      }
+    </script>
+    <!--KB:stylesheet-->
+  </head>
+  <body>
+    <div class="importer-shell">
+      <div class="importer-topbar">
+        <div class="importer-title">
+          <h1>Recipe Importer</h1>
+          <p>Bring in a recipe from a URL or photos, repair the draft, and save it into your Cookbook.</p>
+        </div>
+        <a href="/#cookbook">Back to KitchenBot</a>
+      </div>
+
+      <div id="importer-status" aria-live="polite" data-tone="default">
+        <div class="importer-status-spinner" aria-hidden="true"></div>
+        <div class="importer-status-copy">
+          <div class="importer-status-title">Ready for a recipe</div>
+          <div class="importer-status-detail">Paste a URL or add photos and I’ll turn it into an editable recipe draft, or add one manually.</div>
+        </div>
+      </div>
+
+      <div class="importer-grid">
+        <section class="importer-card">
+          <div>
+            <h2>Import Source</h2>
+            <p>URL imports use Riveter. Image imports use OCR and then build an editable recipe draft. You can also type one in by hand.</p>
+          </div>
+          <label class="importer-field">
+            <span>Recipe URL</span>
+            <input id="importer-url-input" type="url" placeholder="https://example.com/recipe" inputmode="url" />
+          </label>
+          <div class="button-row">
+            <button id="importer-url-submit" type="button">Import from URL</button>
+          </div>
+
+          <div style="height:1px;background:var(--border-subtle);"></div>
+
+          <div>
+            <h2 style="font-size:18px;">Images</h2>
+            <p>Choose whether to take a photo or upload existing images first.</p>
+          </div>
+          <div class="button-row">
+            <button id="importer-camera-btn" type="button">Take photo</button>
+            <button id="importer-upload-btn" type="button" class="button-secondary">Upload images</button>
+          </div>
+          <input id="importer-camera-input" type="file" accept="image/*" capture="environment" multiple hidden />
+          <input id="importer-upload-input" type="file" accept="image/*" multiple hidden />
+        </section>
+
+        <section class="importer-card">
+          <div>
+            <h2>Recipe Draft</h2>
+            <p>Review and repair the recipe here. Nothing is saved to Cookbook until you hit save.</p>
+          </div>
+          <div class="importer-action-bar">
+            <div id="importer-primary-actions" class="button-row importer-action-state" data-state-visible="true">
+              <button id="importer-save" type="button" disabled>Save to Cookbook</button>
+              <button id="importer-reset" type="button" class="button-secondary">Reset</button>
+            </div>
+            <div id="importer-saving-state" class="importer-action-state importer-action-state--saving" data-state-visible="false">
+              <div class="importer-saving-chip">
+                <div class="importer-status-spinner" aria-hidden="true"></div>
+                <span>Saving to Cookbook…</span>
+              </div>
+              <div class="importer-action-detail">Committing the edited draft into your saved recipes.</div>
+            </div>
+            <div id="importer-conflict-state" class="importer-action-state importer-action-state--saved" data-state-visible="false">
+              <div class="importer-saved-badge">
+                <span class="importer-saved-icon importer-conflict-icon" aria-hidden="true">!</span>
+                <span class="importer-action-copy">
+                  <span class="importer-action-title">That recipe already exists</span>
+                  <span id="importer-conflict-detail" class="importer-action-detail">You can overwrite the existing cookbook entry or keep editing this draft.</span>
+                </span>
+              </div>
+              <div class="button-row">
+                <button id="importer-overwrite" type="button">Overwrite existing recipe</button>
+                <button id="importer-keep-editing" type="button" class="button-secondary">Keep editing draft</button>
+              </div>
+            </div>
+            <div id="importer-save-actions" class="importer-action-state importer-action-state--saved" data-state-visible="false">
+              <div class="importer-saved-badge">
+                <span class="importer-saved-icon" aria-hidden="true">✓</span>
+                <span class="importer-action-copy">
+                  <span class="importer-action-title">Saved to Cookbook</span>
+                  <span class="importer-action-detail">This recipe is safely in your cookbook now.</span>
+                </span>
+              </div>
+              <div class="button-row">
+                <a id="importer-open-cookbook" href="/">Open in Cookbook</a>
+                <button id="importer-import-another" type="button" class="button-secondary">Import another</button>
+              </div>
+            </div>
+          </div>
+          <ul id="importer-warnings"></ul>
+          <label class="importer-field">
+            <span>Title</span>
+            <input id="importer-title" type="text" placeholder="Recipe title" />
+          </label>
+          <label id="importer-source-book-field" class="importer-field" style="display:none;">
+            <span>Cookbook Source</span>
+            <div class="importer-inline-row">
+              <select id="importer-source-book-select">
+                <option value="">No cookbook source</option>
+                <!--KB:sourceOptions-->
+                <option value="__add_new__">Add new…</option>
+              </select>
+              <input id="importer-source-book-custom" type="text" placeholder="Cookbook title" hidden />
+            </div>
+            <p class="importer-inline-note">Optional. Useful for cookbook-page imports so you can remember where this recipe came from.</p>
+          </label>
+          <label class="importer-field">
+            <span>Summary</span>
+            <textarea id="importer-summary" placeholder="Short description or context"></textarea>
+          </label>
+          <label class="importer-field">
+            <span>Category</span>
+            <select id="importer-category">
+              <option value="">Uncategorized</option>
+            </select>
+          </label>
+          <label class="importer-field">
+            <span>Tags</span>
+            <input id="importer-tags" type="text" placeholder="comma, separated, tags" />
+          </label>
+          <label class="importer-field">
+            <span>Ingredients</span>
+            <textarea id="importer-ingredients" placeholder="One ingredient per line"></textarea>
+          </label>
+          <label class="importer-field">
+            <span>Instructions</span>
+            <textarea id="importer-instructions" placeholder="One step per line"></textarea>
+          </label>
+          <label class="importer-field">
+            <span>Notes</span>
+            <textarea id="importer-notes" placeholder="Optional notes, tips, or source cleanup"></textarea>
+          </label>
+        </section>
+      </div>
+
+      <details id="importer-preview-shell" class="importer-card importer-preview-card">
+        <summary>
+          <span>Extraction Preview</span>
+        </summary>
+        <p class="importer-preview-copy">Useful when you want to inspect the raw extraction, but most of the time you should be able to work straight from the draft.</p>
+        <div id="importer-source-meta">No draft yet.</div>
+        <div id="importer-source-preview">Paste a URL or import images to create a recipe draft.</div>
+      </details>
+    </div>
+    <!--KB:clientBoot-->
+  </body>
+</html>

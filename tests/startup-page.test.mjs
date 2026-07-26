@@ -80,33 +80,47 @@ test('root page template uses the extracted external client runtime hook', async
   // string, so selector assertions read the .css files (see app-shell.renderStylesheetLink).
   const appCss = await fs.readFile(path.resolve(here, '../public/app.css'), 'utf8');
   const importerCss = await fs.readFile(path.resolve(here, '../public/recipe-importer.css'), 'utf8');
-  assert.match(source, /renderStylesheetLink\("app\.css"\)/);
-  assert.match(source, /renderStylesheetLink\("recipe-importer\.css"\)/);
+  // Page markup now lives in real .html templates under views/ (see app-shell.renderHtmlTemplate),
+  // so markup assertions read those; kitchenbot.mjs keeps only routing and the dynamic values.
+  const appHtml = await fs.readFile(path.resolve(here, '../views/app.html'), 'utf8');
+  const importerHtml = await fs.readFile(path.resolve(here, '../views/recipe-importer.html'), 'utf8');
+
+  // Wiring: the routes supply each template's placeholders.
+  assert.match(source, /renderHtmlTemplate\('app', \{/);
+  assert.match(source, /renderHtmlTemplate\('recipe-importer', \{/);
+  assert.match(source, /renderStylesheetLink\('app\.css'\)/);
+  assert.match(source, /renderStylesheetLink\('recipe-importer\.css'\)/);
   assert.match(source, /renderClientBootTags\(\{ cookbookCategoryOptions: COOKBOOK_CATEGORY_OPTIONS \}\)/);
-  // marked + DOMPurify are vendored locally (no unpinned CDN), and a hash-based CSP is set.
-  assert.match(source, /<script src="\/vendor\/marked\.min\.js"><\/script>/);
-  assert.match(source, /<script src="\/vendor\/purify\.min\.js"><\/script>/);
-  assert.match(source, /Content-Security-Policy/);
   assert.match(source, /scriptSrc: '\/recipe-importer\.js'/);
-  assert.match(source, /Kitchen workspace/);
-  assert.match(source, /Recipe library/);
-  assert.match(source, /Import Recipe/);
+  assert.match(source, /Content-Security-Policy/);
+  assert.match(source, /app\.get\('\/recipe-importer', requireHousehold, requireAuth/);
+  // Every placeholder in a template must be fed by its route.
+  assert.match(appHtml, /<!--KB:stylesheet-->/);
+  assert.match(appHtml, /<!--KB:clientBoot-->/);
+  assert.match(importerHtml, /<!--KB:sourceOptions-->/);
+
+  // marked + DOMPurify are vendored locally (no unpinned CDN).
+  assert.match(appHtml, /<script src="\/vendor\/marked\.min\.js"><\/script>/);
+  assert.match(appHtml, /<script src="\/vendor\/purify\.min\.js"><\/script>/);
+  assert.match(appHtml, /Kitchen workspace/);
+  assert.match(appHtml, /Recipe library/);
+  assert.match(appHtml, /Import Recipe/);
+  assert.match(appHtml, /id="tab-chat"/);
+  assert.match(appHtml, /id="tab-groceries"/);
+  assert.match(appHtml, /id="tab-settings"/);
+  assert.match(importerHtml, /You can also type one in by hand\./);
+  assert.match(importerHtml, /<a href="\/#cookbook">Back to KitchenBot<\/a>/);
+  assert.match(importerHtml, /Overwrite existing recipe/);
+  assert.match(importerHtml, /importer-conflict-state/);
+
   assert.match(appCss, /\.cookbook-card-more-toggle/);
   assert.match(appCss, /\.cookbook-card-summary/);
   assert.match(appCss, /\.cookbook-card--mobile/);
   assert.match(appCss, /\.cookbook-card-mobile-row/);
   assert.match(appCss, /\.cookbook-detail-actions/);
-  assert.match(source, /id="tab-chat"/);
-  assert.match(source, /id="tab-groceries"/);
   assert.match(appCss, /max-height: calc\(100vh - 118px\)/);
-  assert.match(source, /app\.get\('\/recipe-importer', requireHousehold, requireAuth/);
-  assert.match(source, /You can also type one in by hand\./);
-  assert.match(source, /<a href="\/#cookbook">Back to KitchenBot<\/a>/);
-  assert.match(source, /Overwrite existing recipe/);
-  assert.match(source, /importer-conflict-state/);
   assert.match(importerCss, /\.importer-action-state\[data-state-visible="true"\]\s*\{\s*display: flex !important;/);
   assert.doesNotMatch(appCss, /\.cookbook-card-mobile-body/);
-  assert.match(source, /id="tab-settings"/);
 });
 
 test('main app runtime treats #cookbook as a first-class route into the cookbook subview', async () => {
@@ -125,10 +139,10 @@ test('main app runtime treats #cookbook as a first-class route into the cookbook
 });
 
 test('settings UI includes household id and key slots for quick household-context debugging', async () => {
-  const source = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../kitchenbot.mjs'), 'utf8');
+  const appHtml = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../views/app.html'), 'utf8');
   const appSource = await fs.readFile(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../public/app.js'), 'utf8');
-  assert.match(source, /id="my-settings-hh-id"/);
-  assert.match(source, /id="my-settings-hh-key"/);
+  assert.match(appHtml, /id="my-settings-hh-id"/);
+  assert.match(appHtml, /id="my-settings-hh-key"/);
   assert.match(appSource, /document\.getElementById\('my-settings-hh-id'\)/);
   assert.match(appSource, /idEl\.textContent = String\(data\.household\.id \?\? ''\)/);
 });

@@ -194,6 +194,34 @@ test('served app shell: core regions, palettes, font and boot tags are present',
   });
 });
 
+test('view templates: every KB placeholder is substituted, and a missing value throws', async () => {
+  // The importer page is auth-gated so the HTTP net above cannot reach it; this covers the
+  // template + loader directly. Also pins the loader's fail-loudly contract: a placeholder with
+  // no supplied value must throw at render time rather than silently shipping a stray comment.
+  const { renderHtmlTemplate } = await import('../app-shell.mjs');
+
+  const importer = renderHtmlTemplate('recipe-importer', {
+    stylesheet: '<link rel="stylesheet" href="/recipe-importer.css" />',
+    sourceOptions: '<option value="Salt Fat Acid Heat">Salt Fat Acid Heat</option>',
+    clientBoot: '<script src="/recipe-importer.js"></script>',
+  });
+  assert.doesNotMatch(importer, /<!--KB:/, 'no placeholder may survive rendering');
+  assert.match(importer, /<!doctype html>/i);
+  assert.match(importer, /Salt Fat Acid Heat/, 'dynamic cookbook-source options are injected');
+  assert.match(importer, /recipe-importer\.css/);
+  assert.match(importer, /Back to KitchenBot/);
+
+  const app = renderHtmlTemplate('app', { stylesheet: '', clientBoot: '' });
+  assert.doesNotMatch(app, /<!--KB:/, 'no placeholder may survive rendering');
+  assert.match(app, /id="tab-chat"/);
+
+  assert.throws(
+    () => renderHtmlTemplate('app', { stylesheet: '' }),
+    /placeholder "clientBoot" with no value/,
+    'a placeholder with no supplied value must throw, not render blank'
+  );
+});
+
 test('served app shell: every stylesheet and script the page references actually resolves', async () => {
   // Extraction moves assets to new URLs; a typo'd path would 404 and silently unstyle the app.
   await withKitchenbotServer('assets', async ({ baseUrl }) => {
