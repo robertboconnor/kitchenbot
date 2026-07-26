@@ -28,12 +28,47 @@ process.env.DB_PATH = DB_PATH;
 process.env.KB_TEST_GUARD = '1';
 const db = await import('./db.mjs');
 await db.runMigrations();
-await db.createHouseholdWithInitialOwner({
+const seeded = await db.createHouseholdWithInitialOwner({
   householdName: 'E2E Kitchen',
   householdKey: E2E.householdKey,
   ownerDisplayName: E2E.displayName,
   pin: E2E.pin,
 });
+
+// Seed cookbook entries so cookbook tests assert on real rendering, filtering and ranking rather
+// than on an empty list (which passes trivially and proves nothing).
+const { buildCookbookRecordForStorage } = await import('./cookbook-store.mjs');
+export const E2E_RECIPES = [
+  {
+    title: 'Garlic Toum',
+    summary: 'A fluffy Lebanese garlic sauce.',
+    category: 'sauces',
+    tags: ['quick', 'vegetarian'],
+    ingredients: ['4 cloves garlic', '1 cup neutral oil', '1 tbsp lemon juice'],
+    instructions: ['Blitz the garlic with salt.', 'Stream in the oil until it emulsifies.'],
+  },
+  {
+    title: 'Seared Cod with Corn Succotash',
+    summary: 'A late-summer one-pan seafood supper.',
+    category: 'fish',
+    tags: ['weeknight'],
+    ingredients: ['1.5 lb cod', '2 ears corn', '4 oz bacon'],
+    instructions: ['Render the bacon until crisp.', 'Sear the cod skin-side down and plate.'],
+  },
+  {
+    title: 'Weeknight Tomato Pasta',
+    summary: 'A quick pantry pasta.',
+    category: 'pasta',
+    tags: ['weeknight', 'kid-approved'],
+    ingredients: ['1 lb pasta', '1 can crushed tomatoes', '3 cloves garlic'],
+    instructions: ['Boil the pasta.', 'Simmer the tomatoes with garlic and toss.'],
+  },
+];
+for (const recipe of E2E_RECIPES) {
+  await db.saveCookbookEntry(seeded.householdId, buildCookbookRecordForStorage(recipe), {
+    sourceKind: 'manual',
+  });
+}
 
 export default defineConfig({
   testDir: './e2e',
