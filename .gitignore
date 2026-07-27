@@ -16,3 +16,6 @@ eng.traineddata
 /test-results/
 /playwright-report/
 /blob-report/
+
+# Eval runs (raw); promoted baselines under evals/baselines/ ARE committed
+/evals/results/

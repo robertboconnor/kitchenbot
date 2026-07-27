@@ -11,6 +11,7 @@
     "db:households": "node scripts/household-sanity.mjs",
     "test": "node --test",
     "test:e2e": "playwright test",
+    "eval:craft": "node evals/run.mjs",
     "test:e2e:ui": "playwright test --ui",
     "test:all": "npm test && npm run test:e2e"
   },
