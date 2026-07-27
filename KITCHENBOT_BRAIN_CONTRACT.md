@@ -107,6 +107,8 @@ The following are part of KitchenBot’s brain and must be treated as global cog
 - deciding whether the user wants conversation, clarification, or an action
 - deciding whether an app-state mutation is appropriate
 - applying tone, personality, and preference constraints to replies and planning
+- applying cooking-craft judgment — how a dish behaves under the constraints the user actually
+  stated (a hold, a reheat, two sittings, one pan), and re-sequencing the method accordingly
 - deciding which background resources are relevant to the current turn
 
 These behaviors should be available to all replies and all skills.
@@ -148,6 +150,17 @@ These are valid background context sources when selectively relevant.
 They are not durable memory.
 
 They should not be injected into every prompt by default.
+
+**The bounded-fact exception.** Always-on injection is forbidden for state the brain can READ on
+demand — pantry, grocery list, cookbook, household defaults. It is permitted for a small, bounded,
+single-line FACT the brain has no tool to look up and cannot infer: the household roster (with
+allergies, which are hard constraints) and the current local day and rough hour.
+
+The test is **size and substitutability, not category**. If a read tool could supply it, it must be
+read, not injected. If it is a blob rather than a line, it is forbidden regardless. Local time
+qualifies because there is no `time.get` tool and no way to derive it — and it is rendered coarsely
+(day plus rounded hour) precisely so it stays inside the cached prompt instead of forking the cache
+on every turn.
 
 ### Short-Term Chat Working Context
 
@@ -392,7 +405,8 @@ If a feature starts behaving like a privileged lane, treat that as an anti-magic
 
 Examples of bad smells:
 - memory only being used when explicitly requested instead of automatically when relevant
-- pantry, grocery, or defaults being dumped into every prompt whether needed or not
+- pantry, grocery, or defaults being dumped into every prompt whether needed or not (note the
+  bounded-fact exception in Context Model: a one-line roster or clock is not a dump)
 - help text being hand-maintained instead of reflecting actual skills
 - grocery behavior hardcoded into the brain instead of expressed as skill behavior
 - working context becoming a hidden planning product rather than bounded chat continuity
