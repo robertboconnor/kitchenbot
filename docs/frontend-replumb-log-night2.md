@@ -164,6 +164,30 @@ fail without the fix.
 **This is a production bug, not one I introduced** — `origin/main` has the identical link and the
 identical logic. It has presumably been doing this for a while. It rides along in this PR.
 
+## A third pre-existing bug, found by you, fixed here
+
+**Symptom (yours):** you attach a photo, KitchenBot reads it and answers sensibly, but the photo
+itself flashes up inline in your message and then disappears.
+
+**Cause:** the chat redraws itself from the server right after every turn. There were two loops
+doing that redraw — one for chats containing `!command` exchanges, one for everything else — and
+**only the first passed the photos through.** So the picture you saw was the optimistic bubble the
+app draws the instant you hit send; a second later the redraw replaced it with the same message
+minus the attachment. It never came back on reload either.
+
+Your description was the diagnosis, for what it's worth: "looks like it might for a second, inline,
+then disappears" is precisely the shape of an optimistic render being overwritten by a redraw that
+lost a field.
+
+**Fix:** one function renders a stored message now, so there is no second copy to forget anything.
+
+**Also pre-existing** — `origin/main` has the same two loops with the same omission.
+
+**Tests:** the browser fixture now seeds a chat that already contains a photo message, so the test
+exercises the *persisted* path rather than the optimistic bubble. Three tests: it renders on open,
+it survives a reload, and the bytes actually decode (a broken-image icon passes a plain visibility
+check, which would have made the test worthless).
+
 ## Pre-existing bugs found
 
 I proposed, and you agreed up front, that I'd fix regressions I caused and only *log* anything that

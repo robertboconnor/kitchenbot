@@ -497,18 +497,21 @@ export async function loadHistory(options = {}) {
   const sortedEp = [...epList].sort((a, b) => a.anchor - b.anchor || a.seq - b.seq);
   let pIdx = 0;
   let dbEmitted = 0;
+  // One way to render a stored message, used by both loops below. There used to be two, and only
+  // one of them passed the attachments through — so a photo showed up in the optimistic bubble and
+  // then vanished the moment history redrew (which happens right after every turn).
+  const renderPersisted = (m) =>
+    addMessage(m.role, m.name, m.content, { autoScroll: false, attachments: m.attachments });
   for (const ep of sortedEp) {
     while (dbEmitted < ep.anchor && pIdx < persisted.length) {
-      const m = persisted[pIdx++];
-      addMessage(m.role, m.name, m.content, { autoScroll: false, attachments: m.attachments });
+      renderPersisted(persisted[pIdx++]);
       dbEmitted++;
     }
     addMessage('user', ep.userName, ep.user, { autoScroll: false });
     addMessage('assistant', getAssistantName(), ep.assistant, { autoScroll: false });
   }
   while (pIdx < persisted.length) {
-    const m = persisted[pIdx++];
-    addMessage(m.role, m.name, m.content, { autoScroll: false });
+    renderPersisted(persisted[pIdx++]);
   }
   if (shouldStickToBottom) {
     chat.scrollTop = chat.scrollHeight;

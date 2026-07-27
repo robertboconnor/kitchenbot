@@ -70,6 +70,31 @@ for (const recipe of E2E_RECIPES) {
   });
 }
 
+// Seed a chat that already contains a photo message, so the attachment-rendering test asserts on
+// the PERSISTED path (loadHistory) rather than the optimistic bubble. Rob's bug was exactly that
+// gap: the photo flashed up when sent, then vanished when history redrew.
+const ONE_PIXEL_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+export const E2E_PHOTO_CHAT = { title: 'Photo thread', caption: 'what can I make with this?' };
+{
+  const chatId = await db.createChat(seeded.householdId, E2E.displayName, E2E_PHOTO_CHAT.title);
+  const messageId = await db.addMessage(
+    chatId,
+    seeded.householdId,
+    'user',
+    E2E.displayName,
+    E2E_PHOTO_CHAT.caption
+  );
+  await db.addChatAttachment(seeded.householdId, chatId, messageId, {
+    kind: 'image',
+    mediaType: 'image/png',
+    name: 'fridge.png',
+    data: ONE_PIXEL_PNG_BASE64,
+    byteSize: 68,
+  });
+  await db.addMessage(chatId, seeded.householdId, 'assistant', 'KitchenBot', 'Looks like eggs and spinach.');
+}
+
 export default defineConfig({
   testDir: './e2e',
   // Serial: every test shares one server and one database, so parallel writes would make
