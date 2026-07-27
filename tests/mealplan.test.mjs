@@ -6,6 +6,8 @@ import path from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { runAgainstDb, signInAsFixtureOwner, withKitchenbotServer } from '../test-support/server-helpers.mjs';
+
 const execFileAsync = promisify(execFileCb);
 
 async function runScript(body) {
@@ -155,4 +157,69 @@ test('thread.search retrieves an older message past the recent window, determini
   assert.ok(parsed.total > 32, 'thread is well past the recent-message window (30)');
   assert.ok(parsed.count > 0, 'found matching older messages');
   assert.equal(parsed.topHasFix, true, 'the toum-rescue message is the top hit');
+});
+
+// ── The plan is household-wide, and the HTTP surface must say so ─────────────────
+// These routes used to demand a chatId and then throw it away. GET quietly returned an EMPTY plan
+// without one — so the app looked like nothing was planned rather than reporting an error — and
+// PATCH/DELETE 400'd. Nothing caught it because no test exercised /plan over HTTP at all; the
+// tests above go straight to the executors. These close that gap.
+
+/** Boot a server, sign in, and seed the plan with meals planned in `chatId`. */
+async function withPlannedMeals(label, mealNames, run) {
+  await withKitchenbotServer(label, async ({ baseUrl, dbPath }) => {
+    const { headers, householdId } = await signInAsFixtureOwner(baseUrl);
+    const { chatId } = await runAgainstDb(
+      dbPath,
+      `const chatId = await db.createChat(${householdId}, 'Tester', 'Week');
+       await db.addMealPlanItems(${householdId}, chatId, ${JSON.stringify(mealNames.map((name) => ({ name })))});
+       console.log(JSON.stringify({ chatId }));`
+    );
+    const planNow = () =>
+      runAgainstDb(dbPath, `console.log(JSON.stringify(await db.getMealPlanItems(${householdId})));`);
+    await run({ baseUrl, dbPath, headers, householdId, chatId, planNow });
+  });
+}
+
+test('/plan returns the household plan without being told which chat you are in', async () => {
+  await withPlannedMeals('plan-get', ['Seared cod', 'Toum'], async ({ baseUrl, headers }) => {
+    const res = await fetch(`${baseUrl}/plan`, { headers });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(
+      body.items.map((i) => i.name).sort(),
+      ['Seared cod', 'Toum'],
+      'the plan is household-wide, so it must come back with no chatId at all'
+    );
+  });
+});
+
+test('/plan items can be marked cooked and removed without a chatId', async () => {
+  await withPlannedMeals('plan-write', ['Weeknight pasta'], async ({ baseUrl, headers, planNow }) => {
+    const [item] = await planNow();
+
+    const patch = await fetch(`${baseUrl}/plan/${item.id}`, {
+      method: 'PATCH',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'cooked' }),
+    });
+    assert.equal(patch.status, 200, 'PATCH must not require a chatId it ignores');
+    assert.equal((await planNow())[0].status, 'cooked');
+
+    const del = await fetch(`${baseUrl}/plan/${item.id}`, { method: 'DELETE', headers });
+    assert.equal(del.status, 200, 'DELETE must not require a chatId it ignores');
+    assert.equal((await planNow()).length, 0);
+  });
+});
+
+test('a meal planned in one chat is visible from another chat', async () => {
+  // The whole point of the plan being household-wide: plan on Sunday, cook on Wednesday in a
+  // different conversation. The old routes only made this work by accident of ignoring chatId.
+  await withPlannedMeals('plan-cross-chat', ['Corn succotash'], async ({ baseUrl, headers, dbPath, householdId }) => {
+    // A second, later conversation — the one you'd actually be cooking from on Wednesday.
+    await runAgainstDb(dbPath, `await db.createChat(${householdId}, 'Tester', 'A different week');`);
+    const res = await fetch(`${baseUrl}/plan`, { headers });
+    const body = await res.json();
+    assert.deepEqual(body.items.map((i) => i.name), ['Corn succotash']);
+  });
 });

@@ -1495,7 +1495,9 @@ function mapMealPlanItemRow(row) {
 
 // The "This Week" plan is HOUSEHOLD-WIDE (2026-07-25): one plan that follows the household across
 // every chat, so you can plan in one chat and cook each meal from separate chats. chat_id is kept
-// on write only as provenance — reads/updates/deletes are scoped to the household, never the chat.
+// on write only as provenance — reads/updates/deletes are scoped to the household, never the chat,
+// and therefore do not take a chatId at all. (They used to accept one and silently ignore it,
+// which is worse than not taking it: it implies a scoping guarantee that was never there.)
 export async function getMealPlanItems(householdId) {
   const rows = await all(
     `SELECT m.id, m.household_id, m.chat_id, m.name, m.normalized_name, m.cookbook_entry_id,
@@ -1543,14 +1545,14 @@ export async function addMealPlanItems(householdId, chatId, items) {
   return inserted;
 }
 
-export async function findMealPlanItemByName(householdId, chatId, name) {
+export async function findMealPlanItemByName(householdId, name) {
   const normalizedName = normalizeInventoryNameKey(String(name ?? ''));
   if (!normalizedName) return null;
-  const rows = await getMealPlanItems(householdId, chatId);
+  const rows = await getMealPlanItems(householdId);
   return rows.find((item) => item.normalizedName === normalizedName) || null;
 }
 
-export async function updateMealPlanItem(householdId, chatId, id, fields = {}) {
+export async function updateMealPlanItem(householdId, id, fields = {}) {
   const sets = [];
   const params = [];
   if (typeof fields.name === 'string' && fields.name.trim()) {
@@ -1580,7 +1582,7 @@ export async function updateMealPlanItem(householdId, chatId, id, fields = {}) {
   return Number(result.changes) || 0;
 }
 
-export async function deleteMealPlanItem(householdId, chatId, id) {
+export async function deleteMealPlanItem(householdId, id) {
   const result = await run(`DELETE FROM meal_plan_items WHERE household_id = ? AND id = ?`, [householdId, id]);
   return Number(result.changes) || 0;
 }

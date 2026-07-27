@@ -77,7 +77,7 @@ export async function executeHouseholdDefaultsGet(_action, context = {}) {
 export async function executePlanList(_action, context = {}) {
   const householdId = context?.req?.householdId;
   const chatId = context?.chatId;
-  const rows = await getMealPlanItems(householdId, chatId);
+  const rows = await getMealPlanItems(householdId);
   const enriched = await enrichMealsWithRecipeLinks(householdId, rows);
   const meals = (Array.isArray(enriched) ? enriched : []).map((r) => ({
     name: s(r.name),

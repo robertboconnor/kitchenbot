@@ -391,22 +391,24 @@ tests added).
 
 ## Roadmap (phased) — what's left
 
-- **Phase 1 — Look & feel.** ~80% done (palettes, scalpel, tokens). **Remaining:** nav/IA cleanup
-  (one coherent way to reach chat/cookbook/groceries/pantry/settings), **make Settings reachable by
-  non-owner members** (today it's behind an owner-only "Household" button), fold the standalone
-  Recipe Importer into Cookbook, self-host the display font (currently `ui-rounded` = Apple-only),
-  wire the reserved `--accent-warm` (Sundress yellow / Egg Yolk) as a surgical "joy-pop" on wins.
+- **Phase 1 — Look & feel. ✅ DONE.** Palettes, scalpel, tokens, nav/IA (Chat · Kitchen · Settings),
+  self-hosted Nunito, `--accent-warm` joy-pop — all shipped. Settings is reachable by **every** member
+  (user roles were removed outright in the 2026-07-24 role cleanup, so there is no owner-only gate left).
+  The one deliberate carve-out: the standalone **Recipe Importer page stays** — see Phase 3.
 - **Phase 2 — Memory / people model (highest FUNCTIONAL value). PARTLY DONE 2026-07-20.**
   - ✅ **Structured per-person profiles** (`person_profiles` table + `person.profile.update`/`.get`):
     accepted/rejected foods, allergies, notes — queryable, appendable, accept↔reject auto-reconciles.
     This is the "first-class member with structured preferences" piece, and `person.profile.get` is the
     **memory read-tool** the brain never had. The non-login 4yo (Bizzy) is now a real, structured member.
   - ✅ Person-save-without-`key` silent no-op + brain-owned memory scope (one-brain pass).
-  - ⬜ **Still open:** retrieval **silently drops any household member who isn't the person typing**, so
-    "plan our family's dinners" can still lose Elle/Bizzy from *ambient* context — always-include the
-    household's people; and a **visible UI surface** for person profiles (inspectable/editable, like the
-    This Week panel — the "not silent" rule). A general `memory.list`/`search` over the freeform bucket is
-    still absent (only the structured profile is queryable). ~Medium.
+  - ✅ **Ambient roster — DONE.** Every household member + their food profile is included on **every**
+    turn (`buildHouseholdPeopleText`, kb-memory-store.mjs) — "plan our family's dinners" reasons about
+    Elle and Bizzy, not just whoever is typing.
+  - ✅ **Visible person-profile UI — DONE.** Settings → Family food (inspectable/editable, per the
+    "not silent" rule).
+  - ❌ **`memory.list`/`search` over a freeform bucket — WON'T DO.** The freeform memory store was
+    deliberately deleted on 2026-07-24 (Rob: no invisible "shadow" memory). Durable memory is ONLY the
+    structured `household_defaults` + `person_profiles`, both queryable and both visible in the UI.
 - **Phase 2b — Week-long-thread memory ("This Week's Plan"). ✅ v1 shipped to prod 2026-07-20.**
   Rob's #1 real-usage gap: he runs ONE chat per week (~100 msgs/meal), but the brain only sees the last
   **16** messages (`HISTORY_MESSAGE_LIMIT`), so day-1 meals fell out of view. Built a first-class,
@@ -424,41 +426,107 @@ tests added).
   (c) the cooked checkbox now uses the palette accent (`--accent-strong`), not browser blue.
   **Remaining polish:** a persisted meal→recipe pointer when the brain saves a recipe for a planned
   meal (today it's title-resolved on read, which is usually enough).
-- **Phase 3 — Recipe robustness. ✅ SSRF + fetch hardening DONE (2026-07-23; see the dated pass above).**
-  Private-IP/redirect guard, timeout, and streaming body cap now live in shared `safe-fetch.mjs`, used by
-  `fetchRecipePage`. **Remaining (deferred, deliberately):** unifying the two import pipelines is a
-  product call, not a security fix — see the Deferred note above (overlaps W2 / Phase 5).
+- **Phase 3 — Recipe robustness. ✅ DONE.** SSRF + fetch hardening (2026-07-23): private-IP/redirect
+  guard, timeout, and streaming body cap in shared `safe-fetch.mjs`. **Save-path convergence done
+  2026-07-25** — the importer had a private copy of the recipe caps that silently re-truncated
+  blog-length steps (the 4th truncation path), plus an OCR list-stripper that ate decimal quantities
+  ("1.5 pounds cod" → "5 pounds cod"). Caps now export from `cookbook-store.mjs` as one source of truth.
+  **Decision: the standalone importer page STAYS** (W2 closed as won't-do). A full audit found it clean
+  against the one-brain contract — it sits outside the chat loop entirely, and its two Haiku calls are
+  permitted parse/shape. It also does two things chat genuinely cannot: **multi-photo → one recipe**
+  (a cookbook spread, up to 8 images) and **Riveter paid scraping** for sites chat's free fetcher can't
+  reach. Rob (2026-07-25): photographing a cookbook in chat is unnecessary when the dedicated importer
+  exists. Folding its HTML into the Cookbook tab is cosmetic; revisit only during Phase 5.
 - **Phase 4 — Delete dead weight + split Settings. ✅ DONE (2026-07-23).** The orphaned
   deterministic-follow-up / next-action state machine is removed (see the dated pass above), and the
   Settings "disaster" is split into role-gated surfaces (My preferences / Family food / Household /
   Anthropic usage / God Mode).
-- **Phase 5 — Frontend re-plumb (the long pole, Large).** The entire client is template strings
-  inside the 212 KB `kitchenbot.mjs` + a 4,580-line global-scope `public/app.js`. Lift HTML/CSS out
-  into real files/components, move JS off global scope, real responsive + a11y. Framework TBD
-  (vanilla-modular / Svelte / React). This is the genuinely multi-week job.
+- **Phase 5 — Frontend re-plumb. 🚧 The restructure is DONE (2026-07-26, on `dev`, PR open); the
+  responsive/a11y half remains.** Full record: `docs/frontend-replumb-log.md` (night 1) and
+  `docs/frontend-replumb-log-night2.md` (night 2).
+  - ✅ **Frontend safety net** (`tests/frontend-shell.test.mjs`, +6 tests): boots the real server and
+    asserts the HTTP contract — every `getElementById` id exists in the served HTML; the applied CSS
+    is byte-identical *including cascade order*; snapshot inventories of selectors + element ids;
+    palettes/font/CSP/script tags present; no 404'd assets. Regenerate snapshots deliberately with
+    `UPDATE_FRONTEND_SNAPSHOTS=1`. It found real dead code on its first run (−325 lines of client
+    code driving the deleted freeform-memory UI).
+  - ✅ **CSS → real files**: `public/app.css` + `public/recipe-importer.css`, cache-busted via
+    `app-shell.renderStylesheetLink()`. Zero inline `<style>` remains.
+  - ✅ **Markup → real templates**: `views/app.html` + `views/recipe-importer.html` via
+    `app-shell.renderHtmlTemplate()` with `<!--KB:token-->` placeholders (throws on a missing
+    value). `views/` is NOT static-served. The `/` route is 8 lines instead of 710.
+  - ✅ **`app.js`**: de-indented (an 8-space fossil from living inside the HTML string), converted to
+    `type="module"` (opt-in per page — the importer's classic runtime is deliberately untouched),
+    and the first real module extracted: `public/modules/cookbook-display.js` (+ `boot-data.js`),
+    which made that logic unit-testable for the first time (`tests/cookbook-display.test.mjs`).
+  - `kitchenbot.mjs` 6,530 → 2,401 lines; `app.js` 4,994 → 4,473. **197 tests green** (was 182).
+  - ✅ **Runtime safety net first** (2026-07-26): Playwright + real Chromium, a disposable seeded
+    household and a stubbed `/chat`, `npm run test:e2e`. **23 browser tests** covering login, the
+    composer, attachments, palettes, the cookbook (list/detail/deep-link/filter/search), grocery,
+    pantry, This Week and settings. This is what made splitting the remaining `app.js` verifiable
+    rather than hopeful.
+  - ✅ **The feature split, one module per commit** (2026-07-25 night 1 → 2026-07-26 night 2). Full
+    record: `docs/frontend-replumb-log-night2.md`. `public/app.js` **4,994 → 144 lines** and holds
+    no feature logic at all — it builds the features, wires the two sequences that genuinely span
+    them (re-hydrate after an identity change, sign out), and starts.
+    Modules: `chat` (incl. realtime), `cookbook`, `admin`, `settings`, `inventory` (grocery +
+    pantry), `auth`, `plan`, `session`, `navigation`, `attachments`, `palette`, `events`, plus the
+    pure helpers.
+  - ✅ **The 37-variable problem, resolved**: classified them all; most were already feature-local.
+    Only identity was genuinely cross-cutting and lives in `session.js` behind getters. Features
+    talk through the event bus (`modules/events.js`) instead of reading each other's state.
+  - ✅ **Static checkers** (`tools/check-client-refs.mjs`, `tools/check-client-imports.mjs`, built on
+    `tools/js-scan.mjs`), wired into `npm test` with their own tests. Rebuilding the first one
+    mid-refactor exposed **five real defects** that green test runs had hidden — including a
+    silently broken grocery "Clear" button. Read the night-2 log; the lesson (a tool that
+    under-reports is worse than no tool) is worth more than the tool.
+  - ✅ **Runtime-verified**: 212 node + 23 browser tests green, and the real app booted in a browser
+    against a copy of the production database — all 15 modules load, zero console errors.
+  - ⬜ **Remaining in Phase 5:** real responsive + a11y, and only then the framework question
+    (vanilla-modular / Svelte / React), which stays deliberately open. The restructure is done; what
+    is left is the part that changes how the app *looks and feels* on a phone.
 
 ## Open threads / known paper-cuts
 
-- **Stored XSS:** assistant messages render via `marked.parse()` → `innerHTML` with no sanitizer and
-  **no CSP header**. Imported-recipe / web-search text could inject script. Cheap fix, worth doing.
-- **"Move to pantry"** still shows the red *delete*-style base in its default state (only the
-  `-ready` variant got the neutral scalpel treatment). Minor CSS fix in `kitchenbot.mjs`.
-- **Non-owner members can't reach Settings at all** (see Phase 1) — so the self-service palette
-  picker is only reachable by owners today. Works for Rob + Elle (both owners).
+_All three long-standing paper-cuts (stored XSS + CSP, the "Move to pantry" red delete-base, and
+non-owner Settings access) are **fixed and shipped**. What's left:_
+
+- **Pre-fix recipe data is still damaged in the DB.** Recipes saved/imported before 2026-07-25 keep
+  their mid-word-truncated steps, and importer-saved ones may carry mangled decimal quantities
+  ("0.5 cup wine" stored as "5 cup wine"). The fixes stop new corruption but cannot repair old rows —
+  re-saving or re-importing a recipe rewrites it correctly. **A read-only audit pass** (flag saved
+  recipes whose steps end mid-word or whose quantities look implausible) would tell Rob which of his
+  real recipes to re-save. Worth doing — he cooks from these.
+- ~~**`/plan` routes demand a `chatId` they ignore.**~~ **FIXED 2026-07-26.** `GET /plan` quietly
+  returned an EMPTY plan without a `chatId` (so the app looked like nothing was planned rather than
+  erroring) and `PATCH`/`DELETE` 400'd — all while the database layer discarded the value, because
+  the plan has been household-wide since 2026-07-25. The vestigial parameter is gone from the three
+  routes, from `updateMealPlanItem` / `deleteMealPlanItem` / `findMealPlanItemByName`, and from the
+  client; `addMealPlanItems` keeps it, where it is real (write provenance). Covered by three new
+  HTTP-level tests — there had been none for `/plan` at all.
+- **Nice-to-haves, explicitly declined:** a `plan.clear` / week-rollover tool (the `clearMealPlan`
+  DB function exists but is intentionally unexposed — Rob 2026-07-25: unnecessary), and ambient
+  plan-in-the-system-prompt (the brain reads the plan via `plan.list`, which is working fine).
 
 ## Recommended next step
 
-The big brain/one-brain arc and the two most-requested functional gaps (week-long-thread memory,
-structured per-person prefs) are **shipped**. Good next moves, by mood:
-- **Close the family-context gap (functional):** the Phase-2 remainder — always-include Elle & Bizzy
-  in ambient context (not just the person typing), plus a **visible person-profile UI** (inspectable/
-  editable, per the "not silent" rule). This is what makes "plan our family's dinners" fully reason
-  about everyone.
-- **Finish the "looks legit" story:** Phase 1 remainder (nav/IA + make Settings reachable to non-owner
-  members + fold in the Recipe Importer) and the **XSS + CSP** paper-cut — small, visible, closes the
-  most obvious "still a bit janky" gaps.
-- **Quick + fun:** redo the **Elle easter-egg examples** (Rob: the test examples were "lame as hell";
-  the feature works — it's the calibration/quality of the flirtation that needs a pass).
+**Status as of 2026-07-25: Phases 1, 2, 2b, 3, and 4 are all closed.** Everything the roadmap once
+listed as "remaining" has shipped — the tangential bug-hunts (truncation ×4, the truthfulness-guard
+redesign, attachments, cost/caching) also swept up the leftover roadmap work. Verified against the
+code, not just the doc.
+
+**Phase 5's restructure landed on 2026-07-26** — `app.js` went 4,994 → 144 lines, the frontend has
+23 browser tests where it had none, and the codebase now has real seams. What remains:
+
+- **Merge the open PR** (nothing is in production yet). Click through chat yourself first — see the
+  end of `docs/frontend-replumb-log-night2.md`.
+- **Phase 5's second half: real responsive + a11y.** This is the part that actually changes how the
+  app feels on a phone. The framework question (vanilla-modular / Svelte / React) stays open and
+  should be decided *after* the responsive pass, not before.
+- the **pre-fix recipe-data audit** (above) — small, protects recipes Rob actually cooks from.
+
+Everything before this delivered zero new user-facing capability on purpose — it was the investment
+that makes the responsive work, and every change after it, cheap instead of frightening.
 
 ## Run it locally
 

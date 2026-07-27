@@ -1,0 +1,342 @@
+#app
+#attach-btn
+#attach-menu
+#attach-menu button
+#attach-menu button:hover
+#attach-menu[hidden]
+#attach-wrap
+#attachment-preview
+#bootstrap-form
+#bootstrap-form label
+#bootstrap-form label + input
+#bootstrap-form.bootstrap-form-visible
+#bootstrap-household-name, #bootstrap-household-key, #bootstrap-owner-display-name, #bootstrap-pin
+#bootstrap-household-name:focus, #bootstrap-household-key:focus, #bootstrap-owner-display-name:focus, #bootstrap-pin:focus
+#bootstrap-status
+#bootstrap-submit
+#bootstrap-submit:hover
+#chat
+#chat-list
+#chat-new-message
+#chat-new-message:hover
+#grocery-actions
+#grocery-manual-add
+#grocery-manual-add button#grocery-add-submit
+#grocery-manual-add button#grocery-add-submit:hover
+#grocery-panel, #settings-panel
+#grocery-sections, #pantry-sections
+#grocery-subview-cookbook .kitchen-section-copy
+#header
+#header .tab-bar
+#header .tab-bar .tab-button
+#header.hide-tabs #menu-button
+#header.hide-tabs .tab-bar
+#input-area
+#input-area #send
+#input-area #send:hover
+#login-area
+#login-area h2
+#login-area, #app
+#login-auth-form
+#login-brand
+#login-brand .login-logo
+#login-brand .login-title
+#login-button
+#login-button:active
+#login-button:hover
+#login-find-household
+#login-find-household:hover
+#login-form
+#login-form h2, #bootstrap-form h2, #login-area h2
+#login-form label
+#login-form label + select, #login-form label + input
+#login-form, #bootstrap-form
+#login-form.login-form-visible
+#login-household-key
+#login-household-key, #login-name, #login-password
+#login-household-key:focus, #login-name:focus, #login-password:focus
+#login-status
+#logout
+#logout:hover
+#menu-button
+#menu-button:hover
+#my-settings-msg
+#new-chat
+#new-chat:hover
+#prompt
+#settings-add-form
+#settings-panel button
+#settings-panel h2
+#settings-panel h3
+#settings-panel input[type='number']
+#settings-panel input[type='number']::-webkit-outer-spin-button, #settings-panel input[type='number']::-webkit-inner-spin-button
+#settings-panel input[type='text'], #settings-panel input[type='date'], #settings-panel input[type='number'], #settings-panel input[type='password'], #settings-panel select
+#settings-panel label
+#sidebar
+#sidebar-backdrop
+#sidebar-backdrop.open
+#sidebar-footer
+#sidebar-footer-actions
+#sidebar-header
+#sidebar-header .sidebar-header-text
+#sidebar-header .sidebar-logo
+#sidebar-header h2
+#sidebar-user
+#sidebar.open
+#typing-indicator
+#typing-indicator:empty
+*
+.admin-report-empty
+.admin-report-grid
+.admin-report-note
+.admin-report-section
+.admin-report-section h5
+.admin-report-stat
+.admin-report-stat .label
+.admin-report-stat .value
+.admin-report-stats
+.admin-report-table
+.admin-report-table td.num, .admin-report-table th.num
+.admin-report-table th
+.admin-report-table th, .admin-report-table td
+.admin-report-table-wrap
+.admin-report-title
+.assistant
+.chat-list-item
+.chat-list-item .g-delete
+.chat-list-item span.meta
+.chat-list-item span.title
+.chat-list-item.active
+.cookbook-card
+.cookbook-card--active
+.cookbook-card--mobile
+.cookbook-card--mobile .cookbook-card-meta
+.cookbook-card--mobile .cookbook-card-title
+.cookbook-card--mobile.cookbook-card--active
+.cookbook-card--mobile:hover
+.cookbook-card-action-primary
+.cookbook-card-action-secondary
+.cookbook-card-actions
+.cookbook-card-header
+.cookbook-card-heading
+.cookbook-card-menu-btn
+.cookbook-card-menu-btn--danger
+.cookbook-card-meta
+.cookbook-card-meta, .cookbook-card-source
+.cookbook-card-mobile-chevron
+.cookbook-card-mobile-row
+.cookbook-card-mobile-row:focus-visible
+.cookbook-card-mobile-row:hover
+.cookbook-card-more
+.cookbook-card-more summary
+.cookbook-card-more summary::-webkit-details-marker
+.cookbook-card-more, .cookbook-card-more-toggle
+.cookbook-card-more-menu
+.cookbook-card-more-toggle
+.cookbook-card-source
+.cookbook-card-source a
+.cookbook-card-summary
+.cookbook-card-tags
+.cookbook-card-title
+.cookbook-card:hover
+.cookbook-detail-actions .cookbook-card-action-secondary, .cookbook-detail-actions .cookbook-card-menu-btn, .cookbook-detail-primary-actions .cookbook-detail-button
+.cookbook-detail-button
+.cookbook-detail-button--danger
+.cookbook-detail-button--primary
+.cookbook-detail-button--primary:hover
+.cookbook-detail-button:hover
+.cookbook-detail-header
+.cookbook-detail-header-actions
+.cookbook-detail-meta-block
+.cookbook-detail-primary-actions .cookbook-detail-button, .cookbook-detail-actions .cookbook-card-menu-btn, .cookbook-detail-actions .cookbook-card-action-secondary
+.cookbook-detail-primary-actions, .cookbook-detail-actions
+.cookbook-detail-source
+.cookbook-detail-source-label
+.cookbook-detail-source-link
+.cookbook-detail-source-row
+.cookbook-empty-state
+.cookbook-filter-field
+.cookbook-filter-field input, .cookbook-filter-field select
+.cookbook-filter-field input:focus, .cookbook-filter-field select:focus
+.cookbook-filter-field span
+.cookbook-filter-field, .cookbook-filter-field--search
+.cookbook-filter-field--search
+.cookbook-hero-actions
+.cookbook-hero-hint
+.cookbook-hero-link
+.cookbook-layout-split #cookbook-detail-view
+.cookbook-layout-split #cookbook-empty
+.cookbook-layout-split #cookbook-toolbar
+.cookbook-layout-split .cookbook-results-area
+.cookbook-results-area
+.cookbook-tag-chip
+.cookbook-tag-chip--overflow
+.cookbook-toolbar
+.g-actions
+.g-delete
+.g-delete.g-action-working, .g-delete:disabled.g-action-working
+.g-delete.g-action-working:hover
+.g-delete.g-move
+.g-delete.g-move-to-pantry-ready
+.g-delete.g-move-to-pantry-ready:hover
+.g-delete.g-move:hover
+.g-delete:hover
+.g-item
+.g-item input[type='checkbox']
+.g-item-checked
+.g-item-checked .g-text-main, .g-item-checked .g-text-amount
+.g-item-name
+.g-left
+.g-list
+.g-section h3
+.g-text-amount
+.g-text-main
+.g-text-wrap
+.kb-joy
+.kb-thinking
+.kb-thinking-anim
+.kitchen-mobile-about-summary
+.kitchen-mobile-about-summary::-webkit-details-marker
+.kitchen-mobile-inline-copy
+.kitchen-section-btn
+.kitchen-section-btn.settings-subtab-active
+.kitchen-section-btn:hover
+.kitchen-section-copy
+.kitchen-section-header
+.kitchen-section-kicker
+.kitchen-section-panel
+.kitchen-section-panel--pantry
+.kitchen-section-switcher
+.kitchen-section-switcher::-webkit-scrollbar
+.kitchen-section-title
+.kitchen-section-title-row
+.kitchen-shell
+.kitchen-workspace-copy
+.kitchen-workspace-copy--desktop
+.kitchen-workspace-copy--mobile
+.kitchen-workspace-copy--mobile, .kitchen-workspace-mobile-about
+.kitchen-workspace-header
+.kitchen-workspace-header, .kitchen-section-panel
+.kitchen-workspace-kicker
+.kitchen-workspace-note
+.kitchen-workspace-title
+.login-household-resolved
+.login-household-resolved strong
+.login-key-row
+.message
+.message-author
+.message-body
+.message.assistant .md-wrap
+.message.assistant .md-wrap a
+.message.assistant .md-wrap a:hover
+.message.assistant .md-wrap blockquote
+.message.assistant .md-wrap code
+.message.assistant .md-wrap h1
+.message.assistant .md-wrap h2
+.message.assistant .md-wrap h3
+.message.assistant .md-wrap hr
+.message.assistant .md-wrap li
+.message.assistant .md-wrap p
+.message.assistant .md-wrap p:first-child
+.message.assistant .md-wrap p:last-child
+.message.assistant .md-wrap pre
+.message.assistant .md-wrap pre code
+.message.assistant .md-wrap table
+.message.assistant .md-wrap th
+.message.assistant .md-wrap th, .message.assistant .md-wrap td
+.message.assistant .md-wrap ul, .message.assistant .md-wrap ol
+.message.assistant .message-author
+.message.assistant .message-author::before
+.message.assistant .message-body
+.message.user.user-msg-chat-blue
+.message.user.user-msg-chat-lavender
+.message.user.user-msg-chat-mint
+.message.user.user-msg-chat-peach
+.message.user.user-msg-chat-pink
+.panel
+.settings-actions-row
+.settings-actions-row button, .settings-admin-selectors button
+.settings-admin-detail-card
+.settings-admin-detail-card, .admin-report-title, .admin-report-note, .admin-report-empty, .admin-report-stat, .admin-report-section, .admin-report-table, .admin-report-table th, .admin-report-table td
+.settings-admin-grid--wide
+.settings-admin-household-list
+.settings-admin-household-meta
+.settings-admin-household-name
+.settings-admin-household-row
+.settings-admin-household-row-main
+.settings-admin-household-tags
+.settings-admin-inline-message
+.settings-admin-selectors
+.settings-admin-tag
+.settings-admin-tag.settings-admin-tag--on
+.settings-admin-usage-summary
+.settings-admin-usage-summary h5
+.settings-admin-usage-summary ul
+.settings-card
+.settings-card h3, .settings-card h4
+.settings-card-grid, .settings-admin-grid
+.settings-card-grid, .settings-admin-grid, .settings-split-grid, .admin-report-grid, .admin-report-stats
+.settings-card-header
+.settings-card-subtitle
+.settings-divider
+.settings-form-field
+.settings-form-row
+.settings-form-row, .settings-actions-row, .settings-admin-selectors, .settings-memory-row, .settings-memory-note-item, .settings-admin-household-row
+.settings-inline-banner
+.settings-memory-actions
+.settings-memory-actions, .settings-admin-household-tags
+.settings-memory-chip
+.settings-memory-editor
+.settings-memory-empty
+.settings-memory-group
+.settings-memory-group-title
+.settings-memory-group-title .count
+.settings-memory-list
+.settings-memory-note-item
+.settings-memory-note-item .settings-memory-row-body
+.settings-memory-note-list
+.settings-memory-row
+.settings-memory-row-body
+.settings-memory-row-main
+.settings-memory-row-title
+.settings-memory-viewer
+.settings-meta-grid
+.settings-meta-item
+.settings-meta-item .label
+.settings-meta-item .value
+.settings-page-intro
+.settings-pill-note
+.settings-section-note
+.settings-split-grid
+.settings-subtab-btn
+.settings-subtab-btn.settings-subtab-active
+.settings-subview
+.settings-user-inline-controls
+.settings-user-inline-controls label, .settings-user-inline-controls span
+.settings-user-inline-controls select, .settings-user-inline-controls input, .settings-user-inline-controls button
+.settings-user-name
+.settings-user-pref-grid
+.settings-user-pref-toggle
+.settings-user-row
+.settings-user-row-role-col
+.settings-user-row-role-feedback
+.settings-user-row.settings-user-row-role-flash
+.tab-active
+.tab-bar
+.tab-button
+.tab-button.tab-active:hover, .tab-button.tab-active:active
+.tab-button:not(.tab-active):active
+.tab-button:not(.tab-active):hover
+.user
+100%
+35%
+50%
+body
+button
+button:active
+button:hover
+h1, h2, h3, h4, .brand, button, .tab-button, .pill, input, textarea, select
+label
+textarea
+textarea::placeholder
+textarea:focus
