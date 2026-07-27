@@ -115,6 +115,7 @@ import multer from 'multer';
 import { createClient } from 'redis';
 import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
+import { normalizeClientTimeContext } from './kb-prompt-context.mjs';
 import crypto from 'crypto';
 import {
   inlineScriptCspHashes,
@@ -2146,6 +2147,9 @@ app.post(
         return res.status(400).json({ reply: 'chatId is required.' });
       }
       req.kbAttachment = parseChatAttachment(req.body.attachment);
+      // The client has posted this on every turn since the beginning; the server never read it.
+      // Whitelisted, because it is browser-controlled text heading into a model prompt.
+      req.kbTimeContext = normalizeClientTimeContext(req.body.timeContext);
 
       const inventoryServices = createBoundInventoryServices();
 
