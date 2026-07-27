@@ -135,6 +135,29 @@ test('baseline comparison flags a regression and does not flag an improvement', 
   assert.equal(better.improved, 1);
 });
 
+test('a single-rep flip is noise, not a regression (3 reps cannot resolve one)', () => {
+  // The loop sets no temperature, so replies vary run to run. If every 3/3 -> 2/3 counted as a
+  // regression, the eval would manufacture false alarms and invite tuning the prompt against
+  // sampling jitter — which is worse than not measuring at all.
+  const one = compareToBaseline(
+    [{ scenarioId: 's', verdicts: [{ id: 'c', pass: true }, { id: 'c', pass: true }], checkResults: [] }],
+    { runs: [{ scenarioId: 's', verdicts: [{ id: 'c', pass: true }, { id: 'c', pass: true }, { id: 'c', pass: true }], checkResults: [] }] }
+  );
+  assert.equal(one.regressed, 0, 'losing one rep is noise');
+
+  const two = compareToBaseline(
+    [{ scenarioId: 's', verdicts: [{ id: 'c', pass: true }], checkResults: [] }],
+    { runs: [{ scenarioId: 's', verdicts: [{ id: 'c', pass: true }, { id: 'c', pass: true }, { id: 'c', pass: true }], checkResults: [] }] }
+  );
+  assert.equal(two.regressed, 1, 'losing two reps is a real regression');
+
+  const zeroed = compareToBaseline(
+    [{ scenarioId: 's', verdicts: [{ id: 'c', pass: false }], checkResults: [] }],
+    { runs: [{ scenarioId: 's', verdicts: [{ id: 'c', pass: true }], checkResults: [] }] }
+  );
+  assert.equal(zeroed.regressed, 1, 'falling to zero from a passing baseline is always a regression');
+});
+
 test('the scenario set keeps its over-correction traps and its regression guards', () => {
   // The likeliest way "teach it to cook" goes wrong is OVER-correction. If someone trims the
   // scenario set later, these are the ones that must not go.

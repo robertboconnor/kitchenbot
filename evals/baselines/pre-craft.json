@@ -9,7 +9,7 @@
       "scenarioId": "succotash-hold",
       "rep": 1,
       "ok": true,
-      "reply": "Good news: succotash is actually perfect for this kind of stop-and-start cooking. Here's how I'd sequence it:\n\n**Now (before bedtime):**\n1. Sauté your aromatics first — a diced onion (and celery or bell pepper if you're using them) in butter or bacon fat until softened, about 5 min.\n2. Add the lima beans with a splash of stock or water, cover, and simmer until they're just about tender (not fully done) — maybe 8-10 minutes.\n3. Stir in the corn kernels, season with salt, pepper, a pinch of sugar if you like, and cook just 2-3 minutes — you want the corn barely cooked, not mushy.\n4. **Kill the heat here.** Don't add cream, butter-finish, herbs, or bacon bits yet — those are best added right at the end so they stay fresh and don't overcook.\n5. Leave it uncovered for a minute to stop the residual cooking, then cover the pot and let it sit off-heat. 30 minutes resting like this is totally fine — the beans and corn will stay warm-ish and keep gently softening, which is actually good for succotash.\n\n**Right before eating (5 min):**\n1. Reheat gently over medium-low, stirring occasionally, until hot through (2-3 min).\n2. Now stir in any finishing touches: a knob of butter or splash of cream for richness, fresh herbs (basil, chives, or parsley), a squeeze of lemon, and crispy bacon bits if using.\n3. Taste and adjust salt/pepper — flavors mellow during the rest, so it'll likely need a little perking up.\n\nOne caution: if you're using fresh (not frozen) lima beans and they weren't quite fully tender before the rest, don't worry — the 30 min covered rest plus the final reheat should finish them off nicely.\n\nWant me to save this as a full recipe once you've got quantities dialed in tonight?",
+      "reply": "Good news: succotash is actually perfect for this kind of stop-and-start cooking. Here's how I'd sequence it:\n\n**Now (before bedtime):**\n1. Saut\u00e9 your aromatics first \u2014 a diced onion (and celery or bell pepper if you're using them) in butter or bacon fat until softened, about 5 min.\n2. Add the lima beans with a splash of stock or water, cover, and simmer until they're just about tender (not fully done) \u2014 maybe 8-10 minutes.\n3. Stir in the corn kernels, season with salt, pepper, a pinch of sugar if you like, and cook just 2-3 minutes \u2014 you want the corn barely cooked, not mushy.\n4. **Kill the heat here.** Don't add cream, butter-finish, herbs, or bacon bits yet \u2014 those are best added right at the end so they stay fresh and don't overcook.\n5. Leave it uncovered for a minute to stop the residual cooking, then cover the pot and let it sit off-heat. 30 minutes resting like this is totally fine \u2014 the beans and corn will stay warm-ish and keep gently softening, which is actually good for succotash.\n\n**Right before eating (5 min):**\n1. Reheat gently over medium-low, stirring occasionally, until hot through (2-3 min).\n2. Now stir in any finishing touches: a knob of butter or splash of cream for richness, fresh herbs (basil, chives, or parsley), a squeeze of lemon, and crispy bacon bits if using.\n3. Taste and adjust salt/pepper \u2014 flavors mellow during the rest, so it'll likely need a little perking up.\n\nOne caution: if you're using fresh (not frozen) lima beans and they weren't quite fully tender before the rest, don't worry \u2014 the 30 min covered rest plus the final reheat should finish them off nicely.\n\nWant me to save this as a full recipe once you've got quantities dialed in tonight?",
       "toolTrace": [
         {
           "name": "plan__list",
@@ -79,8 +79,8 @@
         {
           "id": "names-the-reason",
           "pass": false,
-          "evidence": "Don't add cream, butter-finish, herbs, or bacon bits yet — those are best added right at the end so they stay fresh and don't overcook.",
-          "rationale": "The reply never states that early acid would turn the beans grey/drab/dull/mushy — it only gives a generic 'stay fresh, don't overcook' rationale without naming the acid-specific consequence."
+          "evidence": "Don't add cream, butter-finish, herbs, or bacon bits yet \u2014 those are best added right at the end so they stay fresh and don't overcook.",
+          "rationale": "The reply never states that early acid would turn the beans grey/drab/dull/mushy \u2014 it only gives a generic 'stay fresh, don't overcook' rationale without naming the acid-specific consequence."
         },
         {
           "id": "reason-is-brief",
@@ -97,13 +97,13 @@
         {
           "id": "not-just-scheduling",
           "pass": true,
-          "evidence": "Kill the heat here. Don't add cream, butter-finish, herbs, or bacon bits yet — those are best added right at the end so they stay fresh and don't overcook.",
+          "evidence": "Kill the heat here. Don't add cream, butter-finish, herbs, or bacon bits yet \u2014 those are best added right at the end so they stay fresh and don't overcook.",
           "rationale": "The reply actually moves specific steps (adding cream/butter/herbs/bacon and reheating) to the post-wait phase rather than just bolting a 'let it sit' onto an unchanged recipe."
         },
         {
           "id": "no-tips-section",
           "pass": false,
-          "evidence": "One caution: if you're using fresh (not frozen) lima beans and they weren't quite fully tender before the rest, don't worry — the 30 min covered rest plus the final reheat should finish them off nicely.",
+          "evidence": "One caution: if you're using fresh (not frozen) lima beans and they weren't quite fully tender before the rest, don't worry \u2014 the 30 min covered rest plus the final reheat should finish them off nicely.",
           "rationale": "This forms a separate detached advice note (introduced with 'One caution:') outside the numbered steps, which functions as a Notes/Tips-style block."
         }
       ],
@@ -133,7 +133,7 @@
       "scenarioId": "succotash-hold",
       "rep": 2,
       "ok": true,
-      "reply": "Good plan — succotash actually handles a hold really well if you split it into \"cook\" and \"finish\" stages around your bedtime break. Here's how I'd sequence it:\n\n**Before bedtime (the cook phase):**\n1. Sauté your aromatics first — onion, garlic, and bacon/pancetta if you're using it — until soft and the fat's rendered.\n2. Add the lima beans with a splash of stock or water and simmer until *just* tender — pull them a hair before you think they're done. They'll keep cooking gently off heat and during the reheat, so slightly underdone now avoids mealy/mushy beans later.\n3. Stir in the corn and cook just 2–3 minutes, enough to take the raw edge off but still crisp-tender. Season with salt and pepper.\n4. Take it **off the heat entirely** (not on a warm burner — that keeps cooking it) and cover the pot. Residual heat will keep it warm and finish the beans gently over the 30 minutes without turning anything mushy or the corn rubbery.\n\n**Right before you eat (the finish phase):**\n5. Reheat gently over medium-low, stirring, just until hot through.\n6. Now add anything delicate that shouldn't sit and stew for 30 minutes: a pat of butter, a splash of cream if you're using it, fresh herbs (basil, chives, parsley), a squeeze of lemon or lime, and diced fresh tomato if it's going in. Taste and adjust salt.\n\nThat way everything that benefits from time (aromatics, beans softening) gets it, and everything that fades with time (bright herbs, fresh acid, corn's snap) goes in right at the end. Want me to pull together a full recipe with quantities for tonight?",
+      "reply": "Good plan \u2014 succotash actually handles a hold really well if you split it into \"cook\" and \"finish\" stages around your bedtime break. Here's how I'd sequence it:\n\n**Before bedtime (the cook phase):**\n1. Saut\u00e9 your aromatics first \u2014 onion, garlic, and bacon/pancetta if you're using it \u2014 until soft and the fat's rendered.\n2. Add the lima beans with a splash of stock or water and simmer until *just* tender \u2014 pull them a hair before you think they're done. They'll keep cooking gently off heat and during the reheat, so slightly underdone now avoids mealy/mushy beans later.\n3. Stir in the corn and cook just 2\u20133 minutes, enough to take the raw edge off but still crisp-tender. Season with salt and pepper.\n4. Take it **off the heat entirely** (not on a warm burner \u2014 that keeps cooking it) and cover the pot. Residual heat will keep it warm and finish the beans gently over the 30 minutes without turning anything mushy or the corn rubbery.\n\n**Right before you eat (the finish phase):**\n5. Reheat gently over medium-low, stirring, just until hot through.\n6. Now add anything delicate that shouldn't sit and stew for 30 minutes: a pat of butter, a splash of cream if you're using it, fresh herbs (basil, chives, parsley), a squeeze of lemon or lime, and diced fresh tomato if it's going in. Taste and adjust salt.\n\nThat way everything that benefits from time (aromatics, beans softening) gets it, and everything that fades with time (bright herbs, fresh acid, corn's snap) goes in right at the end. Want me to pull together a full recipe with quantities for tonight?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -212,7 +212,7 @@
         {
           "id": "not-just-scheduling",
           "pass": true,
-          "evidence": "Take it off the heat entirely (not on a warm burner — that keeps cooking it) and cover the pot.",
+          "evidence": "Take it off the heat entirely (not on a warm burner \u2014 that keeps cooking it) and cover the pot.",
           "rationale": "The reply actually restructures steps (moving delicate items to the finish) rather than just bolting on a wait."
         },
         {
@@ -248,7 +248,7 @@
       "scenarioId": "succotash-hold",
       "rep": 3,
       "ok": true,
-      "reply": "Good plan — succotash actually holds really well this way. Here's how I'd sequence it:\n\n**Now (main cook):**\n1. Sauté your aromatics first — onion, garlic, maybe a diced bell pepper if you're using one — in butter or bacon fat until soft.\n2. Add the lima beans first since they take longer (if frozen, no need to thaw — just add straight in with a splash of stock or water and simmer ~5-7 min until nearly tender).\n3. Add the corn kernels and cook just 2-3 minutes more — you want it bright, not mushy, since it'll keep cooking a bit as it sits and again at the end.\n4. Season with salt, pepper, a little herb (thyme or basil) — go slightly light on salt now since flavors concentrate as it sits.\n5. **Stop here.** Take it off heat while everything is still a touch underdone/al dente.\n\n**The 30-minute hold:**\n- Just leave it in the pot, lid on, off heat. Residual heat keeps it warm-ish without overcooking. No need to refrigerate for a 30-min gap — it's food-safe sitting covered that long.\n- If your kitchen runs cool, you can pop it back on the lowest possible heat for a minute right when you get back, but the pot lid usually holds enough warmth.\n\n**Right before eating (finish):**\n1. Reheat gently over medium-low, stirring occasionally.\n2. This is your moment to finish it properly: swirl in a knob of butter or a splash of cream for richness, a squeeze of lemon or splash of vinegar to brighten it back up (corn/beans mute a bit as they sit), and fresh herbs (basil, chives, or parsley) stirred in at the very end so they stay vibrant.\n3. Taste and adjust salt — it almost always needs a bit more after the rest.\n\nThat structure means the pause actually helps (flavors meld) rather than hurts, as long as you slightly undercook before the hold and finish with acid/fat/herbs at the end.\n\nWant me to save this as a recipe once you've got exact ingredients and quantities dialed in tonight?",
+      "reply": "Good plan \u2014 succotash actually holds really well this way. Here's how I'd sequence it:\n\n**Now (main cook):**\n1. Saut\u00e9 your aromatics first \u2014 onion, garlic, maybe a diced bell pepper if you're using one \u2014 in butter or bacon fat until soft.\n2. Add the lima beans first since they take longer (if frozen, no need to thaw \u2014 just add straight in with a splash of stock or water and simmer ~5-7 min until nearly tender).\n3. Add the corn kernels and cook just 2-3 minutes more \u2014 you want it bright, not mushy, since it'll keep cooking a bit as it sits and again at the end.\n4. Season with salt, pepper, a little herb (thyme or basil) \u2014 go slightly light on salt now since flavors concentrate as it sits.\n5. **Stop here.** Take it off heat while everything is still a touch underdone/al dente.\n\n**The 30-minute hold:**\n- Just leave it in the pot, lid on, off heat. Residual heat keeps it warm-ish without overcooking. No need to refrigerate for a 30-min gap \u2014 it's food-safe sitting covered that long.\n- If your kitchen runs cool, you can pop it back on the lowest possible heat for a minute right when you get back, but the pot lid usually holds enough warmth.\n\n**Right before eating (finish):**\n1. Reheat gently over medium-low, stirring occasionally.\n2. This is your moment to finish it properly: swirl in a knob of butter or a splash of cream for richness, a squeeze of lemon or splash of vinegar to brighten it back up (corn/beans mute a bit as they sit), and fresh herbs (basil, chives, or parsley) stirred in at the very end so they stay vibrant.\n3. Taste and adjust salt \u2014 it almost always needs a bit more after the rest.\n\nThat structure means the pause actually helps (flavors meld) rather than hurts, as long as you slightly undercook before the hold and finish with acid/fat/herbs at the end.\n\nWant me to save this as a recipe once you've got exact ingredients and quantities dialed in tonight?",
       "toolTrace": [
         {
           "name": "plan__list",
@@ -372,7 +372,7 @@
       "scenarioId": "quick-pickle-early-acid",
       "rep": 1,
       "ok": true,
-      "reply": "Easy and totally worth it — here's the basic version:\n\n**Quick-Pickled Red Onions**\n\n- 1 red onion, thinly sliced (a mandoline or sharp knife helps get them uniform)\n- 3/4 cup water\n- 3/4 cup vinegar (white vinegar or apple cider vinegar both work; white gives a sharper tang)\n- 2 tbsp sugar\n- 1 1/2 tsp salt\n- Optional: a few peppercorns, a bay leaf, a pinch of red pepper flakes, or a smashed garlic clove for extra flavor\n\n**Steps:**\n1. Pack the sliced onion into a jar or heatproof container.\n2. Combine water, vinegar, sugar, and salt in a small pot (or just a bowl if you want them raw-pickled). Heat just until sugar and salt dissolve — doesn't need to boil.\n3. Pour the hot brine over the onions, making sure they're submerged.\n4. Let cool to room temp, then pop a lid on and refrigerate.\n\nThey're usable in as little as 30 minutes, but they get better (and turn that gorgeous bright pink) after a few hours. Since it's for tomorrow night, making them tonight or first thing tomorrow morning will give you great flavor and color by dinner. They'll keep in the fridge for a couple weeks, so don't worry about using them all at once.\n\nWant me to save this to the cookbook, or add red onion/vinegar to your grocery list if you don't have them on hand?",
+      "reply": "Easy and totally worth it \u2014 here's the basic version:\n\n**Quick-Pickled Red Onions**\n\n- 1 red onion, thinly sliced (a mandoline or sharp knife helps get them uniform)\n- 3/4 cup water\n- 3/4 cup vinegar (white vinegar or apple cider vinegar both work; white gives a sharper tang)\n- 2 tbsp sugar\n- 1 1/2 tsp salt\n- Optional: a few peppercorns, a bay leaf, a pinch of red pepper flakes, or a smashed garlic clove for extra flavor\n\n**Steps:**\n1. Pack the sliced onion into a jar or heatproof container.\n2. Combine water, vinegar, sugar, and salt in a small pot (or just a bowl if you want them raw-pickled). Heat just until sugar and salt dissolve \u2014 doesn't need to boil.\n3. Pour the hot brine over the onions, making sure they're submerged.\n4. Let cool to room temp, then pop a lid on and refrigerate.\n\nThey're usable in as little as 30 minutes, but they get better (and turn that gorgeous bright pink) after a few hours. Since it's for tomorrow night, making them tonight or first thing tomorrow morning will give you great flavor and color by dinner. They'll keep in the fridge for a couple weeks, so don't worry about using them all at once.\n\nWant me to save this to the cookbook, or add red onion/vinegar to your grocery list if you don't have them on hand?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -463,7 +463,7 @@
       "scenarioId": "quick-pickle-early-acid",
       "rep": 2,
       "ok": true,
-      "reply": "Easy, and it only needs about 30 minutes (though it's even better after a few hours):\n\n**Quick-Pickled Red Onions**\n\n- 1 red onion, thinly sliced (a mandoline or sharp knife helps get them even)\n- 1 cup vinegar (white vinegar or apple cider vinegar both work well; lime juice is a nice swap if you want something milder/more taco-appropriate)\n- 1 cup water\n- 1 tbsp sugar\n- 1 tbsp salt\n- Optional: a few peppercorns, a bay leaf, a smashed garlic clove, or a pinch of red pepper flakes for extra flavor\n\n**Steps:**\n1. Slice the onion thin and pack it into a jar or heatproof bowl.\n2. Combine vinegar, water, sugar, and salt in a small pot (or just microwave in a bowl) until the sugar and salt dissolve — doesn't need to fully boil, just warm enough to dissolve.\n3. Pour the hot liquid over the onions, making sure they're submerged.\n4. Let cool to room temp, then cover and refrigerate.\n\nThey're ready to eat after about 30 minutes, but taste even better after 2+ hours, and they'll keep in the fridge for up to 2 weeks. Since you're making them for tomorrow night, you could even do them tonight and let them sit overnight for maximum flavor.\n\nWant me to save this to the cookbook, or add anything (onion, vinegar, etc.) to your grocery list?",
+      "reply": "Easy, and it only needs about 30 minutes (though it's even better after a few hours):\n\n**Quick-Pickled Red Onions**\n\n- 1 red onion, thinly sliced (a mandoline or sharp knife helps get them even)\n- 1 cup vinegar (white vinegar or apple cider vinegar both work well; lime juice is a nice swap if you want something milder/more taco-appropriate)\n- 1 cup water\n- 1 tbsp sugar\n- 1 tbsp salt\n- Optional: a few peppercorns, a bay leaf, a smashed garlic clove, or a pinch of red pepper flakes for extra flavor\n\n**Steps:**\n1. Slice the onion thin and pack it into a jar or heatproof bowl.\n2. Combine vinegar, water, sugar, and salt in a small pot (or just microwave in a bowl) until the sugar and salt dissolve \u2014 doesn't need to fully boil, just warm enough to dissolve.\n3. Pour the hot liquid over the onions, making sure they're submerged.\n4. Let cool to room temp, then cover and refrigerate.\n\nThey're ready to eat after about 30 minutes, but taste even better after 2+ hours, and they'll keep in the fridge for up to 2 weeks. Since you're making them for tomorrow night, you could even do them tonight and let them sit overnight for maximum flavor.\n\nWant me to save this to the cookbook, or add anything (onion, vinegar, etc.) to your grocery list?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -554,7 +554,7 @@
       "scenarioId": "quick-pickle-early-acid",
       "rep": 3,
       "ok": true,
-      "reply": "Easy, and it only needs about 20-30 minutes to be usable (though it gets better after a few hours):\n\n**Quick-Pickled Red Onions**\n\n- 1 red onion, thinly sliced (a mandoline or sharp knife helps get even slices)\n- 3/4 cup vinegar — white vinegar or apple cider vinegar both work; red wine vinegar is nice too\n- 3/4 cup water\n- 1 tbsp sugar\n- 1 1/2 tsp salt\n- Optional add-ins: a few peppercorns, a clove of garlic smashed, a bay leaf, or a pinch of red pepper flakes\n\n**Steps:**\n1. Slice the onion thin and pack it into a jar or heatproof bowl.\n2. Combine vinegar, water, sugar, and salt in a small pot (or just microwave in a measuring cup) until warm and the sugar/salt dissolve — doesn't need to boil.\n3. Pour the hot liquid over the onions, making sure they're submerged.\n4. Let sit at room temp until it cools, at least 20-30 minutes. For tacos tomorrow, making them tonight and refrigerating overnight will give you better color and flavor (they turn that vivid pink) and a nice crunch-with-tang balance.\n5. Store in the fridge — they'll keep well over a week.\n\nSince you're making them the night before, that's actually the ideal timing. Want me to add any of these ingredients to your grocery list, or check if you've already got vinegar on hand?",
+      "reply": "Easy, and it only needs about 20-30 minutes to be usable (though it gets better after a few hours):\n\n**Quick-Pickled Red Onions**\n\n- 1 red onion, thinly sliced (a mandoline or sharp knife helps get even slices)\n- 3/4 cup vinegar \u2014 white vinegar or apple cider vinegar both work; red wine vinegar is nice too\n- 3/4 cup water\n- 1 tbsp sugar\n- 1 1/2 tsp salt\n- Optional add-ins: a few peppercorns, a clove of garlic smashed, a bay leaf, or a pinch of red pepper flakes\n\n**Steps:**\n1. Slice the onion thin and pack it into a jar or heatproof bowl.\n2. Combine vinegar, water, sugar, and salt in a small pot (or just microwave in a measuring cup) until warm and the sugar/salt dissolve \u2014 doesn't need to boil.\n3. Pour the hot liquid over the onions, making sure they're submerged.\n4. Let sit at room temp until it cools, at least 20-30 minutes. For tacos tomorrow, making them tonight and refrigerating overnight will give you better color and flavor (they turn that vivid pink) and a nice crunch-with-tang balance.\n5. Store in the fridge \u2014 they'll keep well over a week.\n\nSince you're making them the night before, that's actually the ideal timing. Want me to add any of these ingredients to your grocery list, or check if you've already got vinegar on hand?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -645,7 +645,7 @@
       "scenarioId": "yogurt-lemon-marinade",
       "rep": 1,
       "ok": true,
-      "reply": "Yes, absolutely — that's a great combo. Yogurt-lemon marinade is classic for chicken thighs (think Greek or tandoori-style), and thighs actually benefit from a longer soak since they're more forgiving than breast meat and won't turn mushy or over-tenderize overnight.\n\nA few quick pointers:\n\n- **Ratio**: roughly 1 cup plain yogurt (whole milk or Greek) to juice of 1 lemon (2–3 tbsp), plus salt, garlic, and whatever spices you like — cumin, paprika, oregano, black pepper all work well.\n- **Salt matters**: salt the chicken directly (not just relying on salted yogurt) so it seasons through, not just the surface.\n- **Time**: overnight (8–12 hours) is perfect. Beyond ~24 hours, the acid can start breaking down the texture too much and make it slightly chalky/mushy.\n- **Bone-in vs boneless**: both are fine — bone-in will just take a little longer to cook through.\n- **Cooking**: this marinade is great for grilling, broiling, or roasting at high heat (400–425°F) since the yogurt helps char nicely and keeps the meat juicy. Wipe off excess marinade before searing so it browns instead of steaming.\n\nWant me to put together a full recipe (with exact quantities and cook times) and save it to the cookbook, or help you build a side dish to go with it?",
+      "reply": "Yes, absolutely \u2014 that's a great combo. Yogurt-lemon marinade is classic for chicken thighs (think Greek or tandoori-style), and thighs actually benefit from a longer soak since they're more forgiving than breast meat and won't turn mushy or over-tenderize overnight.\n\nA few quick pointers:\n\n- **Ratio**: roughly 1 cup plain yogurt (whole milk or Greek) to juice of 1 lemon (2\u20133 tbsp), plus salt, garlic, and whatever spices you like \u2014 cumin, paprika, oregano, black pepper all work well.\n- **Salt matters**: salt the chicken directly (not just relying on salted yogurt) so it seasons through, not just the surface.\n- **Time**: overnight (8\u201312 hours) is perfect. Beyond ~24 hours, the acid can start breaking down the texture too much and make it slightly chalky/mushy.\n- **Bone-in vs boneless**: both are fine \u2014 bone-in will just take a little longer to cook through.\n- **Cooking**: this marinade is great for grilling, broiling, or roasting at high heat (400\u2013425\u00b0F) since the yogurt helps char nicely and keeps the meat juicy. Wipe off excess marinade before searing so it browns instead of steaming.\n\nWant me to put together a full recipe (with exact quantities and cook times) and save it to the cookbook, or help you build a side dish to go with it?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -694,7 +694,7 @@
         {
           "id": "yes-overnight",
           "pass": true,
-          "evidence": "Yes, absolutely — that's a great combo... Time: overnight (8–12 hours) is perfect.",
+          "evidence": "Yes, absolutely \u2014 that's a great combo... Time: overnight (8\u201312 hours) is perfect.",
           "rationale": "The reply affirms overnight yogurt-lemon marinade is good and explicitly says overnight is perfect."
         },
         {
@@ -736,7 +736,7 @@
       "scenarioId": "yogurt-lemon-marinade",
       "rep": 2,
       "ok": true,
-      "reply": "Yes, absolutely — yogurt and lemon is a classic marinade for chicken thighs, and overnight is actually a great amount of time for it (better than a quick 30-minute marinade, in fact).\n\nA few practical notes:\n\n- **Why it works**: The acid (lemon) and the yogurt's mild lactic acid tenderize the meat gently — much less harsh than a straight lemon-juice-and-oil marinade, which can turn the surface chalky/mealy if left too long. Yogurt buffers that, so overnight (even up to 24-48 hours) is safe and actually improves texture rather than degrading it.\n- **Ratio to aim for**: roughly 1 cup plain yogurt (whole milk yogurt gives the best richness) to the juice of 1 lemon, plus salt, garlic, and whatever spices you like — cumin, paprika, coriander, black pepper all play well. Bone-in, skin-on thighs handle long marinades especially well since the skin protects some of the meat.\n- **Storage**: keep it covered in the fridge, not at room temp.\n- **Cooking tip**: scrape off excess marinade before searing/roasting or it can burn/blacken from the yogurt solids and lemon sugars — pat lightly, don't rinse.\n\nWant me to write out a full recipe (marinade proportions + cooking method) so you've got exact amounts for tomorrow?",
+      "reply": "Yes, absolutely \u2014 yogurt and lemon is a classic marinade for chicken thighs, and overnight is actually a great amount of time for it (better than a quick 30-minute marinade, in fact).\n\nA few practical notes:\n\n- **Why it works**: The acid (lemon) and the yogurt's mild lactic acid tenderize the meat gently \u2014 much less harsh than a straight lemon-juice-and-oil marinade, which can turn the surface chalky/mealy if left too long. Yogurt buffers that, so overnight (even up to 24-48 hours) is safe and actually improves texture rather than degrading it.\n- **Ratio to aim for**: roughly 1 cup plain yogurt (whole milk yogurt gives the best richness) to the juice of 1 lemon, plus salt, garlic, and whatever spices you like \u2014 cumin, paprika, coriander, black pepper all play well. Bone-in, skin-on thighs handle long marinades especially well since the skin protects some of the meat.\n- **Storage**: keep it covered in the fridge, not at room temp.\n- **Cooking tip**: scrape off excess marinade before searing/roasting or it can burn/blacken from the yogurt solids and lemon sugars \u2014 pat lightly, don't rinse.\n\nWant me to write out a full recipe (marinade proportions + cooking method) so you've got exact amounts for tomorrow?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -785,7 +785,7 @@
         {
           "id": "yes-overnight",
           "pass": true,
-          "evidence": "Yes, absolutely — yogurt and lemon is a classic marinade for chicken thighs, and overnight is actually a great amount of time for it",
+          "evidence": "Yes, absolutely \u2014 yogurt and lemon is a classic marinade for chicken thighs, and overnight is actually a great amount of time for it",
           "rationale": "The reply affirms overnight marinating is fine and actually good."
         },
         {
@@ -827,7 +827,7 @@
       "scenarioId": "yogurt-lemon-marinade",
       "rep": 3,
       "ok": true,
-      "reply": "Yes, absolutely — yogurt and lemon is a classic marinade for chicken thighs, and overnight is actually ideal for it (better than a quick 30-minute marinade).\n\nA few reasons it works so well:\n- **Yogurt** is mild enough not to turn the meat mushy or \"cook\" it the way a pure acid marinade can if left too long — it tenderizes gently via lactic acid rather than harshly.\n- **Lemon** adds brightness but in moderate amounts alongside yogurt, it won't over-acidify and toughen the meat.\n- Overnight (8–24 hours) gives good flavor penetration. I'd avoid going much past 24 hours — the meat can start to get a slightly stringy/mushy texture from the acid.\n\nA simple version if you want a starting point:\n- 1 cup plain yogurt (whole milk works best)\n- Juice of 1 lemon + a bit of zest\n- 3-4 garlic cloves, grated\n- 1 tsp cumin, 1 tsp paprika (or smoked paprika)\n- Salt and pepper\n- Optional: a glug of olive oil, chili flakes, or fresh herbs like oregano or cilantro\n\nToss the thighs in, cover, and into the fridge overnight. Bring them close to room temp before cooking, and scrape off excess yogurt before searing/grilling/baking so it doesn't burn.\n\nWant me to write this out as a full recipe (with cook method and timing) and save it to your cookbook?",
+      "reply": "Yes, absolutely \u2014 yogurt and lemon is a classic marinade for chicken thighs, and overnight is actually ideal for it (better than a quick 30-minute marinade).\n\nA few reasons it works so well:\n- **Yogurt** is mild enough not to turn the meat mushy or \"cook\" it the way a pure acid marinade can if left too long \u2014 it tenderizes gently via lactic acid rather than harshly.\n- **Lemon** adds brightness but in moderate amounts alongside yogurt, it won't over-acidify and toughen the meat.\n- Overnight (8\u201324 hours) gives good flavor penetration. I'd avoid going much past 24 hours \u2014 the meat can start to get a slightly stringy/mushy texture from the acid.\n\nA simple version if you want a starting point:\n- 1 cup plain yogurt (whole milk works best)\n- Juice of 1 lemon + a bit of zest\n- 3-4 garlic cloves, grated\n- 1 tsp cumin, 1 tsp paprika (or smoked paprika)\n- Salt and pepper\n- Optional: a glug of olive oil, chili flakes, or fresh herbs like oregano or cilantro\n\nToss the thighs in, cover, and into the fridge overnight. Bring them close to room temp before cooking, and scrape off excess yogurt before searing/grilling/baking so it doesn't burn.\n\nWant me to write this out as a full recipe (with cook method and timing) and save it to your cookbook?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -876,7 +876,7 @@
         {
           "id": "yes-overnight",
           "pass": true,
-          "evidence": "Yes, absolutely — yogurt and lemon is a classic marinade for chicken thighs, and overnight is actually ideal for it",
+          "evidence": "Yes, absolutely \u2014 yogurt and lemon is a classic marinade for chicken thighs, and overnight is actually ideal for it",
           "rationale": "The reply clearly affirms yes and says overnight is ideal."
         },
         {
@@ -888,7 +888,7 @@
         {
           "id": "no-acid-panic",
           "pass": true,
-          "evidence": "Overnight (8–24 hours) gives good flavor penetration. I'd avoid going much past 24 hours — the meat can start to get a slightly stringy/mushy texture from the acid.",
+          "evidence": "Overnight (8\u201324 hours) gives good flavor penetration. I'd avoid going much past 24 hours \u2014 the meat can start to get a slightly stringy/mushy texture from the acid.",
           "rationale": "The reply endorses the full overnight (8-24hr) window rather than cutting it to a couple hours, only warning against exceeding 24 hours."
         }
       ],
@@ -918,7 +918,7 @@
       "scenarioId": "braise-improves-ahead",
       "rep": 1,
       "ok": true,
-      "reply": "Yes, absolutely — beef stew is actually one of those dishes that's *better* made ahead, since the flavors deepen overnight as everything sits together.\n\nHere's how I'd handle the timing:\n\n1. **Tomorrow:** Cook the stew fully through, then let it cool to room temp (don't leave it out more than ~2 hours) and refrigerate in an airtight container.\n2. **Friday:** It'll keep fine in the fridge — beef stew is generally good for 3-4 days refrigerated.\n3. **Saturday:** Reheat gently on the stovetop over medium-low heat, stirring occasionally, until it's steaming hot throughout (or in the oven at ~300°F if it's a big batch). You may want to add a splash of broth or water since it can thicken a lot as it sits.\n\nOne tip: if your recipe has potatoes in it, they can get a little grainy/mealy after a couple days refrigerated — still tastes fine, just a texture note. Carrots and root veggies hold up great.\n\nI don't see a beef stew recipe saved in your cookbook yet — if you've got one you're planning to use (or want me to help build one), just share it or tell me what you're thinking and I can help scale it or save it for next time.",
+      "reply": "Yes, absolutely \u2014 beef stew is actually one of those dishes that's *better* made ahead, since the flavors deepen overnight as everything sits together.\n\nHere's how I'd handle the timing:\n\n1. **Tomorrow:** Cook the stew fully through, then let it cool to room temp (don't leave it out more than ~2 hours) and refrigerate in an airtight container.\n2. **Friday:** It'll keep fine in the fridge \u2014 beef stew is generally good for 3-4 days refrigerated.\n3. **Saturday:** Reheat gently on the stovetop over medium-low heat, stirring occasionally, until it's steaming hot throughout (or in the oven at ~300\u00b0F if it's a big batch). You may want to add a splash of broth or water since it can thicken a lot as it sits.\n\nOne tip: if your recipe has potatoes in it, they can get a little grainy/mealy after a couple days refrigerated \u2014 still tastes fine, just a texture note. Carrots and root veggies hold up great.\n\nI don't see a beef stew recipe saved in your cookbook yet \u2014 if you've got one you're planning to use (or want me to help build one), just share it or tell me what you're thinking and I can help scale it or save it for next time.",
       "toolTrace": [
         {
           "name": "plan__list",
@@ -976,13 +976,13 @@
         {
           "id": "yes-and-better",
           "pass": true,
-          "evidence": "Yes, absolutely — beef stew is actually one of those dishes that's *better* made ahead, since the flavors deepen overnight as everything sits together.",
+          "evidence": "Yes, absolutely \u2014 beef stew is actually one of those dishes that's *better* made ahead, since the flavors deepen overnight as everything sits together.",
           "rationale": "The reply explicitly confirms yes and states it's better made ahead."
         },
         {
           "id": "finish-fresh-at-serve",
           "pass": false,
-          "evidence": "One tip: if your recipe has potatoes in it, they can get a little grainy/mealy after a couple days refrigerated — still tastes fine, just a texture note.",
+          "evidence": "One tip: if your recipe has potatoes in it, they can get a little grainy/mealy after a couple days refrigerated \u2014 still tastes fine, just a texture note.",
           "rationale": "The reply only notes potatoes may get grainy but does not instruct to add potatoes, herbs, or other fresh/starchy elements at reheat time rather than upfront."
         },
         {
@@ -1018,7 +1018,7 @@
       "scenarioId": "braise-improves-ahead",
       "rep": 2,
       "ok": true,
-      "reply": "Good news either way: beef stew is actually a great make-ahead dish — many people say it tastes even better a day or two later since the flavors have more time to meld.\n\nA few practical pointers for doing it tomorrow and serving Saturday:\n\n- **Cool it properly before refrigerating**: don't put a hot pot straight in the fridge. Let it cool at room temp for a bit (no more than ~2 hours total), then transfer to a sealed container.\n- **Storage**: it'll keep fine in the fridge for 3–4 days, so tomorrow-to-Saturday is well within the safe window.\n- **Reheating**: warm it gently on the stove over medium-low heat, stirring occasionally, until it's hot throughout (steaming, not just warm). Add a splash of broth or water if it's thickened up too much in the fridge.\n- **Potatoes/veg**: if your recipe has potatoes, they can get a little softer/grainier after a couple days refrigerated — still tasty, just softer texture. Some people add fresh-cooked potatoes at reheating instead for best texture.\n\nYour cookbook doesn't have a beef stew saved yet — if you've got a recipe you're planning to use (or want me to help you build one), share it and I can save it for you, or write one up from scratch if you'd like ideas.",
+      "reply": "Good news either way: beef stew is actually a great make-ahead dish \u2014 many people say it tastes even better a day or two later since the flavors have more time to meld.\n\nA few practical pointers for doing it tomorrow and serving Saturday:\n\n- **Cool it properly before refrigerating**: don't put a hot pot straight in the fridge. Let it cool at room temp for a bit (no more than ~2 hours total), then transfer to a sealed container.\n- **Storage**: it'll keep fine in the fridge for 3\u20134 days, so tomorrow-to-Saturday is well within the safe window.\n- **Reheating**: warm it gently on the stove over medium-low heat, stirring occasionally, until it's hot throughout (steaming, not just warm). Add a splash of broth or water if it's thickened up too much in the fridge.\n- **Potatoes/veg**: if your recipe has potatoes, they can get a little softer/grainier after a couple days refrigerated \u2014 still tasty, just softer texture. Some people add fresh-cooked potatoes at reheating instead for best texture.\n\nYour cookbook doesn't have a beef stew saved yet \u2014 if you've got a recipe you're planning to use (or want me to help you build one), share it and I can save it for you, or write one up from scratch if you'd like ideas.",
       "toolTrace": [
         {
           "name": "cookbook__list",
@@ -1072,7 +1072,7 @@
         {
           "id": "yes-and-better",
           "pass": true,
-          "evidence": "beef stew is actually a great make-ahead dish — many people say it tastes even better a day or two later since the flavors have more time to meld",
+          "evidence": "beef stew is actually a great make-ahead dish \u2014 many people say it tastes even better a day or two later since the flavors have more time to meld",
           "rationale": "The reply affirms yes and states it tastes as good or better after resting."
         },
         {
@@ -1114,7 +1114,7 @@
       "scenarioId": "braise-improves-ahead",
       "rep": 3,
       "ok": true,
-      "reply": "Yes, that works great — beef stew is one of those dishes that actually improves with a day or two in the fridge as the flavors meld. Just make sure to cool it down and refrigerate it within a couple hours of cooking, keep it in a sealed container, and it'll be perfectly good through Saturday (beef stew keeps well for 3-4 days refrigerated). When you're ready to serve, reheat it gently on the stovetop until it's steaming hot throughout.\n\nIf you want, I can pull up a beef stew recipe from the cookbook (if you've saved one) or help you plan one out — just let me know.",
+      "reply": "Yes, that works great \u2014 beef stew is one of those dishes that actually improves with a day or two in the fridge as the flavors meld. Just make sure to cool it down and refrigerate it within a couple hours of cooking, keep it in a sealed container, and it'll be perfectly good through Saturday (beef stew keeps well for 3-4 days refrigerated). When you're ready to serve, reheat it gently on the stovetop until it's steaming hot throughout.\n\nIf you want, I can pull up a beef stew recipe from the cookbook (if you've saved one) or help you plan one out \u2014 just let me know.",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1163,7 +1163,7 @@
         {
           "id": "yes-and-better",
           "pass": true,
-          "evidence": "Yes, that works great — beef stew is one of those dishes that actually improves with a day or two in the fridge as the flavors meld.",
+          "evidence": "Yes, that works great \u2014 beef stew is one of those dishes that actually improves with a day or two in the fridge as the flavors meld.",
           "rationale": "The reply clearly affirms yes and states it improves/gets better with time."
         },
         {
@@ -1205,7 +1205,7 @@
       "scenarioId": "risotto-doneness",
       "rep": 1,
       "ok": true,
-      "reply": "Good question — risotto is more about texture and taste than a timer. Here's what to look for:\n\n**The main test: taste it.** Start checking around the 18-minute mark from when you add the first ladle of hot liquid. The rice should be:\n- **Tender but with a slight bite in the center** — not chalky/hard, not mushy. Think al dente pasta, not soft porridge.\n- **Creamy from the starch**, not soupy or dry — the whole thing should move slightly when you tilt the pan (\"all'onda,\" or \"wavy,\" is the classic description), not sit in a stiff mound.\n\n**A few practical tips for your first time:**\n1. **Add liquid gradually**, one ladle at a time, stirring frequently, and let each addition mostly absorb before adding the next. Don't dump it all in at once.\n2. **Keep your stock hot** in a separate pot the whole time — adding cold stock shocks the rice and slows cooking unevenly.\n3. **Total cook time is usually 18–22 minutes** once you start adding liquid, depending on the rice (Arborio/Carnaroli).\n4. **Take it off heat slightly before it's fully done** — it keeps cooking from residual heat, and you don't want to overshoot into mush.\n5. **Finish with butter and cheese off heat**, stirring vigorously — this is called the \"mantecatura\" and it's what makes it glossy and creamy rather than sticky.\n\nIf you want, tell me what kind of risotto you're making (mushroom, seafood, plain parmesan, etc.) and I can walk you through the full recipe or save one to your cookbook once you've got it dialed in.",
+      "reply": "Good question \u2014 risotto is more about texture and taste than a timer. Here's what to look for:\n\n**The main test: taste it.** Start checking around the 18-minute mark from when you add the first ladle of hot liquid. The rice should be:\n- **Tender but with a slight bite in the center** \u2014 not chalky/hard, not mushy. Think al dente pasta, not soft porridge.\n- **Creamy from the starch**, not soupy or dry \u2014 the whole thing should move slightly when you tilt the pan (\"all'onda,\" or \"wavy,\" is the classic description), not sit in a stiff mound.\n\n**A few practical tips for your first time:**\n1. **Add liquid gradually**, one ladle at a time, stirring frequently, and let each addition mostly absorb before adding the next. Don't dump it all in at once.\n2. **Keep your stock hot** in a separate pot the whole time \u2014 adding cold stock shocks the rice and slows cooking unevenly.\n3. **Total cook time is usually 18\u201322 minutes** once you start adding liquid, depending on the rice (Arborio/Carnaroli).\n4. **Take it off heat slightly before it's fully done** \u2014 it keeps cooking from residual heat, and you don't want to overshoot into mush.\n5. **Finish with butter and cheese off heat**, stirring vigorously \u2014 this is called the \"mantecatura\" and it's what makes it glossy and creamy rather than sticky.\n\nIf you want, tell me what kind of risotto you're making (mushroom, seafood, plain parmesan, etc.) and I can walk you through the full recipe or save one to your cookbook once you've got it dialed in.",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1254,7 +1254,7 @@
         {
           "id": "grain-cue",
           "pass": true,
-          "evidence": "Tender but with a slight bite in the center — not chalky/hard, not mushy. Think al dente pasta, not soft porridge.",
+          "evidence": "Tender but with a slight bite in the center \u2014 not chalky/hard, not mushy. Think al dente pasta, not soft porridge.",
           "rationale": "Explicitly describes the grain texture cue of slight bite, not chalky, not mushy."
         },
         {
@@ -1266,7 +1266,7 @@
         {
           "id": "clock-is-secondary",
           "pass": true,
-          "evidence": "Good question — risotto is more about texture and taste than a timer. Here's what to look for: **The main test: taste it.**",
+          "evidence": "Good question \u2014 risotto is more about texture and taste than a timer. Here's what to look for: **The main test: taste it.**",
           "rationale": "The reply explicitly frames taste/texture as the main test and presents time only as a secondary practical guideline, not a substitute for sensory cues."
         }
       ],
@@ -1296,7 +1296,7 @@
       "scenarioId": "risotto-doneness",
       "rep": 2,
       "ok": true,
-      "reply": "Great choice for a first risotto — it's more forgiving than people expect once you know what to look for. Here's how to tell it's done:\n\n**The main test: taste it.** Take a spoonful, let it cool for a second, and bite into a grain of rice. You're looking for:\n- **Tender outside, tiny bit of firmness in the very center** — not a hard chalky core, just the faintest resistance. Think al dente pasta, not mushy.\n- If it's still crunchy or starchy-tasting all the way through, it needs more time and more liquid.\n\n**Visual/texture cues:**\n- The risotto should be **loose and flowing**, not stiff — Italians say it should \"all'onda,\" meaning if you tilt the pan or plate it, it slowly ripples like a wave. If a spoon can stand up in it, it's too thick (or needs more stock stirred in).\n- The starch from the rice should have released enough to make the liquid **creamy on its own** — no cream needed. If it still looks soupy and watery rather than glossy/creamy, keep going.\n\n**Timing as a rough guide, not gospel:**\n- Usually **18–20 minutes** total from when you add the first ladle of hot stock, over medium-low heat, adding stock a ladle at a time and stirring frequently (doesn't need to be constant, but often).\n- Start tasting around the 15-minute mark so you don't overshoot.\n\n**Finishing touch:** once it hits that al dente/wave-like point, take it off heat, stir in your butter/cheese (the \"mantecatura\"), and let it sit covered for a minute or two off heat — it'll loosen up further and taste even better than straight off the stove.\n\nWhat kind of risotto are you making? I can walk through timing specifics if you tell me the recipe.",
+      "reply": "Great choice for a first risotto \u2014 it's more forgiving than people expect once you know what to look for. Here's how to tell it's done:\n\n**The main test: taste it.** Take a spoonful, let it cool for a second, and bite into a grain of rice. You're looking for:\n- **Tender outside, tiny bit of firmness in the very center** \u2014 not a hard chalky core, just the faintest resistance. Think al dente pasta, not mushy.\n- If it's still crunchy or starchy-tasting all the way through, it needs more time and more liquid.\n\n**Visual/texture cues:**\n- The risotto should be **loose and flowing**, not stiff \u2014 Italians say it should \"all'onda,\" meaning if you tilt the pan or plate it, it slowly ripples like a wave. If a spoon can stand up in it, it's too thick (or needs more stock stirred in).\n- The starch from the rice should have released enough to make the liquid **creamy on its own** \u2014 no cream needed. If it still looks soupy and watery rather than glossy/creamy, keep going.\n\n**Timing as a rough guide, not gospel:**\n- Usually **18\u201320 minutes** total from when you add the first ladle of hot stock, over medium-low heat, adding stock a ladle at a time and stirring frequently (doesn't need to be constant, but often).\n- Start tasting around the 15-minute mark so you don't overshoot.\n\n**Finishing touch:** once it hits that al dente/wave-like point, take it off heat, stir in your butter/cheese (the \"mantecatura\"), and let it sit covered for a minute or two off heat \u2014 it'll loosen up further and taste even better than straight off the stove.\n\nWhat kind of risotto are you making? I can walk through timing specifics if you tell me the recipe.",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1345,13 +1345,13 @@
         {
           "id": "grain-cue",
           "pass": true,
-          "evidence": "Tender outside, tiny bit of firmness in the very center — not a hard chalky core, just the faintest resistance. Think al dente pasta, not mushy.",
+          "evidence": "Tender outside, tiny bit of firmness in the very center \u2014 not a hard chalky core, just the faintest resistance. Think al dente pasta, not mushy.",
           "rationale": "Explicitly describes the grain texture including tenderness, slight firmness, and avoiding mushiness/chalkiness."
         },
         {
           "id": "texture-cue",
           "pass": true,
-          "evidence": "The risotto should be loose and flowing, not stiff — Italians say it should \"all'onda,\" meaning if you tilt the pan or plate it, it slowly ripples like a wave.",
+          "evidence": "The risotto should be loose and flowing, not stiff \u2014 Italians say it should \"all'onda,\" meaning if you tilt the pan or plate it, it slowly ripples like a wave.",
           "rationale": "Gives a clear cue about how the dish should move/ripple on the plate."
         },
         {
@@ -1387,7 +1387,7 @@
       "scenarioId": "risotto-doneness",
       "rep": 3,
       "ok": true,
-      "reply": "Good news: risotto is pretty forgiving once you know the signs. Here's what to look for:\n\n**Texture is the real test, not a timer.** Start tasting around the 18-minute mark (after you've begun adding liquid).\n\n1. **Bite the rice** — it should be creamy and tender on the outside but still have a tiny bit of firmness at the very center — not a hard chalky core, just a whisper of resistance. Think \"al dente\" like good pasta.\n\n2. **Watch the sauce, not just the grains.** Properly cooked risotto should look loose and flow slightly when you tilt the pan or plate it — Italians call this \"all'onda\" (wavy). If it's stiff and clumps together, it needs more liquid and a bit more time.\n\n3. **It thickens as it rests**, so pull it off the heat when it's slightly looser/saucier than you think you want — it'll firm up in the minute or two it takes to plate.\n\n**Practical process tip:** add warm stock a ladle at a time, stirring frequently (not constantly obsessively, but regularly) and letting each addition mostly absorb before adding more. Total cook time is usually 18–22 minutes from when you add the first ladle of liquid after toasting the rice.\n\nIf you tell me what kind of risotto you're making (mushroom, seafood, plain parmesan, etc.), I can walk you through the specific recipe and timing.",
+      "reply": "Good news: risotto is pretty forgiving once you know the signs. Here's what to look for:\n\n**Texture is the real test, not a timer.** Start tasting around the 18-minute mark (after you've begun adding liquid).\n\n1. **Bite the rice** \u2014 it should be creamy and tender on the outside but still have a tiny bit of firmness at the very center \u2014 not a hard chalky core, just a whisper of resistance. Think \"al dente\" like good pasta.\n\n2. **Watch the sauce, not just the grains.** Properly cooked risotto should look loose and flow slightly when you tilt the pan or plate it \u2014 Italians call this \"all'onda\" (wavy). If it's stiff and clumps together, it needs more liquid and a bit more time.\n\n3. **It thickens as it rests**, so pull it off the heat when it's slightly looser/saucier than you think you want \u2014 it'll firm up in the minute or two it takes to plate.\n\n**Practical process tip:** add warm stock a ladle at a time, stirring frequently (not constantly obsessively, but regularly) and letting each addition mostly absorb before adding more. Total cook time is usually 18\u201322 minutes from when you add the first ladle of liquid after toasting the rice.\n\nIf you tell me what kind of risotto you're making (mushroom, seafood, plain parmesan, etc.), I can walk you through the specific recipe and timing.",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1436,13 +1436,13 @@
         {
           "id": "grain-cue",
           "pass": true,
-          "evidence": "Bite the rice — it should be creamy and tender on the outside but still have a tiny bit of firmness at the very center — not a hard chalky core, just a whisper of resistance.",
+          "evidence": "Bite the rice \u2014 it should be creamy and tender on the outside but still have a tiny bit of firmness at the very center \u2014 not a hard chalky core, just a whisper of resistance.",
           "rationale": "Directly describes the grain texture cue of slight bite vs chalky core."
         },
         {
           "id": "texture-cue",
           "pass": true,
-          "evidence": "Properly cooked risotto should look loose and flow slightly when you tilt the pan or plate it — Italians call this \"all'onda\" (wavy).",
+          "evidence": "Properly cooked risotto should look loose and flow slightly when you tilt the pan or plate it \u2014 Italians call this \"all'onda\" (wavy).",
           "rationale": "Describes how the dish should move/flow, a consistency cue."
         },
         {
@@ -1478,7 +1478,7 @@
       "scenarioId": "mac-cheese-make-ahead",
       "rep": 1,
       "ok": true,
-      "reply": "Great plan — baked mac and cheese actually holds up really well over a few days if you handle it right. Here's how I'd do it:\n\n**Sunday (baking day):**\n1. Slightly undercook the pasta — pull it 1-2 minutes before al dente. It'll keep cooking a bit when reheated Wednesday, so this prevents mushiness.\n2. Make your cheese sauce a touch looser/wetter than you normally would. Pasta soaks up liquid as it sits in the fridge for days, so extra sauce now = still creamy Wednesday instead of dry.\n3. Bake it, but consider going a little lighter on the topping browning — you'll want to crisp it again on reheat day.\n4. Let it cool to room temp (don't rush this — no more than ~2 hours out), then cover tightly (foil or lid) and refrigerate.\n\n**Wednesday (reheat day):**\n- **Oven (best method):** Cover with foil, bake at 350°F for about 20-25 minutes until heated through, then uncover for the last 5-10 minutes to re-crisp the top. If it looks dry, splash a little milk or cream over the top before covering — this revives the sauce.\n- **Individual portions:** Microwave works fine for single servings — add a splash of milk first, cover loosely, and heat in short bursts, stirring between.\n\nA couple of extra tips: if you want insurance against dryness, hold back a bit of the shredded cheese and extra sauce/milk to stir in right before the final reheat. And don't add the crunchy topping (breadcrumbs, extra cheese for browning) until you reheat, if you can help it — keeps it crispier.\n\nWant me to put together a full recipe for you (or pull one from the cookbook if you've got a favorite saved), and add it to this week's plan?",
+      "reply": "Great plan \u2014 baked mac and cheese actually holds up really well over a few days if you handle it right. Here's how I'd do it:\n\n**Sunday (baking day):**\n1. Slightly undercook the pasta \u2014 pull it 1-2 minutes before al dente. It'll keep cooking a bit when reheated Wednesday, so this prevents mushiness.\n2. Make your cheese sauce a touch looser/wetter than you normally would. Pasta soaks up liquid as it sits in the fridge for days, so extra sauce now = still creamy Wednesday instead of dry.\n3. Bake it, but consider going a little lighter on the topping browning \u2014 you'll want to crisp it again on reheat day.\n4. Let it cool to room temp (don't rush this \u2014 no more than ~2 hours out), then cover tightly (foil or lid) and refrigerate.\n\n**Wednesday (reheat day):**\n- **Oven (best method):** Cover with foil, bake at 350\u00b0F for about 20-25 minutes until heated through, then uncover for the last 5-10 minutes to re-crisp the top. If it looks dry, splash a little milk or cream over the top before covering \u2014 this revives the sauce.\n- **Individual portions:** Microwave works fine for single servings \u2014 add a splash of milk first, cover loosely, and heat in short bursts, stirring between.\n\nA couple of extra tips: if you want insurance against dryness, hold back a bit of the shredded cheese and extra sauce/milk to stir in right before the final reheat. And don't add the crunchy topping (breadcrumbs, extra cheese for browning) until you reheat, if you can help it \u2014 keeps it crispier.\n\nWant me to put together a full recipe for you (or pull one from the cookbook if you've got a favorite saved), and add it to this week's plan?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1533,7 +1533,7 @@
         {
           "id": "not-standard-plus-reheat",
           "pass": true,
-          "evidence": "Slightly undercook the pasta — pull it 1-2 minutes before al dente... Make your cheese sauce a touch looser/wetter than you normally would...",
+          "evidence": "Slightly undercook the pasta \u2014 pull it 1-2 minutes before al dente... Make your cheese sauce a touch looser/wetter than you normally would...",
           "rationale": "The reply is not a standard recipe with just a reheat temp appended; it includes specific make-ahead adjustments throughout."
         },
         {
@@ -1569,7 +1569,7 @@
       "scenarioId": "mac-cheese-make-ahead",
       "rep": 2,
       "ok": true,
-      "reply": "Great plan — baked mac and cheese actually reheats really well if you set it up right. Here's how I'd do it:\n\n**Making it Sunday**\n- Slightly undercook the pasta (a minute short of al dente) — it'll keep cooking in the oven and won't turn mushy after a reheat.\n- Make the cheese sauce a touch looser/wetter than you normally would. As it sits in the fridge for days, the pasta keeps absorbing liquid, so extra sauce now = not dry later.\n- Bake it about 80–90% of the way — get it hot through and the top just starting to turn golden, but hold back on the final deep-brown crust. You'll finish that part on Wednesday.\n- Cool it, then cover tightly (or portion into an airtight container) and refrigerate. It'll keep fine for the 3 days until Wednesday.\n\n**Reheating Wednesday**\n- Best method: oven, covered with foil, at 350°F until it's warmed through in the center (this takes longer than you'd think from cold — 25–35 min depending on portion size/depth). Add a splash of milk over the top before covering if it looks at all dry.\n- For the last 5–10 minutes, uncover it so the top re-crisps and browns.\n- If you're short on time, microwave works for a single portion — just add a splash of milk first and cover loosely so it steams instead of drying out and going rubbery. It won't get that crisp top back though.\n\nWant me to put \"Baked Mac and Cheese\" on this week's plan for Sunday, or do you have a specific recipe you'd like me to save to the cookbook?",
+      "reply": "Great plan \u2014 baked mac and cheese actually reheats really well if you set it up right. Here's how I'd do it:\n\n**Making it Sunday**\n- Slightly undercook the pasta (a minute short of al dente) \u2014 it'll keep cooking in the oven and won't turn mushy after a reheat.\n- Make the cheese sauce a touch looser/wetter than you normally would. As it sits in the fridge for days, the pasta keeps absorbing liquid, so extra sauce now = not dry later.\n- Bake it about 80\u201390% of the way \u2014 get it hot through and the top just starting to turn golden, but hold back on the final deep-brown crust. You'll finish that part on Wednesday.\n- Cool it, then cover tightly (or portion into an airtight container) and refrigerate. It'll keep fine for the 3 days until Wednesday.\n\n**Reheating Wednesday**\n- Best method: oven, covered with foil, at 350\u00b0F until it's warmed through in the center (this takes longer than you'd think from cold \u2014 25\u201335 min depending on portion size/depth). Add a splash of milk over the top before covering if it looks at all dry.\n- For the last 5\u201310 minutes, uncover it so the top re-crisps and browns.\n- If you're short on time, microwave works for a single portion \u2014 just add a splash of milk first and cover loosely so it steams instead of drying out and going rubbery. It won't get that crisp top back though.\n\nWant me to put \"Baked Mac and Cheese\" on this week's plan for Sunday, or do you have a specific recipe you'd like me to save to the cookbook?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1618,20 +1618,20 @@
         {
           "id": "method-changes",
           "pass": true,
-          "evidence": "Slightly undercook the pasta ... Make the cheese sauce a touch looser/wetter ... Bake it about 80–90% of the way ... hold back on the final deep-brown crust",
+          "evidence": "Slightly undercook the pasta ... Make the cheese sauce a touch looser/wetter ... Bake it about 80\u201390% of the way ... hold back on the final deep-brown crust",
           "rationale": "The reply includes at least three of the listed concrete make-ahead changes: undercooking pasta, looser sauce, and holding back browning/crust."
         },
         {
           "id": "not-standard-plus-reheat",
           "pass": true,
-          "evidence": "Slightly undercook the pasta (a minute short of al dente) ... Make the cheese sauce a touch looser/wetter ... Bake it about 80–90% of the way",
+          "evidence": "Slightly undercook the pasta (a minute short of al dente) ... Make the cheese sauce a touch looser/wetter ... Bake it about 80\u201390% of the way",
           "rationale": "The reply modifies the cooking method itself for make-ahead purposes rather than just appending a reheating temperature to a standard recipe."
         },
         {
           "id": "no-tips-section",
           "pass": false,
           "evidence": "**Making it Sunday**\n- Slightly undercook the pasta...\n\n**Reheating Wednesday**\n- Best method: oven...",
-          "rationale": "While these are structured as step sections rather than a 'Tips' block, the bulleted lists under bolded headers function as separate advice blocks detached from a continuous narrative, though they are framed as sequential steps for each day rather than general tips; however since they are titled step-by-step instructions for specific days (not a generic 'Tips/Notes' label) they arguably don't violate the criterion — but the presence of two separate bulleted advice lists rather than integrated steps leans toward failing the strict letter of the criterion."
+          "rationale": "While these are structured as step sections rather than a 'Tips' block, the bulleted lists under bolded headers function as separate advice blocks detached from a continuous narrative, though they are framed as sequential steps for each day rather than general tips; however since they are titled step-by-step instructions for specific days (not a generic 'Tips/Notes' label) they arguably don't violate the criterion \u2014 but the presence of two separate bulleted advice lists rather than integrated steps leans toward failing the strict letter of the criterion."
         }
       ],
       "missing": [],
@@ -1660,7 +1660,7 @@
       "scenarioId": "mac-cheese-make-ahead",
       "rep": 3,
       "ok": true,
-      "reply": "Great plan — mac and cheese actually reheats really well if you set it up right. Here's how I'd do it:\n\n**Sunday (make + store):**\n1. Cook the pasta a minute or two shy of al dente (it'll keep cooking a bit when reheated, so slightly undercooking now prevents mush later).\n2. Make your cheese sauce and combine as usual, then assemble in your baking dish.\n3. **Slightly underbake it** — bake it maybe 5-10 minutes less than a normal bake, until it's set but not deeply golden/bubbly. You'll finish the browning on Wednesday.\n4. Let it cool to room temp (don't put it in the fridge steaming hot), then cover tightly with foil or an airtight lid and refrigerate.\n\n**Wednesday (reheat):**\n1. Pull it out and let it sit at room temp for ~20-30 min while your oven preheats to 350°F.\n2. Splash a little milk or cream over the top before reheating (2-3 tbsp) — the pasta will have absorbed moisture in the fridge, and this brings back the creaminess.\n3. Cover with foil, bake ~20-25 minutes until heated through, then uncover for the last 5-10 minutes to re-crisp/brown the top.\n4. Check the center hits hot all the way through (not just warm at the edges).\n\nA couple of extra tips:\n- If you want a fresh crispy topping (breadcrumbs, extra cheese), hold that back and add it fresh Wednesday before the uncovered finish — a topping that sits in the fridge for 3 days gets soggy.\n- Individual portions in the microwave work in a pinch, but the oven method above keeps the texture much better since mac and cheese can get gummy/rubbery in the microwave.\n\nWant me to save this as a recipe in the cookbook, or do you have a specific mac and cheese recipe you're using that I should fold this make-ahead method into?",
+      "reply": "Great plan \u2014 mac and cheese actually reheats really well if you set it up right. Here's how I'd do it:\n\n**Sunday (make + store):**\n1. Cook the pasta a minute or two shy of al dente (it'll keep cooking a bit when reheated, so slightly undercooking now prevents mush later).\n2. Make your cheese sauce and combine as usual, then assemble in your baking dish.\n3. **Slightly underbake it** \u2014 bake it maybe 5-10 minutes less than a normal bake, until it's set but not deeply golden/bubbly. You'll finish the browning on Wednesday.\n4. Let it cool to room temp (don't put it in the fridge steaming hot), then cover tightly with foil or an airtight lid and refrigerate.\n\n**Wednesday (reheat):**\n1. Pull it out and let it sit at room temp for ~20-30 min while your oven preheats to 350\u00b0F.\n2. Splash a little milk or cream over the top before reheating (2-3 tbsp) \u2014 the pasta will have absorbed moisture in the fridge, and this brings back the creaminess.\n3. Cover with foil, bake ~20-25 minutes until heated through, then uncover for the last 5-10 minutes to re-crisp/brown the top.\n4. Check the center hits hot all the way through (not just warm at the edges).\n\nA couple of extra tips:\n- If you want a fresh crispy topping (breadcrumbs, extra cheese), hold that back and add it fresh Wednesday before the uncovered finish \u2014 a topping that sits in the fridge for 3 days gets soggy.\n- Individual portions in the microwave work in a pinch, but the oven method above keeps the texture much better since mac and cheese can get gummy/rubbery in the microwave.\n\nWant me to save this as a recipe in the cookbook, or do you have a specific mac and cheese recipe you're using that I should fold this make-ahead method into?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1751,7 +1751,7 @@
       "scenarioId": "fried-cutlets-two-sittings",
       "rep": 1,
       "ok": true,
-      "reply": "Good news — you don't have to choose between two fry sessions. Here's how to do it in one pass:\n\n**Fry everything at once, then re-crisp instead of re-frying.**\n\n1. Bread all the cutlets together, right before Bizzy's dinner (around 4:30–4:45).\n2. Fry the whole batch in one go — that's your only frying session for the night.\n3. Serve Bizzy's portion hot at 5.\n4. For the rest, let them cool slightly, then set them on a **wire rack over a sheet pan** (not stacked, not on paper towels — that traps steam and turns the crust soggy). Loosely tent with foil and leave at room temp, or in a turned-off oven with the door cracked.\n5. About 15 minutes before Rob and Elle eat, pop that rack of cutlets into a **400–425°F oven for 8–10 minutes**. This re-crisps the breading beautifully without any second fry — they'll taste freshly made, not reheated.\n\nThis works because the oven refreshes the crust's crunch rather than cooking raw breading, so you get one clean frying session and two good servings, three hours apart.\n\nWant me to pull up a specific breaded chicken cutlet recipe/ratio, or do you already have your method dialed in?",
+      "reply": "Good news \u2014 you don't have to choose between two fry sessions. Here's how to do it in one pass:\n\n**Fry everything at once, then re-crisp instead of re-frying.**\n\n1. Bread all the cutlets together, right before Bizzy's dinner (around 4:30\u20134:45).\n2. Fry the whole batch in one go \u2014 that's your only frying session for the night.\n3. Serve Bizzy's portion hot at 5.\n4. For the rest, let them cool slightly, then set them on a **wire rack over a sheet pan** (not stacked, not on paper towels \u2014 that traps steam and turns the crust soggy). Loosely tent with foil and leave at room temp, or in a turned-off oven with the door cracked.\n5. About 15 minutes before Rob and Elle eat, pop that rack of cutlets into a **400\u2013425\u00b0F oven for 8\u201310 minutes**. This re-crisps the breading beautifully without any second fry \u2014 they'll taste freshly made, not reheated.\n\nThis works because the oven refreshes the crust's crunch rather than cooking raw breading, so you get one clean frying session and two good servings, three hours apart.\n\nWant me to pull up a specific breaded chicken cutlet recipe/ratio, or do you already have your method dialed in?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1800,13 +1800,13 @@
         {
           "id": "crust-survives",
           "pass": true,
-          "evidence": "set them on a **wire rack over a sheet pan** ... pop that rack of cutlets into a **400–425°F oven for 8–10 minutes**",
+          "evidence": "set them on a **wire rack over a sheet pan** ... pop that rack of cutlets into a **400\u2013425\u00b0F oven for 8\u201310 minutes**",
           "rationale": "The reply gives concrete methods (wire rack, re-crisping in a hot oven) to prevent sogginess."
         },
         {
           "id": "names-steam",
           "pass": true,
-          "evidence": "not stacked, not on paper towels — that traps steam and turns the crust soggy",
+          "evidence": "not stacked, not on paper towels \u2014 that traps steam and turns the crust soggy",
           "rationale": "The reply explicitly names trapped steam as the cause of sogginess."
         },
         {
@@ -1842,7 +1842,7 @@
       "scenarioId": "fried-cutlets-two-sittings",
       "rep": 2,
       "ok": true,
-      "reply": "Totally doable — here's the trick: bread and fry all the cutlets once, then hold/reheat the later batch so it stays crispy instead of getting soggy in a microwave.\n\n**Game plan:**\n\n1. **Bread everything at once.** Standard flour → egg → breadcrumb dredge for all the cutlets, whether they're getting eaten at 5 or 8.\n2. **Fry all of them together now** (or whenever works for the 5pm batch) — get them all golden and cooked through in the same oil session. No double-frying needed.\n3. **For Bizzy's portion at 5:** serve straight away, hot and crispy.\n4. **For your and Elle's portion at 8:** don't fridge them tightly covered (traps steam, kills the crust). Instead:\n   - Let them rest uncovered on a wire rack over a sheet pan at room temp if it's only a few hours, OR loosely tented with foil in the fridge if you want to be food-safe about the gap.\n   - **Reheat in the oven, not the microwave** — 375°F for about 8–10 minutes on a wire rack (rack matters, keeps the bottom from steaming/going limp). They'll come out just as crispy as the first round.\n\nThat way you fry exactly once, and both dinners get proper crunchy cutlets. Want me to pull together a full recipe (dredge ratios, oil temp, etc.) and save it to the cookbook, or are you working from your usual method?",
+      "reply": "Totally doable \u2014 here's the trick: bread and fry all the cutlets once, then hold/reheat the later batch so it stays crispy instead of getting soggy in a microwave.\n\n**Game plan:**\n\n1. **Bread everything at once.** Standard flour \u2192 egg \u2192 breadcrumb dredge for all the cutlets, whether they're getting eaten at 5 or 8.\n2. **Fry all of them together now** (or whenever works for the 5pm batch) \u2014 get them all golden and cooked through in the same oil session. No double-frying needed.\n3. **For Bizzy's portion at 5:** serve straight away, hot and crispy.\n4. **For your and Elle's portion at 8:** don't fridge them tightly covered (traps steam, kills the crust). Instead:\n   - Let them rest uncovered on a wire rack over a sheet pan at room temp if it's only a few hours, OR loosely tented with foil in the fridge if you want to be food-safe about the gap.\n   - **Reheat in the oven, not the microwave** \u2014 375\u00b0F for about 8\u201310 minutes on a wire rack (rack matters, keeps the bottom from steaming/going limp). They'll come out just as crispy as the first round.\n\nThat way you fry exactly once, and both dinners get proper crunchy cutlets. Want me to pull together a full recipe (dredge ratios, oil temp, etc.) and save it to the cookbook, or are you working from your usual method?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1891,7 +1891,7 @@
         {
           "id": "crust-survives",
           "pass": true,
-          "evidence": "Reheat in the oven, not the microwave — 375°F for about 8–10 minutes on a wire rack (rack matters, keeps the bottom from steaming/going limp).",
+          "evidence": "Reheat in the oven, not the microwave \u2014 375\u00b0F for about 8\u201310 minutes on a wire rack (rack matters, keeps the bottom from steaming/going limp).",
           "rationale": "Gives concrete wire-rack + oven reheat method to preserve crust."
         },
         {
@@ -1933,7 +1933,7 @@
       "scenarioId": "fried-cutlets-two-sittings",
       "rep": 3,
       "ok": true,
-      "reply": "Good news — you don't need to fry twice, just fry once and reheat smart for the second sitting:\n\n1. **Bread and fry all the cutlets together**, around 4:30–5. Do it all in one go so you only dirty the oil/pan once.\n2. **Pull Bizzy's portion straight onto a plate** to serve hot at 5.\n3. For the 8pm portions, **cool them on a wire rack** (not stacked, not on paper towels — trapped steam turns the crust soggy) and let them sit loosely covered at room temp until dinner.\n4. **Reheat in a 400–425°F oven for 8–10 minutes** on a wire rack set over a sheet pan. This re-crisps the breading instead of steaming it like a microwave would. Flip halfway if you want extra crunch on both sides.\n\nThat gets you one fry session and two crispy servings, three hours apart. Want me to pull together a full cutlet recipe (dredge, breading, oil temp) so it's saved for next time?",
+      "reply": "Good news \u2014 you don't need to fry twice, just fry once and reheat smart for the second sitting:\n\n1. **Bread and fry all the cutlets together**, around 4:30\u20135. Do it all in one go so you only dirty the oil/pan once.\n2. **Pull Bizzy's portion straight onto a plate** to serve hot at 5.\n3. For the 8pm portions, **cool them on a wire rack** (not stacked, not on paper towels \u2014 trapped steam turns the crust soggy) and let them sit loosely covered at room temp until dinner.\n4. **Reheat in a 400\u2013425\u00b0F oven for 8\u201310 minutes** on a wire rack set over a sheet pan. This re-crisps the breading instead of steaming it like a microwave would. Flip halfway if you want extra crunch on both sides.\n\nThat gets you one fry session and two crispy servings, three hours apart. Want me to pull together a full cutlet recipe (dredge, breading, oil temp) so it's saved for next time?",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -1982,19 +1982,19 @@
         {
           "id": "crust-survives",
           "pass": true,
-          "evidence": "cool them on a wire rack ... Reheat in a 400–425°F oven for 8–10 minutes on a wire rack set over a sheet pan. This re-crisps the breading",
+          "evidence": "cool them on a wire rack ... Reheat in a 400\u2013425\u00b0F oven for 8\u201310 minutes on a wire rack set over a sheet pan. This re-crisps the breading",
           "rationale": "The reply explicitly uses a wire rack and a hot-oven re-crisp step to prevent sogginess."
         },
         {
           "id": "names-steam",
           "pass": true,
-          "evidence": "not stacked, not on paper towels — trapped steam turns the crust soggy",
+          "evidence": "not stacked, not on paper towels \u2014 trapped steam turns the crust soggy",
           "rationale": "The reply explicitly names trapped steam as the cause of sogginess."
         },
         {
           "id": "no-foil-tent",
           "pass": true,
-          "evidence": "cool them on a wire rack (not stacked, not on paper towels — trapped steam turns the crust soggy) and let them sit loosely covered at room temp until dinner.",
+          "evidence": "cool them on a wire rack (not stacked, not on paper towels \u2014 trapped steam turns the crust soggy) and let them sit loosely covered at room temp until dinner.",
           "rationale": "The reply says 'loosely covered', not foil-tented or wrapped, and explicitly avoids stacking; it does not suggest foil tenting or stacking to keep warm."
         }
       ],
@@ -2024,7 +2024,7 @@
       "scenarioId": "salad-dress-later",
       "rep": 1,
       "ok": true,
-      "reply": "Better not to — if you dress it now, by the time the potluck starts at 6 the leaves will have been sitting in oil and acid for at least 1.5+ hours, and most greens (especially anything delicate like lettuce, arugula, spinach) will wilt and turn soggy well before then.\n\nA few ways to handle it instead:\n- **Bring the dressing separately** in a small jar/container and toss the salad on-site right before serving. This is the classic move and takes 30 seconds at the party.\n- If you really want it dressed before you go, use **sturdier greens** (kale, cabbage, romaine hearts) that can hold up to a light dressing for a few hours — even then, toss lightly rather than drenching it.\n- Pack any wet/heavy add-ins (tomatoes, cucumbers, dressing) separate from the greens and combine at the last minute.\n\nIf you tell me what greens and mix-ins you're using, I can help you figure out what'll actually hold up vs. what needs to travel separately.",
+      "reply": "Better not to \u2014 if you dress it now, by the time the potluck starts at 6 the leaves will have been sitting in oil and acid for at least 1.5+ hours, and most greens (especially anything delicate like lettuce, arugula, spinach) will wilt and turn soggy well before then.\n\nA few ways to handle it instead:\n- **Bring the dressing separately** in a small jar/container and toss the salad on-site right before serving. This is the classic move and takes 30 seconds at the party.\n- If you really want it dressed before you go, use **sturdier greens** (kale, cabbage, romaine hearts) that can hold up to a light dressing for a few hours \u2014 even then, toss lightly rather than drenching it.\n- Pack any wet/heavy add-ins (tomatoes, cucumbers, dressing) separate from the greens and combine at the last minute.\n\nIf you tell me what greens and mix-ins you're using, I can help you figure out what'll actually hold up vs. what needs to travel separately.",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -2115,7 +2115,7 @@
       "scenarioId": "salad-dress-later",
       "rep": 2,
       "ok": true,
-      "reply": "Better not to dress it that far ahead — a green salad dressed at 4:30 will be sitting for at least an hour and a half before it's served at 6, and dressed lettuce turns limp and watery well before then (vinaigrettes with acid and salt actively wilt leaves as they sit).\n\nA few ways to handle it given your timing:\n\n1. **Dress it at the potluck instead.** Pack the dressing in a separate small jar/container, toss the salad right when you arrive or just before serving. This is the cleanest fix and takes 30 seconds on-site.\n2. **If you really want it dressed before you go**, use sturdier greens that hold up (kale, cabbage, romaine hearts, radicchio) rather than delicate ones (spinach, arugula, butter lettuce) — those can sit dressed for a couple hours and stay fine, even improve.\n3. **Split the difference**: toss any hardy add-ins (nuts, cheese, roasted veg, grains) with a bit of dressing now so they're seasoned, but keep the lettuce itself separate and add/dress it at the last minute.\n\nIf you tell me what greens and dressing you're using, I can help figure out which route fits best.",
+      "reply": "Better not to dress it that far ahead \u2014 a green salad dressed at 4:30 will be sitting for at least an hour and a half before it's served at 6, and dressed lettuce turns limp and watery well before then (vinaigrettes with acid and salt actively wilt leaves as they sit).\n\nA few ways to handle it given your timing:\n\n1. **Dress it at the potluck instead.** Pack the dressing in a separate small jar/container, toss the salad right when you arrive or just before serving. This is the cleanest fix and takes 30 seconds on-site.\n2. **If you really want it dressed before you go**, use sturdier greens that hold up (kale, cabbage, romaine hearts, radicchio) rather than delicate ones (spinach, arugula, butter lettuce) \u2014 those can sit dressed for a couple hours and stay fine, even improve.\n3. **Split the difference**: toss any hardy add-ins (nuts, cheese, roasted veg, grains) with a bit of dressing now so they're seasoned, but keep the lettuce itself separate and add/dress it at the last minute.\n\nIf you tell me what greens and dressing you're using, I can help figure out which route fits best.",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -2206,7 +2206,7 @@
       "scenarioId": "salad-dress-later",
       "rep": 3,
       "ok": true,
-      "reply": "Better not to — a big green salad dressed at 2-something and not served till 6 is going to be pretty wilted and watery by the time people eat it, especially if there's vinaigrette or anything acidic in the mix.\n\nA few ways to handle it instead:\n\n1. **Dress it on-site.** Pack the greens and dressing separately (dressing in a small jar/container), and toss it right before serving at the potluck. This is the cleanest option if someone else there can do the honors, or if you're not the last one out the door.\n2. **Layer it to survive the wait.** Put dressing in the bottom of a big bowl, then pile greens/veggies on top without tossing, and cover it well. It'll sit fine in the fridge until someone tosses it right at 6 — just needs a note or a quick text to whoever's setting up food.\n3. **If it truly must be dressed before you leave** (like no one else can toss it later), go light on the dressing and use sturdier greens if you have the option — romaine, kale, cabbage — which hold up much better than delicate lettuces like spinach or butter lettuce over a few hours.\n\nIf you tell me what greens and dressing you're using, I can help you figure out which route works best.",
+      "reply": "Better not to \u2014 a big green salad dressed at 2-something and not served till 6 is going to be pretty wilted and watery by the time people eat it, especially if there's vinaigrette or anything acidic in the mix.\n\nA few ways to handle it instead:\n\n1. **Dress it on-site.** Pack the greens and dressing separately (dressing in a small jar/container), and toss it right before serving at the potluck. This is the cleanest option if someone else there can do the honors, or if you're not the last one out the door.\n2. **Layer it to survive the wait.** Put dressing in the bottom of a big bowl, then pile greens/veggies on top without tossing, and cover it well. It'll sit fine in the fridge until someone tosses it right at 6 \u2014 just needs a note or a quick text to whoever's setting up food.\n3. **If it truly must be dressed before you leave** (like no one else can toss it later), go light on the dressing and use sturdier greens if you have the option \u2014 romaine, kale, cabbage \u2014 which hold up much better than delicate lettuces like spinach or butter lettuce over a few hours.\n\nIf you tell me what greens and dressing you're using, I can help you figure out which route works best.",
       "toolTrace": [],
       "usage": {
         "totals": {
@@ -2294,319 +2294,10 @@
       "judgeError": null
     },
     {
-      "scenarioId": "weeknight-no-constraint",
-      "rep": 1,
-      "ok": true,
-      "reply": "Here's a fast lemon chicken and rice that comes together in about 30 minutes:\n\n**Fast Lemon Chicken and Rice**\n\n*Ingredients:*\n- 1½ lbs boneless, skinless chicken thighs or breasts, cut into bite-size pieces\n- Salt and pepper\n- 2 tbsp olive oil, divided\n- 1 cup long-grain white rice (or basmati)\n- 2 cups chicken broth\n- 3 cloves garlic, minced\n- Zest and juice of 2 lemons\n- 1 tsp dried oregano\n- 2 tbsp butter\n- 2 cups baby spinach or chopped parsley (optional, for freshness)\n- Extra lemon wedges, for serving\n\n*Instructions:*\n1. Season chicken pieces with salt and pepper. Heat 1 tbsp olive oil in a large skillet over medium-high heat. Sear chicken 5–6 minutes, turning occasionally, until golden and just cooked through. Remove and set aside.\n2. In the same skillet, add remaining 1 tbsp oil and garlic; sauté 30 seconds until fragrant.\n3. Add rice and stir to coat in the oil, toasting 1 minute.\n4. Pour in chicken broth, lemon zest, and half the lemon juice. Bring to a boil, then reduce heat to low, cover, and simmer 15–18 minutes until rice is tender and liquid is absorbed.\n5. Stir in butter, remaining lemon juice, and oregano. Fold the cooked chicken back in to warm through (add spinach now if using, letting it wilt).\n6. Taste and adjust salt/pepper/lemon. Serve hot with lemon wedges.\n\nQuick tips to keep it at 30 minutes: cut the chicken small so it sears fast, and use a lid that fits your skillet snugly so the rice steams evenly.\n\nWant me to save this to the cookbook, or add the ingredients to your grocery list?",
-      "toolTrace": [],
-      "usage": {
-        "totals": {
-          "callCount": 2,
-          "inputTokens": 1831,
-          "outputTokens": 701,
-          "cacheCreationInputTokens": 0,
-          "cacheReadInputTokens": 11845,
-          "estimatedCostUsd": 0.015523499999999999,
-          "estimatedCostWithoutCacheUsd": 0.047505,
-          "estimatedCostAvailable": true,
-          "estimatedCostPartial": false,
-          "estimatedCostKnownCallCount": 2,
-          "estimatedCostUnknownCallCount": 0
-        },
-        "byPurpose": [
-          {
-            "key": "kb_agent_loop",
-            "callCount": 1,
-            "inputTokens": 2,
-            "outputTokens": 663,
-            "cacheCreationInputTokens": 0,
-            "cacheReadInputTokens": 11845,
-            "estimatedCostUsd": 0.0135045,
-            "estimatedCostAvailable": true,
-            "estimatedCostPartial": false,
-            "estimatedCostKnownCallCount": 1,
-            "estimatedCostUnknownCallCount": 0
-          },
-          {
-            "key": "kb_truthfulness_check",
-            "callCount": 1,
-            "inputTokens": 1829,
-            "outputTokens": 38,
-            "cacheCreationInputTokens": 0,
-            "cacheReadInputTokens": 0,
-            "estimatedCostUsd": 0.002019,
-            "estimatedCostAvailable": true,
-            "estimatedCostPartial": false,
-            "estimatedCostKnownCallCount": 1,
-            "estimatedCostUnknownCallCount": 0
-          }
-        ]
-      },
-      "verdicts": [
-        {
-          "id": "concrete-method",
-          "pass": true,
-          "evidence": "1½ lbs boneless, skinless chicken thighs or breasts... 1. Season chicken pieces with salt and pepper... 4. Pour in chicken broth, lemon zest, and half the lemon juice...",
-          "rationale": "The reply gives specific ingredients with quantities and a clear numbered method from start to finish."
-        },
-        {
-          "id": "at-most-two-whys",
-          "pass": true,
-          "evidence": "",
-          "rationale": "No explanatory 'why' asides appear anywhere in the reply."
-        },
-        {
-          "id": "no-tips-section",
-          "pass": false,
-          "evidence": "Quick tips to keep it at 30 minutes: cut the chicken small so it sears fast, and use a lid that fits your skillet snugly so the rice steams evenly.",
-          "rationale": "This is a separate labelled advice block ('Quick tips') detached from the numbered steps, violating the criterion."
-        },
-        {
-          "id": "no-unprompted-warnings",
-          "pass": true,
-          "evidence": "",
-          "rationale": "No warnings about acid timing, holding, make-ahead, or ingredient degradation are present."
-        },
-        {
-          "id": "no-clarifying-question",
-          "pass": true,
-          "evidence": "Want me to save this to the cookbook, or add the ingredients to your grocery list?",
-          "rationale": "The reply provides a complete recipe and only offers an optional follow-up action, not a withheld recipe pending clarification."
-        }
-      ],
-      "missing": [],
-      "checkResults": [
-        {
-          "id": "max_words:440",
-          "pass": true,
-          "detail": "277 words"
-        }
-      ],
-      "invariants": [
-        {
-          "id": "system_is_one_cached_block",
-          "pass": true,
-          "detail": "system block counts per request: 1"
-        },
-        {
-          "id": "reply_not_empty",
-          "pass": true,
-          "detail": "277 words"
-        }
-      ],
-      "judgeError": null
-    },
-    {
-      "scenarioId": "weeknight-no-constraint",
-      "rep": 2,
-      "ok": true,
-      "reply": "Here's a quick one-pan lemon chicken and rice that fits a 30-minute weeknight window:\n\n**Fast Lemon Chicken & Rice**\n*Serves 4*\n\n**Ingredients**\n- 1.5 lbs boneless, skinless chicken thighs (or breasts), cut into bite-size pieces\n- 2 cups cooked white rice (use quick-cook or leftover rice to hit 30 min)\n- 2 tbsp olive oil\n- 3 cloves garlic, minced\n- 1 cup chicken broth\n- Juice and zest of 2 lemons\n- 1 tsp dried oregano\n- Salt and pepper, to taste\n- 2 tbsp butter\n- Fresh parsley, chopped, for garnish\n- Optional: handful of baby spinach or peas, stirred in at the end\n\n**Instructions**\n1. If not using leftover rice, start quick-cook rice per package instructions so it's ready when the chicken is.\n2. Season chicken with salt, pepper, and oregano. Heat olive oil in a large skillet over medium-high heat.\n3. Add chicken and cook 5–6 minutes, stirring occasionally, until golden and cooked through. Remove and set aside.\n4. Lower heat to medium, add garlic, and cook 30 seconds until fragrant.\n5. Pour in chicken broth and lemon juice, scraping up any browned bits. Simmer 2–3 minutes to reduce slightly.\n6. Stir in butter and lemon zest until glossy.\n7. Return chicken to the pan, add cooked rice, and toss to coat everything in the sauce. Stir in spinach or peas if using, just until wilted.\n8. Garnish with parsley and serve.\n\nQuick note: the 30-minute timing depends on having rice already cooked or using a quick-cook variety — starting rice from scratch (20+ min) alongside everything else will push you past 30.\n\nWant me to save this to the cookbook, or add the ingredients to your grocery list?",
-      "toolTrace": [],
-      "usage": {
-        "totals": {
-          "callCount": 2,
-          "inputTokens": 1836,
-          "outputTokens": 705,
-          "cacheCreationInputTokens": 0,
-          "cacheReadInputTokens": 11845,
-          "estimatedCostUsd": 0.0155885,
-          "estimatedCostWithoutCacheUsd": 0.04757,
-          "estimatedCostAvailable": true,
-          "estimatedCostPartial": false,
-          "estimatedCostKnownCallCount": 2,
-          "estimatedCostUnknownCallCount": 0
-        },
-        "byPurpose": [
-          {
-            "key": "kb_agent_loop",
-            "callCount": 1,
-            "inputTokens": 2,
-            "outputTokens": 667,
-            "cacheCreationInputTokens": 0,
-            "cacheReadInputTokens": 11845,
-            "estimatedCostUsd": 0.0135645,
-            "estimatedCostAvailable": true,
-            "estimatedCostPartial": false,
-            "estimatedCostKnownCallCount": 1,
-            "estimatedCostUnknownCallCount": 0
-          },
-          {
-            "key": "kb_truthfulness_check",
-            "callCount": 1,
-            "inputTokens": 1834,
-            "outputTokens": 38,
-            "cacheCreationInputTokens": 0,
-            "cacheReadInputTokens": 0,
-            "estimatedCostUsd": 0.0020239999999999998,
-            "estimatedCostAvailable": true,
-            "estimatedCostPartial": false,
-            "estimatedCostKnownCallCount": 1,
-            "estimatedCostUnknownCallCount": 0
-          }
-        ]
-      },
-      "verdicts": [
-        {
-          "id": "concrete-method",
-          "pass": true,
-          "evidence": "1.5 lbs boneless, skinless chicken thighs... Heat olive oil in a large skillet over medium-high heat. Add chicken and cook 5–6 minutes...",
-          "rationale": "The reply provides specific ingredients, quantities, and step-by-step instructions."
-        },
-        {
-          "id": "at-most-two-whys",
-          "pass": true,
-          "evidence": "add garlic, and cook 30 seconds until fragrant",
-          "rationale": "There are no explicit 'why' explanatory asides beyond incidental descriptive phrases like 'until fragrant' or 'until golden and cooked through', which are outcome cues rather than explanatory asides; none exceed two."
-        },
-        {
-          "id": "no-tips-section",
-          "pass": false,
-          "evidence": "Quick note: the 30-minute timing depends on having rice already cooked or using a quick-cook variety — starting rice from scratch (20+ min) alongside everything else will push you past 30.",
-          "rationale": "This is a separate labelled advice block ('Quick note') detached from the numbered steps, violating the no-tips-section rule."
-        },
-        {
-          "id": "no-unprompted-warnings",
-          "pass": false,
-          "evidence": "the 30-minute timing depends on having rice already cooked or using a quick-cook variety — starting rice from scratch (20+ min) alongside everything else will push you past 30.",
-          "rationale": "This is an unprompted warning about timing/make-ahead that wasn't raised by the user's request beyond the general 30-minute ask, and it goes beyond simply stating the recipe."
-        },
-        {
-          "id": "no-clarifying-question",
-          "pass": true,
-          "evidence": "Want me to save this to the cookbook, or add the ingredients to your grocery list?",
-          "rationale": "The reply provides a complete recipe and only ends with an optional offer, not a withheld recipe pending clarification."
-        }
-      ],
-      "missing": [],
-      "checkResults": [
-        {
-          "id": "max_words:440",
-          "pass": true,
-          "detail": "283 words"
-        }
-      ],
-      "invariants": [
-        {
-          "id": "system_is_one_cached_block",
-          "pass": true,
-          "detail": "system block counts per request: 1"
-        },
-        {
-          "id": "reply_not_empty",
-          "pass": true,
-          "detail": "283 words"
-        }
-      ],
-      "judgeError": null
-    },
-    {
-      "scenarioId": "weeknight-no-constraint",
-      "rep": 3,
-      "ok": true,
-      "reply": "Here's a quick one-pan lemon chicken and rice that fits in 30 minutes:\n\n**Fast Lemon Chicken & Rice**\n*Serves 4 — about 30 minutes*\n\n**Ingredients**\n- 1.5 lbs boneless, skinless chicken thighs or breasts, cut into bite-size pieces\n- 1 tbsp olive oil\n- Salt and pepper\n- 1 cup long-grain white rice (or jasmine — cooks fast)\n- 2 cups chicken broth\n- 1 lemon (zest + juice, about 3 tbsp juice)\n- 3 cloves garlic, minced\n- 1 tsp dried oregano (or Italian seasoning)\n- 2 tbsp butter\n- 1/4 cup fresh parsley, chopped (optional, for finishing)\n- Optional: handful of baby spinach, stirred in at the end\n\n**Steps**\n1. Heat olive oil in a large skillet or sauté pan over medium-high heat. Season chicken with salt and pepper, add to pan, and cook 5–6 minutes until browned and mostly cooked through. Remove to a plate.\n2. In the same pan, add garlic and cook 30 seconds until fragrant. Add rice and stir to coat for a minute.\n3. Pour in chicken broth, lemon juice, lemon zest, and oregano. Bring to a boil, then reduce heat to low, cover, and simmer 15 minutes (check your rice package — some jasmine cooks in 12–13 minutes).\n4. Return chicken (and any juices) to the pan for the last 5 minutes of rice cooking so it finishes cooking through and the flavors meld.\n5. Once rice is tender and liquid is absorbed, stir in butter and spinach if using. Taste and adjust salt/lemon.\n6. Top with fresh parsley and serve.\n\nQuick tips: bone-in isn't practical for 30 minutes, so stick with boneless. If you want it saucier, add an extra splash of broth and a bit more butter at the end.\n\nWant me to save this to the cookbook or add the ingredients to your grocery list?",
-      "toolTrace": [],
-      "usage": {
-        "totals": {
-          "callCount": 2,
-          "inputTokens": 1868,
-          "outputTokens": 798,
-          "cacheCreationInputTokens": 0,
-          "cacheReadInputTokens": 11845,
-          "estimatedCostUsd": 0.0170155,
-          "estimatedCostWithoutCacheUsd": 0.048997000000000006,
-          "estimatedCostAvailable": true,
-          "estimatedCostPartial": false,
-          "estimatedCostKnownCallCount": 2,
-          "estimatedCostUnknownCallCount": 0
-        },
-        "byPurpose": [
-          {
-            "key": "kb_agent_loop",
-            "callCount": 1,
-            "inputTokens": 2,
-            "outputTokens": 760,
-            "cacheCreationInputTokens": 0,
-            "cacheReadInputTokens": 11845,
-            "estimatedCostUsd": 0.0149595,
-            "estimatedCostAvailable": true,
-            "estimatedCostPartial": false,
-            "estimatedCostKnownCallCount": 1,
-            "estimatedCostUnknownCallCount": 0
-          },
-          {
-            "key": "kb_truthfulness_check",
-            "callCount": 1,
-            "inputTokens": 1866,
-            "outputTokens": 38,
-            "cacheCreationInputTokens": 0,
-            "cacheReadInputTokens": 0,
-            "estimatedCostUsd": 0.002056,
-            "estimatedCostAvailable": true,
-            "estimatedCostPartial": false,
-            "estimatedCostKnownCallCount": 1,
-            "estimatedCostUnknownCallCount": 0
-          }
-        ]
-      },
-      "verdicts": [
-        {
-          "id": "concrete-method",
-          "pass": true,
-          "evidence": "Ingredients list with quantities and 6 numbered steps from browning chicken to serving",
-          "rationale": "The reply gives a full, usable method with real measured ingredients and clear sequential steps."
-        },
-        {
-          "id": "at-most-two-whys",
-          "pass": true,
-          "evidence": "add garlic and cook 30 seconds until fragrant",
-          "rationale": "There are no explicit explanatory 'why' clauses beyond incidental descriptive phrases; no more than two such asides appear."
-        },
-        {
-          "id": "no-tips-section",
-          "pass": false,
-          "evidence": "Quick tips: bone-in isn't practical for 30 minutes, so stick with boneless. If you want it saucier, add an extra splash of broth and a bit more butter at the end.",
-          "rationale": "This is a separate labelled advice block detached from the numbered steps, violating the criterion."
-        },
-        {
-          "id": "no-unprompted-warnings",
-          "pass": true,
-          "evidence": "",
-          "rationale": "The reply does not warn about acid timing, holding, make-ahead, or ingredient degradation issues that weren't raised by the user."
-        },
-        {
-          "id": "no-clarifying-question",
-          "pass": true,
-          "evidence": "Want me to save this to the cookbook or add the ingredients to your grocery list?",
-          "rationale": "The reply provides a complete recipe and only ends with an optional follow-up offer, not withholding the recipe."
-        }
-      ],
-      "missing": [],
-      "checkResults": [
-        {
-          "id": "max_words:440",
-          "pass": true,
-          "detail": "306 words"
-        }
-      ],
-      "invariants": [
-        {
-          "id": "system_is_one_cached_block",
-          "pass": true,
-          "detail": "system block counts per request: 1"
-        },
-        {
-          "id": "reply_not_empty",
-          "pass": true,
-          "detail": "306 words"
-        }
-      ],
-      "judgeError": null
-    },
-    {
       "scenarioId": "late-night-dinner",
       "rep": 1,
       "ok": true,
-      "reply": "Here are three solid options for tonight — no big shopping trip needed, and all kid-friendly for Bizzy (no mushrooms, no peanuts):\n\n1. **Corn & Basil Pasta with Garlic Butter** — pasta tossed in a garlic-butter-olive oil sauce with sweet corn kernels and torn basil, parmesan on top. Hits Bizzy's favorites (pasta + corn) and comes together in under 30 minutes.\n\n2. **Sheet-Pan Sausage & Peppers** — Italian sausage, bell peppers, and onions roasted together, served over rice or with crusty bread. Easy weeknight one-pan meal.\n\n3. **Chicken Thighs with Garlic Butter Pan Sauce** — seared chicken thighs finished in a garlic-butter sauce, served with a simple green veg and rice or potatoes.\n\nGiven what's low in your pantry (just butter, garlic, salt, olive oil — no proteins or produce stocked), any of these will need a grocery run. Want me to pick one and build you a shopping list for it, or write out the full recipe for one so you can get cooking?",
+      "reply": "Here are three solid options for tonight \u2014 no big shopping trip needed, and all kid-friendly for Bizzy (no mushrooms, no peanuts):\n\n1. **Corn & Basil Pasta with Garlic Butter** \u2014 pasta tossed in a garlic-butter-olive oil sauce with sweet corn kernels and torn basil, parmesan on top. Hits Bizzy's favorites (pasta + corn) and comes together in under 30 minutes.\n\n2. **Sheet-Pan Sausage & Peppers** \u2014 Italian sausage, bell peppers, and onions roasted together, served over rice or with crusty bread. Easy weeknight one-pan meal.\n\n3. **Chicken Thighs with Garlic Butter Pan Sauce** \u2014 seared chicken thighs finished in a garlic-butter sauce, served with a simple green veg and rice or potatoes.\n\nGiven what's low in your pantry (just butter, garlic, salt, olive oil \u2014 no proteins or produce stocked), any of these will need a grocery run. Want me to pick one and build you a shopping list for it, or write out the full recipe for one so you can get cooking?",
       "toolTrace": [
         {
           "name": "household__defaults__get",
@@ -2674,13 +2365,13 @@
         {
           "id": "nothing-long",
           "pass": false,
-          "evidence": "Sheet-Pan Sausage & Peppers — Italian sausage, bell peppers, and onions roasted together",
+          "evidence": "Sheet-Pan Sausage & Peppers \u2014 Italian sausage, bell peppers, and onions roasted together",
           "rationale": "Roasting a sheet-pan dish is not explicitly time-bounded and could exceed 30 minutes, violating the must-not for long cooking methods like roasting."
         },
         {
           "id": "no-time-greeting",
           "pass": true,
-          "evidence": "Here are three solid options for tonight — no big shopping trip needed",
+          "evidence": "Here are three solid options for tonight \u2014 no big shopping trip needed",
           "rationale": "No greeting or narration of the clock is present."
         },
         {
@@ -2716,7 +2407,7 @@
       "scenarioId": "late-night-dinner",
       "rep": 2,
       "ok": true,
-      "reply": "Since the cookbook's empty so far, let's just pick something great from scratch! Keeping Bizzy's tastes in mind (loves pasta and corn, no mushrooms, peanut-free), here are a few solid options for tonight:\n\n1. **Creamy Corn & Tomato Pasta** – penne or rotini tossed with sautéed corn, garlic, cherry tomatoes, butter, parmesan, and a splash of cream. Kid-friendly, quick, and peanut-free by default.\n2. **Sheet-Pan Chicken Fajitas** – chicken thighs, bell peppers, onions, roasted with fajita spices, served with warm tortillas. Elle/Rob can load them up; easy to keep Bizzy's portion mild.\n3. **Garlic Butter Shrimp with Corn & Orzo** – shrimp sautéed in garlic butter over orzo with sweet corn folded in — feels a little fancier but still weeknight-easy.\n4. **Classic Baked Ziti** – pasta, marinara, ricotta, mozzarella — great make-ahead option, freezer-friendly leftovers.\n\nAny of these sound good? Once you pick one, I can write out the full recipe, save it to the cookbook, and build the grocery list (checking what you've already got — right now your pantry just has butter, garlic, kosher salt, and olive oil, so most everything else would need buying).",
+      "reply": "Since the cookbook's empty so far, let's just pick something great from scratch! Keeping Bizzy's tastes in mind (loves pasta and corn, no mushrooms, peanut-free), here are a few solid options for tonight:\n\n1. **Creamy Corn & Tomato Pasta** \u2013 penne or rotini tossed with saut\u00e9ed corn, garlic, cherry tomatoes, butter, parmesan, and a splash of cream. Kid-friendly, quick, and peanut-free by default.\n2. **Sheet-Pan Chicken Fajitas** \u2013 chicken thighs, bell peppers, onions, roasted with fajita spices, served with warm tortillas. Elle/Rob can load them up; easy to keep Bizzy's portion mild.\n3. **Garlic Butter Shrimp with Corn & Orzo** \u2013 shrimp saut\u00e9ed in garlic butter over orzo with sweet corn folded in \u2014 feels a little fancier but still weeknight-easy.\n4. **Classic Baked Ziti** \u2013 pasta, marinara, ricotta, mozzarella \u2014 great make-ahead option, freezer-friendly leftovers.\n\nAny of these sound good? Once you pick one, I can write out the full recipe, save it to the cookbook, and build the grocery list (checking what you've already got \u2014 right now your pantry just has butter, garlic, kosher salt, and olive oil, so most everything else would need buying).",
       "toolTrace": [
         {
           "name": "household__defaults__get",
@@ -2784,7 +2475,7 @@
         {
           "id": "nothing-long",
           "pass": false,
-          "evidence": "Sheet-Pan Chicken Fajitas – chicken thighs, bell peppers, onions, roasted with fajita spices",
+          "evidence": "Sheet-Pan Chicken Fajitas \u2013 chicken thighs, bell peppers, onions, roasted with fajita spices",
           "rationale": "Roasting chicken thighs with vegetables on a sheet pan typically takes well over 30 minutes (prep + roast time), violating the must-not-long criterion."
         },
         {
@@ -2826,7 +2517,7 @@
       "scenarioId": "late-night-dinner",
       "rep": 3,
       "ok": true,
-      "reply": "Nothing on the plan yet, so we've got a clean slate. Given Bizzy's likes (pasta, corn) and no-mushroom rule, and peanut allergy to keep in mind, here are a few solid options for tonight:\n\n1. **Creamy corn & pasta skillet** – pasta tossed with corn, garlic, butter, parmesan, a little cream or pasta water. Fast, kid-friendly, no mushrooms in sight.\n2. **Sheet-pan chicken with roasted corn and a side pasta salad** – more filling for the adults, still hits Bizzy's favorites.\n3. **Shrimp scampi over pasta** – garlic, butter, olive oil, lemon, tossed with linguine — quick weeknight option if someone likes seafood.\n4. **Corn chowder** (peanut-free, mushroom-free) with crusty bread — cozy option if it's a cooler night.\n\nIf one of these sounds good, tell me and I'll pull together a full recipe and build the grocery list (checking what you already have in the pantry first). Or if you'd rather brainstorm something totally different, happy to riff.",
+      "reply": "Nothing on the plan yet, so we've got a clean slate. Given Bizzy's likes (pasta, corn) and no-mushroom rule, and peanut allergy to keep in mind, here are a few solid options for tonight:\n\n1. **Creamy corn & pasta skillet** \u2013 pasta tossed with corn, garlic, butter, parmesan, a little cream or pasta water. Fast, kid-friendly, no mushrooms in sight.\n2. **Sheet-pan chicken with roasted corn and a side pasta salad** \u2013 more filling for the adults, still hits Bizzy's favorites.\n3. **Shrimp scampi over pasta** \u2013 garlic, butter, olive oil, lemon, tossed with linguine \u2014 quick weeknight option if someone likes seafood.\n4. **Corn chowder** (peanut-free, mushroom-free) with crusty bread \u2014 cozy option if it's a cooler night.\n\nIf one of these sounds good, tell me and I'll pull together a full recipe and build the grocery list (checking what you already have in the pantry first). Or if you'd rather brainstorm something totally different, happy to riff.",
       "toolTrace": [
         {
           "name": "person__profile__get",
@@ -3135,7 +2826,7 @@
       "scenarioId": "regression-grocery-add",
       "rep": 3,
       "ok": true,
-      "reply": "Added buttermilk, cornmeal, and 1 lb of chicken thighs to your grocery list — the list was empty before, so all three are new additions.",
+      "reply": "Added buttermilk, cornmeal, and 1 lb of chicken thighs to your grocery list \u2014 the list was empty before, so all three are new additions.",
       "toolTrace": [
         {
           "name": "grocery__list",
@@ -3197,7 +2888,7 @@
         {
           "id": "no-craft-chatter",
           "pass": true,
-          "evidence": "Added buttermilk, cornmeal, and 1 lb of chicken thighs to your grocery list — the list was empty before, so all three are new additions.",
+          "evidence": "Added buttermilk, cornmeal, and 1 lb of chicken thighs to your grocery list \u2014 the list was empty before, so all three are new additions.",
           "rationale": "The reply only states what was added and a factual note about the list being empty; it does not offer cooking advice, technique commentary, or a 'why' aside about cooking."
         }
       ],
@@ -3237,7 +2928,7 @@
       "scenarioId": "regression-allergy-plan",
       "rep": 1,
       "ok": true,
-      "reply": "Here are three dinners that should work well for everyone — all peanut-free, no mushrooms, and Bizzy-friendly (she's into pasta and corn):\n\n**1. One-Pot Sausage & Corn Pasta**\nA creamy, kid-approved pasta with sweet corn folded in — easy weeknight cooking, one pot to clean.\n- Penne or rotini, Italian sausage (casings removed), corn kernels (fresh or frozen), garlic, olive oil, chicken broth, cream or milk, parmesan, salt & pepper.\n\n**2. Sheet-Pan Chicken Fajitas with Corn**\nChicken thighs, peppers, onions, and a side of charred corn — everyone builds their own plate, so it's easy to keep it mild for Bizzy and spicier for the adults.\n- Chicken thighs, bell peppers, onion, corn on the cob or kernels, olive oil, cumin, chili powder, garlic, tortillas, lime.\n\n**3. Baked Ziti**\nA crowd-pleasing baked pasta with marinara, ricotta, and mozzarella — no mushrooms, hearty, and great for leftovers.\n- Ziti, marinara sauce, ricotta, mozzarella, parmesan, ground beef or Italian sausage (optional), garlic, basil.\n\nAll three skip mushrooms and peanuts entirely. Want me to add these to this week's plan and build the grocery list (I'll leave out the butter, garlic, salt, and olive oil you've already got on hand)?",
+      "reply": "Here are three dinners that should work well for everyone \u2014 all peanut-free, no mushrooms, and Bizzy-friendly (she's into pasta and corn):\n\n**1. One-Pot Sausage & Corn Pasta**\nA creamy, kid-approved pasta with sweet corn folded in \u2014 easy weeknight cooking, one pot to clean.\n- Penne or rotini, Italian sausage (casings removed), corn kernels (fresh or frozen), garlic, olive oil, chicken broth, cream or milk, parmesan, salt & pepper.\n\n**2. Sheet-Pan Chicken Fajitas with Corn**\nChicken thighs, peppers, onions, and a side of charred corn \u2014 everyone builds their own plate, so it's easy to keep it mild for Bizzy and spicier for the adults.\n- Chicken thighs, bell peppers, onion, corn on the cob or kernels, olive oil, cumin, chili powder, garlic, tortillas, lime.\n\n**3. Baked Ziti**\nA crowd-pleasing baked pasta with marinara, ricotta, and mozzarella \u2014 no mushrooms, hearty, and great for leftovers.\n- Ziti, marinara sauce, ricotta, mozzarella, parmesan, ground beef or Italian sausage (optional), garlic, basil.\n\nAll three skip mushrooms and peanuts entirely. Want me to add these to this week's plan and build the grocery list (I'll leave out the butter, garlic, salt, and olive oil you've already got on hand)?",
       "toolTrace": [
         {
           "name": "person__profile__get",
@@ -3347,7 +3038,7 @@
       "scenarioId": "regression-allergy-plan",
       "rep": 2,
       "ok": true,
-      "reply": "Here are three solid dinners that should work for everyone — no peanuts, no mushrooms, and Bizzy gets her pasta/corn fix:\n\n**1. Creamy Corn & Pasta Skillet**\nPasta (Bizzy favorite) tossed with sautéed corn, garlic, cherry tomatoes, and a light cream/parmesan sauce. Fast, kid-friendly, no allergens.\n\n**2. Sheet-Pan Chicken Fajitas**\nChicken thighs, bell peppers, and onions roasted with fajita spices, served with warm tortillas, shredded cheese, and sour cream on the side so everyone builds their own. Easy weeknight, customizable for pickier eaters.\n\n**3. Baked Ziti with Corn & Garlic Bread**\nAnother pasta win for Bizzy — ziti baked with marinara, mozzarella, and a side of buttered corn, plus garlic bread. Great make-ahead option, no mushrooms anywhere.\n\nAll three skip mushrooms and peanuts entirely, and two lean on pasta/corn since those are Bizzy's sure bets.\n\nWant me to add these to this week's plan and/or build the grocery list for them?",
+      "reply": "Here are three solid dinners that should work for everyone \u2014 no peanuts, no mushrooms, and Bizzy gets her pasta/corn fix:\n\n**1. Creamy Corn & Pasta Skillet**\nPasta (Bizzy favorite) tossed with saut\u00e9ed corn, garlic, cherry tomatoes, and a light cream/parmesan sauce. Fast, kid-friendly, no allergens.\n\n**2. Sheet-Pan Chicken Fajitas**\nChicken thighs, bell peppers, and onions roasted with fajita spices, served with warm tortillas, shredded cheese, and sour cream on the side so everyone builds their own. Easy weeknight, customizable for pickier eaters.\n\n**3. Baked Ziti with Corn & Garlic Bread**\nAnother pasta win for Bizzy \u2014 ziti baked with marinara, mozzarella, and a side of buttered corn, plus garlic bread. Great make-ahead option, no mushrooms anywhere.\n\nAll three skip mushrooms and peanuts entirely, and two lean on pasta/corn since those are Bizzy's sure bets.\n\nWant me to add these to this week's plan and/or build the grocery list for them?",
       "toolTrace": [
         {
           "name": "person__profile__get",
@@ -3453,7 +3144,7 @@
       "scenarioId": "regression-allergy-plan",
       "rep": 3,
       "ok": true,
-      "reply": "Here are three solid options that steer around Bizzy's peanut allergy and skip mushrooms, while leaning into her love of pasta and corn — and they're all crowd-pleasing enough for the whole table:\n\n**1. Creamy Chicken & Corn Pasta**\nPan-seared chicken breast, sweet corn, and a light garlic-parmesan cream sauce over penne or rotini. Easy weeknight comfort food, and it's basically built around Bizzy's two favorite foods.\n\n**2. Sheet-Pan Chicken Fajitas**\nChicken strips, bell peppers, and onions roasted on one pan, served with warm tortillas, shredded cheese, and sour cream on the side so everyone builds their own. Fast, low-cleanup, and customizable if anyone's picky about toppings.\n\n**3. Honey-Garlic Baked Chicken Thighs with Roasted Potatoes & Corn on the Cob**\nA simple sheet-pan bake — chicken thighs glazed with honey, garlic, and soy, roasted alongside potato wedges, plus corn on the cob on the side. Homey, low-effort, and hits the corn favorite again.\n\nAll three are naturally peanut-free and mushroom-free, so Bizzy's covered without any substitutions needed.\n\nWant me to add these to this week's plan, and/or build out the grocery list for them (checking what's already in the pantry first)?",
+      "reply": "Here are three solid options that steer around Bizzy's peanut allergy and skip mushrooms, while leaning into her love of pasta and corn \u2014 and they're all crowd-pleasing enough for the whole table:\n\n**1. Creamy Chicken & Corn Pasta**\nPan-seared chicken breast, sweet corn, and a light garlic-parmesan cream sauce over penne or rotini. Easy weeknight comfort food, and it's basically built around Bizzy's two favorite foods.\n\n**2. Sheet-Pan Chicken Fajitas**\nChicken strips, bell peppers, and onions roasted on one pan, served with warm tortillas, shredded cheese, and sour cream on the side so everyone builds their own. Fast, low-cleanup, and customizable if anyone's picky about toppings.\n\n**3. Honey-Garlic Baked Chicken Thighs with Roasted Potatoes & Corn on the Cob**\nA simple sheet-pan bake \u2014 chicken thighs glazed with honey, garlic, and soy, roasted alongside potato wedges, plus corn on the cob on the side. Homey, low-effort, and hits the corn favorite again.\n\nAll three are naturally peanut-free and mushroom-free, so Bizzy's covered without any substitutions needed.\n\nWant me to add these to this week's plan, and/or build out the grocery list for them (checking what's already in the pantry first)?",
       "toolTrace": [
         {
           "name": "person__profile__get",
@@ -3651,7 +3342,7 @@
       "scenarioId": "regression-plan-recall",
       "rep": 2,
       "ok": true,
-      "reply": "Here's what's on the plan for this week — all three still to cook:\n\n1. **Seared cod with corn succotash**\n2. **Weeknight tomato pasta**\n3. **Chicken thighs with rice**\n\nNone marked cooked yet. Want me to pull together a grocery list for these, suggest a night to cook each, or add anything else to the week?",
+      "reply": "Here's what's on the plan for this week \u2014 all three still to cook:\n\n1. **Seared cod with corn succotash**\n2. **Weeknight tomato pasta**\n3. **Chicken thighs with rice**\n\nNone marked cooked yet. Want me to pull together a grocery list for these, suggest a night to cook each, or add anything else to the week?",
       "toolTrace": [
         {
           "name": "plan__list",
@@ -3747,7 +3438,7 @@
       "scenarioId": "regression-plan-recall",
       "rep": 3,
       "ok": true,
-      "reply": "Here's what's on the plan for this week — all still to cook:\n\n1. **Seared cod with corn succotash**\n2. **Weeknight tomato pasta**\n3. **Chicken thighs with rice**\n\nNone of these are marked cooked yet, and none have saved recipes linked in the cookbook. Want me to flesh out any of them into a full recipe, build a grocery list from all three, or swap something out?",
+      "reply": "Here's what's on the plan for this week \u2014 all still to cook:\n\n1. **Seared cod with corn succotash**\n2. **Weeknight tomato pasta**\n3. **Chicken thighs with rice**\n\nNone of these are marked cooked yet, and none have saved recipes linked in the cookbook. Want me to flesh out any of them into a full recipe, build a grocery list from all three, or swap something out?",
       "toolTrace": [
         {
           "name": "plan__list",
@@ -3838,6 +3529,336 @@
         }
       ],
       "judgeError": null
+    },
+    {
+      "scenarioId": "weeknight-no-constraint",
+      "rep": 1,
+      "ok": true,
+      "reply": "Here's a fast lemon chicken and rice, ready in about 30 minutes:\n\n**Fast Lemon Chicken & Rice**\n\n*Ingredients:*\n- 1 lb boneless, skinless chicken breasts or thighs, cut into thin cutlets or bite-size pieces\n- Salt and pepper\n- 2 tbsp olive oil\n- 2 tbsp butter, divided\n- 3 cloves garlic, minced\n- 1 cup long-grain white rice\n- 2 cups chicken broth\n- Zest of 1 lemon\n- Juice of 1\u00bd lemons\n- 1/2 tsp dried oregano (or Italian seasoning)\n- 2 cups baby spinach or arugula (optional, for color/nutrients)\n- Fresh parsley, chopped, for garnish\n- Grated parmesan, optional\n\n*Instructions:*\n1. Season chicken with salt and pepper. Heat olive oil in a large skillet over medium-high heat. Sear chicken 3\u20134 minutes per side until golden and just cooked through. Remove and set aside (tent with foil).\n2. In the same skillet, melt 1 tbsp butter. Add garlic and rice, stir 1 minute to toast slightly.\n3. Pour in chicken broth, lemon zest, half the lemon juice, and oregano. Bring to a boil, then cover, reduce heat to low, and simmer 15\u201318 minutes until rice is tender and liquid is absorbed.\n4. Stir in remaining butter, remaining lemon juice, and spinach if using \u2014 it'll wilt in from the residual heat.\n5. Slice chicken and nestle it back into the rice (or serve on top). Garnish with parsley and parmesan if desired. Serve hot.\n\nThis keeps everything to one pan (less cleanup) and the rice cooks in the same time as searing/resting the chicken, so it all comes together in the 30-minute window.\n\nWant me to save this to the cookbook, or add the ingredients to your grocery list?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1840,
+          "outputTokens": 705,
+          "cacheCreationInputTokens": 4882,
+          "cacheReadInputTokens": 6963,
+          "estimatedCostUsd": 0.0324354,
+          "estimatedCostWithoutCacheUsd": 0.047574000000000005,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 667,
+            "cacheCreationInputTokens": 4882,
+            "cacheReadInputTokens": 6963,
+            "estimatedCostUsd": 0.030407400000000005,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1838,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002028,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "concrete-method",
+          "pass": true,
+          "evidence": "1 lb boneless, skinless chicken breasts... Sear chicken 3\u20134 minutes per side... Pour in chicken broth, lemon zest, half the lemon juice, and oregano. Bring to a boil, then cover, reduce heat to low, and simmer 15\u201318 minutes",
+          "rationale": "The reply gives a full concrete recipe with real ingredients, quantities, and numbered steps."
+        },
+        {
+          "id": "no-unearned-whys",
+          "pass": true,
+          "evidence": "This keeps everything to one pan (less cleanup) and the rice cooks in the same time as searing/resting the chicken, so it all comes together in the 30-minute window.",
+          "rationale": "The one explanatory aside directly responds to the user's stated 30-minute/weeknight constraint, so it is earned."
+        },
+        {
+          "id": "not-a-lecture",
+          "pass": true,
+          "evidence": "This keeps everything to one pan (less cleanup) and the rice cooks in the same time as searing/resting the chicken, so it all comes together in the 30-minute window.",
+          "rationale": "There is only one explanatory aside outside the steps, far short of five, and it does not crowd out the method."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "*Ingredients:* ... *Instructions:*",
+          "rationale": "The reply only has Ingredients and Instructions sections; no separate Tips/Notes/Why-this-works block or detached bulleted advice list is present."
+        },
+        {
+          "id": "no-unprompted-warnings",
+          "pass": true,
+          "evidence": "Stir in remaining butter, remaining lemon juice, and spinach if using \u2014 it'll wilt in from the residual heat.",
+          "rationale": "This is an ordinary technique note about the current step (wilting spinach from residual heat), not an unprompted warning about acid timing, holding, make-ahead, or sitting."
+        },
+        {
+          "id": "no-clarifying-question",
+          "pass": true,
+          "evidence": "Want me to save this to the cookbook, or add the ingredients to your grocery list?",
+          "rationale": "The full recipe is given first, and the question at the end is an optional offer, not a withholding of the recipe."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:440",
+          "pass": true,
+          "detail": "281 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "281 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "weeknight-no-constraint",
+      "rep": 2,
+      "ok": true,
+      "reply": "Here's a fast lemon chicken and rice, weeknight-friendly, ~30 minutes:\n\n**Fast Lemon Chicken & Rice**\n\n*Serves 4*\n\n**Ingredients:**\n- 1.5 lbs boneless, skinless chicken thighs (or breasts), cut into bite-sized pieces\n- 1 cup jasmine or basmati rice\n- 2 cups chicken broth\n- 2 tablespoons olive oil, divided\n- 3 cloves garlic, minced\n- Zest of 1 lemon + juice of 2 lemons\n- 1 teaspoon dried oregano\n- Salt and pepper to taste\n- 2 cups baby spinach (optional, for stirring in at the end)\n- Fresh parsley, chopped, for garnish\n\n**Instructions:**\n1. Start the rice: combine rice and chicken broth in a pot, bring to a boil, then cover and simmer on low for 15\u201318 minutes until liquid is absorbed. Fluff with a fork.\n2. While rice cooks, season chicken pieces with salt, pepper, and oregano.\n3. Heat 1 tablespoon olive oil in a large skillet over medium-high heat. Add chicken and cook 6\u20138 minutes, stirring occasionally, until golden and cooked through. Remove and set aside.\n4. In the same skillet, lower heat to medium, add remaining olive oil and garlic. Saut\u00e9 30 seconds until fragrant.\n5. Add lemon zest and lemon juice, scraping up any browned bits. Let it bubble for a minute.\n6. Return chicken to the skillet, tossing to coat in the lemon sauce. Stir in spinach if using, just until wilted.\n7. Serve chicken over the rice, spooning extra sauce on top. Garnish with parsley.\n\nQuick tip: if you're really pressed for time, a 1-cup instant rice or microwave rice pouch cuts this down to about 20 minutes total.\n\nWant me to save this to the cookbook, or add the ingredients to your grocery list?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1843,
+          "outputTokens": 723,
+          "cacheCreationInputTokens": 4882,
+          "cacheReadInputTokens": 6963,
+          "estimatedCostUsd": 0.032708400000000006,
+          "estimatedCostWithoutCacheUsd": 0.047847,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 685,
+            "cacheCreationInputTokens": 4882,
+            "cacheReadInputTokens": 6963,
+            "estimatedCostUsd": 0.030677400000000004,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1841,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002031,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "concrete-method",
+          "pass": true,
+          "evidence": "1.5 lbs boneless, skinless chicken thighs ... Start the rice: combine rice and chicken broth in a pot ... Heat 1 tablespoon olive oil ...",
+          "rationale": "Full ingredient list and numbered steps provided, giving a usable method."
+        },
+        {
+          "id": "no-unearned-whys",
+          "pass": true,
+          "evidence": "Quick tip: if you're really pressed for time, a 1-cup instant rice or microwave rice pouch cuts this down to about 20 minutes total.",
+          "rationale": "The one explanatory aside directly responds to the user's stated 30-minute constraint, so it is earned."
+        },
+        {
+          "id": "not-a-lecture",
+          "pass": true,
+          "evidence": "Saut\u00e9 30 seconds until fragrant.",
+          "rationale": "The reply consists mostly of direct steps with only minor asides, not five or more explanatory asides, so it does not read as a lecture."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": false,
+          "evidence": "Quick tip: if you're really pressed for time, a 1-cup instant rice or microwave rice pouch cuts this down to about 20 minutes total.",
+          "rationale": "This is a separate labelled advice line detached from the numbered steps, functioning as a mini tips block."
+        },
+        {
+          "id": "no-unprompted-warnings",
+          "pass": true,
+          "evidence": "",
+          "rationale": "No mention of acid timing, holding, make-ahead, or how the dish behaves while sitting."
+        },
+        {
+          "id": "no-clarifying-question",
+          "pass": true,
+          "evidence": "Want me to save this to the cookbook, or add the ingredients to your grocery list?",
+          "rationale": "The full recipe is given before the closing offer, so the recipe is not withheld pending a clarifying question."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:440",
+          "pass": true,
+          "detail": "282 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "282 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "weeknight-no-constraint",
+      "rep": 3,
+      "ok": true,
+      "reply": "Here's a quick lemon chicken and rice that comes together in about 30 minutes:\n\n**Fast Lemon Chicken & Rice**\n*Serves 4*\n\n**Ingredients:**\n- 1.5 lbs boneless, skinless chicken thighs (or breasts), cut into bite-sized pieces\n- 1 cup long-grain white rice (or jasmine)\n- 2 cups chicken broth\n- 2 tbsp olive oil\n- 3 cloves garlic, minced\n- 1 lemon (zest + juice)\n- 1 tsp dried oregano\n- 1/2 tsp paprika\n- Salt and pepper to taste\n- 2 cups baby spinach (optional, wilted in at the end)\n- Fresh parsley, chopped, for garnish\n\n**Instructions:**\n1. Start the rice: bring chicken broth to a boil in a saucepan, add rice, cover, reduce to low, and simmer 15\u201318 minutes while you handle the chicken.\n2. Season chicken pieces with salt, pepper, paprika, and oregano.\n3. Heat olive oil in a large skillet over medium-high heat. Add chicken and cook 6\u20138 minutes, stirring occasionally, until golden and cooked through.\n4. Add garlic to the skillet and cook 30 seconds until fragrant.\n5. Stir in lemon zest and juice, scraping up any browned bits. Let it bubble for a minute to make a light pan sauce.\n6. If using, stir in spinach and let it wilt, 1\u20132 minutes.\n7. Fluff the cooked rice and serve the chicken and pan sauce over it. Garnish with parsley.\n\nQuick tip: cutting the chicken small and starting the rice first is what keeps this under 30 minutes \u2014 everything finishes around the same time.\n\nWant me to save this to the cookbook, or add the ingredients to your grocery list?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1809,
+          "outputTokens": 667,
+          "cacheCreationInputTokens": 4882,
+          "cacheReadInputTokens": 6963,
+          "estimatedCostUsd": 0.031834400000000006,
+          "estimatedCostWithoutCacheUsd": 0.046973,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 629,
+            "cacheCreationInputTokens": 4882,
+            "cacheReadInputTokens": 6963,
+            "estimatedCostUsd": 0.029837400000000004,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1807,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001997,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "concrete-method",
+          "pass": true,
+          "evidence": "1.5 lbs boneless, skinless chicken thighs... Start the rice: bring chicken broth to a boil...",
+          "rationale": "The reply provides specific ingredients with quantities and a clear step-by-step method."
+        },
+        {
+          "id": "no-unearned-whys",
+          "pass": true,
+          "evidence": "Quick tip: cutting the chicken small and starting the rice first is what keeps this under 30 minutes \u2014 everything finishes around the same time.",
+          "rationale": "The only explanatory aside directly responds to the user's stated 30-minute constraint, making it earned."
+        },
+        {
+          "id": "not-a-lecture",
+          "pass": true,
+          "evidence": "Quick tip: cutting the chicken small and starting the rice first is what keeps this under 30 minutes \u2014 everything finishes around the same time.",
+          "rationale": "There is only one explanatory aside, far below the five-aside threshold, and it does not crowd out the method."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": false,
+          "evidence": "Quick tip: cutting the chicken small and starting the rice first is what keeps this under 30 minutes \u2014 everything finishes around the same time.",
+          "rationale": "This is a separate labelled advice block (\"Quick tip:\") detached from the numbered steps, which the criterion prohibits."
+        },
+        {
+          "id": "no-unprompted-warnings",
+          "pass": true,
+          "evidence": "Let it bubble for a minute to make a light pan sauce.",
+          "rationale": "The reply does not raise acid timing, holding, make-ahead, or resting concerns; the lemon juice step is an in-the-moment technique note, not a warning about sitting or later effects."
+        },
+        {
+          "id": "no-clarifying-question",
+          "pass": true,
+          "evidence": "Want me to save this to the cookbook, or add the ingredients to your grocery list?",
+          "rationale": "The full recipe is given completely before this offer, so it does not withhold the recipe pending a clarifying question."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:440",
+          "pass": true,
+          "detail": "265 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "265 words"
+        }
+      ],
+      "judgeError": null
     }
+  ],
+  "notes": [
+    "weeknight-no-constraint re-baselined 2026-07-27: its at-most-two-whys criterion counted asides instead of testing whether they were EARNED, which failed replies that were correct. Replaced with no-unearned-whys + not-a-lecture and re-measured against the pre-craft prompt (git stash), so the comparison stays honest."
   ]
 }

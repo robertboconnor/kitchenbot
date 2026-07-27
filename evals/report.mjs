@@ -104,11 +104,16 @@ export function compareToBaseline(runs, baseline) {
         rows.push({ scenarioId, id, note: !b ? 'NEW' : 'GONE', before: b, now: n });
         continue;
       }
-      const bRate = b.pass / b.total;
-      const nRate = n.pass / n.total;
+      // At 3 reps a single flip is noise, not evidence — the loop sets no temperature and replies
+      // vary run to run. Calling every 3/3 -> 2/3 a REGRESSION manufactures false alarms and invites
+      // tuning the prompt against sampling jitter, which is worse than not measuring at all.
+      // A regression needs a drop of at least 2 reps, or a fall to zero from a passing baseline.
+      const drop = b.pass / b.total - n.pass / n.total;
+      const repsLost = b.pass - n.pass;
       let direction = '';
-      if (nRate < bRate) { direction = 'REGRESSED'; regressed += 1; }
-      else if (nRate > bRate) { direction = 'improved'; improved += 1; }
+      if (repsLost >= 2 || (n.pass === 0 && b.pass > 0)) { direction = 'REGRESSED'; regressed += 1; }
+      else if (drop > 0) direction = 'noisy-down';
+      else if (drop < 0) { direction = 'improved'; improved += 1; }
       rows.push({ scenarioId, id, before: b, now: n, direction });
     }
   }
@@ -122,10 +127,13 @@ export function renderComparison({ rows, regressed, improved }) {
     const label = `${row.scenarioId}/${row.id}`.slice(0, 43).padEnd(44);
     const b = row.before ? `${row.before.pass}/${row.before.total}` : '—';
     const n = row.now ? `${row.now.pass}/${row.now.total}` : '—';
-    const mark = row.note || (row.direction === 'REGRESSED' ? '▼  REGRESSED' : '▲');
+    const mark =
+      row.note ||
+      (row.direction === 'REGRESSED' ? '▼  REGRESSED' : row.direction === 'noisy-down' ? '·  (1 rep, noise)' : '▲');
     lines.push(`${label}${b.padEnd(6)}→ ${n.padEnd(6)} ${mark}`);
   }
   lines.push('');
-  lines.push(`${improved} improved, ${regressed} regressed`);
+  const noisy = rows.filter((r) => r.direction === 'noisy-down').length;
+  lines.push(`${improved} improved, ${regressed} regressed, ${noisy} down by a single rep (treated as noise)`);
   return lines.join('\n');
 }

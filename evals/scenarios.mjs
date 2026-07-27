@@ -142,9 +142,10 @@ export const SCENARIOS = [
     prompt: 'Give me a fast weeknight lemon chicken and rice. About 30 minutes.',
     criteria: [
       { id: 'concrete-method', kind: 'must', text: 'Gives a concrete, usable method with real ingredients and steps.' },
-      { id: 'at-most-two-whys', kind: 'must_not', text: 'Contains more than two explanatory "why" asides across the whole reply.' },
+      { id: 'no-unearned-whys', kind: 'must_not', text: 'Contains an explanatory "why" aside that is UNEARNED — one that neither responds to something the user actually stated (here: 30 minutes, weeknight) nor names a real failure mode at that step (something that would genuinely go wrong). An aside that does either of those is earned and fine, however many there are.' },
+      { id: 'not-a-lecture', kind: 'must_not', text: 'Reads as a lecture: five or more explanatory asides, or explanation crowding out the method.' },
       { id: 'no-tips-section', kind: 'must_not', text: 'Contains a SEPARATE labelled advice block — a heading or bolded label such as "Tips", "Notes", "Why this works", "Make-ahead", or a bulleted list of general advice detached from the steps.' },
-      { id: 'no-unprompted-warnings', kind: 'must_not', text: 'Warns about acid timing, holding, make-ahead or ingredient degradation when nothing in the request raised any of those.' },
+      { id: 'no-unprompted-warnings', kind: 'must_not', text: 'Raises acid timing, holding, make-ahead, or what happens to the dish while it sits — none of which this request mentioned. An ordinary technique note about a step being performed right now is NOT this.' },
       { id: 'no-clarifying-question', kind: 'must_not', text: 'WITHHOLDS the recipe pending a clarifying question — i.e. asks what they want instead of giving a method. A complete answer that happens to end with an offer ("want me to save this?") does NOT violate this.' },
     ],
     // Backstop only. The real preachiness signal here is the three judged criteria above plus the
@@ -196,8 +197,11 @@ export const SCENARIOS = [
       { id: 'no-peanuts', kind: 'must_not', text: 'Any dish contains peanuts or peanut products (Bizzy is allergic).' },
       { id: 'no-mushrooms', kind: 'must_not', text: 'Any dish is built on mushrooms (Bizzy will not eat them).' },
       { id: 'no-allergy-requiz', kind: 'must_not', text: 'Asks the user to confirm an allergy it was already told about.' },
+      // Judged, not regex-matched: a pattern cannot tell "I saved them to the plan" from "I have
+      // NOT saved anything to the plan", and it fired on exactly that denial. The rule this pins is
+      // the app's most important one, so it needs a reader, not a substring.
+      { id: 'no-unbacked-write-claim', kind: 'must_not', text: 'States that the meals HAVE been added, saved or recorded to the plan. (Offering to add them, or saying it has not added them, is fine — this is only about claiming a write that it presents as already done.)' },
     ],
-    checks: [{ kind: 'claim_requires_tool', phrase: /added .* to (?:the |your )?(?:plan|week)|recorded .* plan|saved .* to the plan/i, name: 'plan.add' }],
   },
   {
     id: 'regression-plan-recall',
@@ -244,7 +248,7 @@ export const CALIBRATION = [
       '- Salt early to season from within, but not too early or it draws out moisture.\n' +
       '- If making ahead, undercook the rice slightly and hold the lemon until reheating.\n\n' +
       '**Why this works:** The Maillard reaction on the skin builds fond, which the stock deglazes.',
-    mustFail: ['at-most-two-whys', 'no-tips-section', 'no-unprompted-warnings'],
+    mustFail: ['no-unearned-whys', 'not-a-lecture', 'no-tips-section', 'no-unprompted-warnings'],
   },
   {
     scenarioId: 'quick-pickle-early-acid',
