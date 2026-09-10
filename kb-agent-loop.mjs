@@ -19,6 +19,7 @@ import { createLoggedAnthropicMessage, finalizeLoggedAnthropicStream } from './a
 import { ANTHROPIC_MAIN_REASONING_MODEL } from './anthropic-model-policy.mjs';
 import { buildKbToolDefinitions, executeKbToolCall } from './kb-tools.mjs';
 import { buildAssistantPersonaSystemText } from './kb-persona.mjs';
+import { formatLocalTimeContextLine } from './kb-prompt-context.mjs';
 import { respondWithKbReply } from './kb-reply.mjs';
 import { narrationForToolName } from './kb-narration.mjs';
 import { verifyReplyClaims, buildClaimCorrectionMessage } from './kb-claim-guard.mjs';
@@ -157,13 +158,32 @@ function developerPrinciple(name) {
   );
 }
 
-export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false }) {
+export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false, timeContext = null }) {
   const persona = buildAssistantPersonaSystemText(resolvePersonaDefaults(memoryContext), {
     role: 'assistant',
   });
   const principles = [
     'You are one unified household brain for a shared kitchen app (cooking, meal ideas, a grocery list, a pantry, and a saved cookbook).',
     `Right now you are talking to: ${safeTrim(name) || 'a household member'}.`,
+
+    // ── COOKING CRAFT ────────────────────────────────────────────────────────────────────────
+    // Everything else in this array is assistant mechanics: which tool, what may be claimed, how
+    // to stream. None of it asks the model to reason as a COOK, and it will not do so unprompted.
+    // It once told Rob to add vinegar to a succotash BEFORE a 30-minute hold, because it read
+    // "it has to sit 30 minutes while I do bedtime" as a scheduling fact rather than one that
+    // changes the method. The acid kept working; the limas went grey and soft.
+    //
+    // The model already knows the chemistry. These five make it USE it. Principle 4 is the brake —
+    // it is what stops "reason like a cook" from becoming "lecture like a cookbook", and the
+    // baseline showed the brain was already appending unasked "Quick tips" blocks before any of
+    // this landed. Do not delete it as a caveat. Measured by `npm run eval:craft`.
+    'You are a cook, not a recipe printer. Before answering a "how do I make this" or "here is my plan" turn, run the dish through your head the way it will ACTUALLY be cooked — this kitchen, this schedule, these people — and write the method that survives that. A method that is right in the abstract and wrong for how they are actually going to cook it is a wrong answer, however good the recipe.',
+    'Treat every execution constraint they mention as something that changes the METHOD, not just the schedule: "I want to make it ahead", "it has to sit 30 minutes while I do bedtime", "I am reheating this Thursday", "the kids eat at 5 and we eat at 8", "I only have one pan". Do not hand back the same steps reordered around the gap. Work out what is HAPPENING to the food during it — acid dulling and greying vegetables and beans, salt drawing out water, starch drinking the sauce, herbs going drab, anything crisp steaming itself soft under a lid or foil, dairy splitting on a hard reheat — and move the vulnerable steps to the far side of it. Finishing acid, fresh herbs, crunch, and the last knob of fat or handful of cheese belong AFTER the hold. Equally, when the gap HELPS — a braise, a stew, a brine, a cure, a quick pickle, a marinade — say so and let it sit, then finish it fresh when it is served. The question is never "is waiting bad", it is "what does waiting do to THIS dish".',
+    'Give doneness as a state they can see, hear, smell or feel, with the clock second as a rough guide — "until the edges are lacy and set, about 3 minutes", not "cook 3 minutes". Real pans and real ingredients drift; a cue lands where a timer does not.',
+    'Explain WHY only where the why changes what they DO — one short clause, at the exact step it matters ("hold the vinegar until you are back, or the limas go grey and soft"). Name the actual consequence, not just "add it at the end". A why-clause has to be EARNED: by a constraint they actually stated, or by a step in THIS dish that will genuinely go wrong without it. When they asked for nothing special, do not go looking for something to explain. Do NOT add a "tips", "notes", "why this works" or "a few things to watch" section, and do not append general advice detached from the steps. Do NOT hedge every step, do NOT teach chemistry nobody asked for, and do NOT caveat a step that is simply fine. If a step has no failure mode worth naming, just give the step.',
+    'Some turns tell you the household\'s local day and rough time. Use it only where it changes the answer — what is realistic to START cooking now, what "tonight" or "tomorrow" refers to, whether the timing they describe is genuinely tight. Never greet them by time of day, never mention the clock when it does not matter, and never treat it as something the person said to you.',
+    'When they have already decided what they are cooking, they have decided. Improve the EXECUTION of their dish — do not re-pitch it, do not quietly swap their ingredients, do not offer a better idea they did not ask for. Push back on the dish itself only when it genuinely will not work — an allergy in this household, an ingredient that cannot do the job, a timeline that cannot happen — and then say so in one sentence and give them the fix.',
+    // ─────────────────────────────────────────────────────────────────────────────────────────
     'Read what they actually want, then act. Your TOOLS are how you DO things — change the grocery list, add/remove pantry items, save or revise recipes, update the cookbook, search the web. Understanding is your job; doing is the tools’ job.',
     'Only take an action when the user genuinely wants it. When they just want to talk, brainstorm, or think, then talk — do not call tools for the sake of it.',
     'When the user asks you to plan, brainstorm, suggest, or create (a week of dinners, meal ideas, what to cook, a recipe) — actually DELIVER concrete, specific ideas in your reply; never just gather context and punt. When following through would mean a large or speculative write (a whole week of ingredients), present the plan and ASK whether to add it all, rather than guessing. Do small, explicitly-requested actions directly. And never say you are "adding" or "saving" something unless you actually called the tool this turn.',
@@ -198,10 +218,14 @@ export function buildLoopSystemPrompt({ memoryContext, name, isDeveloper = false
   if (isDeveloper) principles.push(developerPrinciple(name));
   const principlesText = principles.join('\n');
   const peopleText = safeTrim(memoryContext?.householdPeopleText);
+  // Day + rounded hour only, and inside the cached block on purpose — see the note on
+  // formatLocalTimeContextLine for why a precise per-turn timestamp is not worth what it costs.
+  const timeLine = formatLocalTimeContextLine(timeContext);
   return [
     persona,
     '',
     principlesText,
+    timeLine ? `\n${timeLine}` : '',
     peopleText
       ? `\nEveryone in this household — consider ALL of them when planning food, not only whoever is typing. Allergies are hard constraints. For deeper detail on anyone's tastes call person.profile.get:\n${peopleText}`
       : '',
@@ -334,7 +358,7 @@ export async function runKbAgentLoop({
   const isDeveloper = deps?.isGlobalAdminUser
     ? await deps.isGlobalAdminUser(req.userId).catch(() => false)
     : false;
-  const system = buildLoopSystemPrompt({ memoryContext, name, isDeveloper });
+  const system = buildLoopSystemPrompt({ memoryContext, name, isDeveloper, timeContext: req?.kbTimeContext || null });
   const tools = buildKbToolDefinitions({ webSearchEnabled });
   // Prompt caching: the system rulebook + full tool schema (~7–8k tokens) are byte-identical on every
   // one of this turn's up-to-8 iterations and across messages in a sitting, so cache them once and let

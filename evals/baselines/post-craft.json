@@ -1,0 +1,3855 @@
+{
+  "label": "final",
+  "createdAt": "2026-07-27T03:09:26.253Z",
+  "reps": 3,
+  "scenarioCount": 13,
+  "costUsd": 1.3713651999999996,
+  "runs": [
+    {
+      "scenarioId": "succotash-hold",
+      "rep": 1,
+      "ok": true,
+      "reply": "Here's how to split it so the hold works for you instead of against it:\n\n**Now (before bedtime):**\n1. Render your bacon or heat your fat in a wide skillet, then saut\u00e9 diced onion, celery, and/or bell pepper until soft, about 5-6 minutes.\n2. Add the lima beans (thawed if frozen) and a splash of stock or water, cover, and simmer until they're tender but still holding their shape, about 8-10 minutes.\n3. Stir in the corn and cook just until it turns bright yellow and smells sweet, 2-3 minutes \u2014 don't push it further, it'll finish cooking during the hold anyway.\n4. Season with salt and pepper, take it off the heat, and leave it uncovered (or cracked) rather than sealed under a lid \u2014 sealed and steaming, the corn goes from crisp-tender to mushy over 30 minutes.\n\n**During the 30-minute sit:** Just let it sit at room temp off the heat. Don't add butter, cream, herbs, or any acid (vinegar, lemon) yet \u2014 butter and dairy can look greasy and separated by the time you reheat, and any herbs or acid added now will be drab and flat by the time you eat.\n\n**Right before serving:**\n1. Rewarm gently over medium-low heat, stirring, just until it's hot through, 3-4 minutes \u2014 no need to bring it back to a hard simmer.\n2. Off the heat, stir in a knob of butter (or a splash of cream if that's your version) until glossy.\n3. Finish with a squeeze of lemon or splash of vinegar if you're using one, and fresh herbs (basil, chives, parsley) stirred in right at the end so they stay bright.\n4. Taste and adjust salt \u2014 the reheat mutes seasoning a bit.\n\nThat way the vegetables aren't overcooked from the double heating, and the acid/herbs/fat land at the very end when they'll actually taste like something.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1828,
+          "outputTokens": 822,
+          "cacheCreationInputTokens": 6000,
+          "cacheReadInputTokens": 6963,
+          "estimatedCostUsd": 0.03837089999999999,
+          "estimatedCostWithoutCacheUsd": 0.052670999999999996,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 784,
+            "cacheCreationInputTokens": 6000,
+            "cacheReadInputTokens": 6963,
+            "estimatedCostUsd": 0.036354899999999996,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1826,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002016,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "acid-after-hold",
+          "pass": true,
+          "evidence": "Finish with a squeeze of lemon or splash of vinegar if you're using one, and fresh herbs (basil, chives, parsley) stirred in right at the end",
+          "rationale": "Acid is explicitly added at the finish, after the 30-minute hold."
+        },
+        {
+          "id": "fresh-at-finish",
+          "pass": true,
+          "evidence": "Off the heat, stir in a knob of butter (or a splash of cream if that's your version) until glossy.",
+          "rationale": "Butter/cream and fresh herbs are held back and added after the hold."
+        },
+        {
+          "id": "names-the-reason",
+          "pass": false,
+          "evidence": "any herbs or acid added now will be drab and flat by the time you eat",
+          "rationale": "The reply says acid added early would be 'drab and flat', not that it would turn the beans grey/dull/mushy specifically from the acid; it groups acid with herbs rather than naming the specific acid consequence like discoloration."
+        },
+        {
+          "id": "reason-is-brief",
+          "pass": true,
+          "evidence": "Don't add butter, cream, herbs, or any acid (vinegar, lemon) yet \u2014 butter and dairy can look greasy and separated by the time you reheat, and any herbs or acid added now will be drab and flat by the time you eat.",
+          "rationale": "The explanation is contained in one to two sentences, not a chemistry lesson."
+        },
+        {
+          "id": "no-acid-early",
+          "pass": true,
+          "evidence": "Don't add butter, cream, herbs, or any acid (vinegar, lemon) yet",
+          "rationale": "The reply explicitly instructs not to add acid during the hold."
+        },
+        {
+          "id": "not-just-scheduling",
+          "pass": true,
+          "evidence": "leave it uncovered (or cracked) rather than sealed under a lid \u2014 sealed and steaming, the corn goes from crisp-tender to mushy over 30 minutes",
+          "rationale": "The reply moves specific steps (holding back butter, herbs, acid; adjusting cooking technique) rather than just bolting a wait onto the same recipe."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "That way the vegetables aren't overcooked from the double heating, and the acid/herbs/fat land at the very end when they'll actually taste like something.",
+          "rationale": "The reply ends with a single closing sentence summarizing the approach rather than a separate labelled tips/notes section."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:400",
+          "pass": true,
+          "detail": "311 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "311 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "succotash-hold",
+      "rep": 2,
+      "ok": true,
+      "reply": "Here's how to run it so the succotash doesn't overcook or go dull during that 30-minute hold:\n\n**Corn and Lima Bean Succotash (make-ahead-friendly version)**\n\n*Ingredients (serves ~4):*\n- 2 tbsp butter (divided)\n- 1 small onion, diced\n- 1 clove garlic, minced\n- 2 cups lima beans (fresh or frozen, thawed)\n- 3 cups corn kernels (fresh or frozen)\n- \u00bd cup chicken or vegetable stock\n- Salt and pepper\n- 1 tsp white wine vinegar or squeeze of lemon (to finish)\n- 2 tbsp chopped fresh herbs \u2014 chives, parsley, or basil (to finish)\n\n*Method:*\n1. Melt 1 tbsp butter in a wide skillet over medium heat. Saut\u00e9 the onion until soft and translucent, about 4 minutes, then add the garlic for 30 seconds until fragrant.\n2. Add the lima beans and stock, cover, and simmer until the beans are *just* tender but still holding their shape \u2014 a touch firmer than you'd want at the table, about 5-6 minutes. Stir in the corn and cook another 2 minutes, just until it turns bright yellow.\n3. **Stop here and pull it off the heat before it's fully done.** The beans and corn will keep cooking gently from residual heat while it sits, and if you take them all the way now they'll be soft and gray by the time you eat. Season lightly with salt now.\n4. Let it sit off heat, lid ajar rather than sealed tight \u2014 a fully sealed lid traps steam and keeps cooking it harder than you want. If your stovetop is nearby, sliding it to a cool burner is fine too.\n5. When you're back after bedtime: reheat gently over medium-low, stirring, until just heated through and the corn/beans are tender to your liking \u2014 a couple of minutes.\n6. Off heat, stir in the remaining 1 tbsp butter, the vinegar or lemon, and the fresh herbs. Adding these now instead of before the hold keeps the color bright and the herbs from wilting into gray flecks. Taste and adjust salt and pepper, then serve.\n\nThat's the whole game here: undercook slightly going into the hold, finish the acid/herbs/butter only at the very end.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1923,
+          "outputTokens": 1726,
+          "cacheCreationInputTokens": 6000,
+          "cacheReadInputTokens": 6963,
+          "estimatedCostUsd": 0.0520259,
+          "estimatedCostWithoutCacheUsd": 0.066326,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 1688,
+            "cacheCreationInputTokens": 6000,
+            "cacheReadInputTokens": 6963,
+            "estimatedCostUsd": 0.0499149,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1921,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002111,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "acid-after-hold",
+          "pass": true,
+          "evidence": "6. Off heat, stir in the remaining 1 tbsp butter, the vinegar or lemon, and the fresh herbs.",
+          "rationale": "Acid is added at step 6, after the hold, not before or during it."
+        },
+        {
+          "id": "fresh-at-finish",
+          "pass": true,
+          "evidence": "6. Off heat, stir in the remaining 1 tbsp butter, the vinegar or lemon, and the fresh herbs.",
+          "rationale": "Butter and fresh herbs are also held back until after the wait."
+        },
+        {
+          "id": "names-the-reason",
+          "pass": false,
+          "evidence": "Adding these now instead of before the hold keeps the color bright and the herbs from wilting into gray flecks.",
+          "rationale": "The reply explains the herbs would turn to gray flecks but does not state a specific consequence for the acid itself (vinegar/lemon) turning beans grey/dull/soft."
+        },
+        {
+          "id": "reason-is-brief",
+          "pass": true,
+          "evidence": "Adding these now instead of before the hold keeps the color bright and the herbs from wilting into gray flecks.",
+          "rationale": "The explanation is a single sentence, not a chemistry lesson."
+        },
+        {
+          "id": "no-acid-early",
+          "pass": true,
+          "evidence": "6. Off heat, stir in the remaining 1 tbsp butter, the vinegar or lemon, and the fresh herbs.",
+          "rationale": "Acid is only added after the hold, never before or during it."
+        },
+        {
+          "id": "not-just-scheduling",
+          "pass": true,
+          "evidence": "Stop here and pull it off the heat before it's fully done.",
+          "rationale": "The recipe actively moves the doneness point and finishing steps rather than just adding a wait period to an unchanged recipe."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "That's the whole game here: undercook slightly going into the hold, finish the acid/herbs/butter only at the very end.",
+          "rationale": "This is a single closing summary sentence, not a separately labelled tips/notes block."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:400",
+          "pass": true,
+          "detail": "361 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "361 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "succotash-hold",
+      "rep": 3,
+      "ok": true,
+      "reply": "Good plan for this \u2014 succotash actually holds nicely for 30 minutes if you stop it at the right point and finish it after. Here's how I'd run it:\n\n**Now (before bedtime):**\n1. Saut\u00e9 your aromatics (onion, garlic, bell pepper if using) in butter or bacon fat over medium heat until soft and just turning translucent, 4-5 minutes.\n2. Add the lima beans and a splash of stock or water, cover, and simmer until they're creamy but still holding their shape, about 8-10 minutes (taste one \u2014 it should give easily but not be mushy).\n3. Stir in the corn and cook just until it turns bright yellow and loses its raw crunch, 3-4 minutes \u2014 don't push past this, it'll keep cooking a little in residual heat.\n4. Season with salt and pepper, but **hold back any butter you'd finish with, fresh herbs, and any vinegar or lemon juice.** Take it off the heat now.\n5. Let it sit uncovered for a minute or two to stop the cooking, then cover loosely (lid ajar, not sealed tight) so it doesn't steam itself soft while it waits.\n\n**Right before you eat:**\n6. Rewarm it over medium-low heat, stirring, until it's steaming again \u2014 a minute or two, maybe with a splash more stock if it's looked dry.\n7. Off heat, stir in your finishing butter, fresh herbs, and any vinegar or lemon now \u2014 added earlier, the acid would sit on the warm limas and corn for 30 minutes and turn them grey and flat; added now they stay bright.\n8. Taste and adjust salt \u2014 it always needs a touch more after a rest.\n\nThat's it \u2014 the base actually benefits from a short rest (flavors settle), you're just keeping the acid and any finishing fat on the far side of it.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1791,
+          "outputTokens": 1631,
+          "cacheCreationInputTokens": 6000,
+          "cacheReadInputTokens": 6963,
+          "estimatedCostUsd": 0.0504689,
+          "estimatedCostWithoutCacheUsd": 0.064769,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 1593,
+            "cacheCreationInputTokens": 6000,
+            "cacheReadInputTokens": 6963,
+            "estimatedCostUsd": 0.048489899999999996,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1789,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001979,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "acid-after-hold",
+          "pass": true,
+          "evidence": "Off heat, stir in your finishing butter, fresh herbs, and any vinegar or lemon now",
+          "rationale": "Acid is explicitly added at the finish step after the hold, not before or during it."
+        },
+        {
+          "id": "fresh-at-finish",
+          "pass": true,
+          "evidence": "hold back any butter you'd finish with, fresh herbs, and any vinegar or lemon juice",
+          "rationale": "Fresh herbs and finishing butter are also held back until after the wait, satisfying the requirement for another delicate element."
+        },
+        {
+          "id": "names-the-reason",
+          "pass": true,
+          "evidence": "added earlier, the acid would sit on the warm limas and corn for 30 minutes and turn them grey and flat",
+          "rationale": "The reply explicitly states the acid would turn the beans grey and flat if added early, naming the specific consequence."
+        },
+        {
+          "id": "reason-is-brief",
+          "pass": true,
+          "evidence": "added earlier, the acid would sit on the warm limas and corn for 30 minutes and turn them grey and flat; added now they stay bright.",
+          "rationale": "The explanation is a single sentence, not a chemistry lesson."
+        },
+        {
+          "id": "no-acid-early",
+          "pass": true,
+          "evidence": "hold back any butter you'd finish with, fresh herbs, and any vinegar or lemon juice",
+          "rationale": "The acid is explicitly held back during the cooking and hold phase, only added at the finish."
+        },
+        {
+          "id": "not-just-scheduling",
+          "pass": true,
+          "evidence": "Season with salt and pepper, but hold back any butter you'd finish with, fresh herbs, and any vinegar or lemon juice. Take it off the heat now.",
+          "rationale": "The recipe is restructured so that specific finishing elements are deliberately moved to after the hold, not just a generic sit/reheat bolt-on."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "That's it \u2014 the base actually benefits from a short rest (flavors settle), you're just keeping the acid and any finishing fat on the far side of it.",
+          "rationale": "The closing remark is a single summarizing sentence, not a separate labelled tips/notes section."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:400",
+          "pass": true,
+          "detail": "303 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "303 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "quick-pickle-early-acid",
+      "rep": 1,
+      "ok": true,
+      "reply": "Easy, and honestly better made a day ahead \u2014 the onions mellow and turn that bright pink color as they sit.\n\n**Quick-Pickled Red Onions**\n\n- 1 red onion, thinly sliced (halve it first, then slice into half-moons)\n- 3/4 cup water\n- 1/2 cup vinegar (apple cider or white; white gives a sharper tang)\n- 1 tbsp sugar\n- 1 1/2 tsp salt\n- Optional: a few peppercorns, a smashed garlic clove, or a pinch of red pepper flakes\n\n**Steps:**\n1. Pack the sliced onion into a jar or heatproof container.\n2. Combine water, vinegar, sugar, and salt in a small pot and bring just to a simmer, stirring until the sugar and salt dissolve.\n3. Pour the hot brine over the onions \u2014 they should be fully submerged (press down if needed).\n4. Let cool uncovered to room temp, about 20-30 minutes, then cap and refrigerate.\n\nThey're usable in as little as an hour (still crunchy, sharp), but since you've got until tomorrow night, making them tonight is ideal \u2014 by then they'll have gone soft-crisp and that vivid pink, with the raw onion bite rounded off. They'll keep well over a week in the fridge, so no rush and no downside to doing them now.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1697,
+          "outputTokens": 566,
+          "cacheCreationInputTokens": 5956,
+          "cacheReadInputTokens": 6963,
+          "estimatedCostUsd": 0.0342349,
+          "estimatedCostWithoutCacheUsd": 0.048568,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 528,
+            "cacheCreationInputTokens": 5956,
+            "cacheReadInputTokens": 6963,
+            "estimatedCostUsd": 0.0323499,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1695,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001885,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "acid-now",
+          "pass": true,
+          "evidence": "Pour the hot brine over the onions \u2014 they should be fully submerged (press down if needed).",
+          "rationale": "The onions are submerged in the acidic brine immediately and left to sit, which is the core method."
+        },
+        {
+          "id": "no-hold-the-acid",
+          "pass": true,
+          "evidence": "",
+          "rationale": "The reply never suggests delaying or withholding the acid; it's added immediately and onions sit in it."
+        },
+        {
+          "id": "no-invented-risk",
+          "pass": true,
+          "evidence": "by then they'll have gone soft-crisp and that vivid pink, with the raw onion bite rounded off",
+          "rationale": "The reply frames the softening and color change as a positive expected outcome, not a warning of damage or spoilage."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:300",
+          "pass": true,
+          "detail": "207 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "207 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "quick-pickle-early-acid",
+      "rep": 2,
+      "ok": true,
+      "reply": "Quick-pickled red onions are one of those things that actually get better with a rest, so making them tonight or in the morning for tomorrow's tacos is ideal \u2014 not just convenient.\n\n**What you need:**\n- 1 red onion, thinly sliced (a mandoline or sharp knife, aim for uniform thin half-moons)\n- 3/4 cup vinegar (white vinegar or apple cider vinegar both work; red wine vinegar is nice too)\n- 3/4 cup water\n- 1 tbsp sugar\n- 1 1/2 tsp salt\n- Optional: a few peppercorns, a bay leaf, or a small pinch of chili flakes if you want a little heat\n\n**How to do it:**\n1. Slice the onion thin and pack it into a jar or heatproof container.\n2. Combine vinegar, water, sugar, and salt in a small saucepan and bring just to a simmer, stirring until the sugar and salt dissolve.\n3. Pour the hot brine over the onions \u2014 the heat is what pulls them from raw and harsh to soft, bright pink, and pickled-tasting quickly instead of over hours.\n4. Let them cool to room temp uncovered, then cover and refrigerate.\n\n**Timing for tomorrow:** an hour is enough to take the raw edge off, but overnight is where they really turn \u2014 the color goes fully vivid pink and the bite mellows into that tangy-sweet crunch you want on tacos. Since you've got until tomorrow night, just make them now or first thing tomorrow and let them sit in the fridge; no need to do anything else to them before serving, just pull them out and pile them on.\n\nThey'll keep well over a week in the fridge if you end up with extra.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1769,
+          "outputTokens": 719,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12919,
+          "estimatedCostUsd": 0.0160537,
+          "estimatedCostWithoutCacheUsd": 0.050935,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 681,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12919,
+            "estimatedCostUsd": 0.0140967,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1767,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001957,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "acid-now",
+          "pass": true,
+          "evidence": "Pour the hot brine over the onions ... Let them cool to room temp uncovered, then cover and refrigerate.",
+          "rationale": "The reply has the onions submerged in the vinegar brine immediately and left to sit in it overnight/for an hour."
+        },
+        {
+          "id": "no-hold-the-acid",
+          "pass": true,
+          "evidence": "no need to do anything else to them before serving, just pull them out and pile them on",
+          "rationale": "The reply never suggests withholding acid or adding it just before serving; acid is added at the start and onions sit in it until serving."
+        },
+        {
+          "id": "no-invented-risk",
+          "pass": true,
+          "evidence": "the color goes fully vivid pink and the bite mellows into that tangy-sweet crunch you want on tacos",
+          "rationale": "The reply does not warn of any color/texture damage or mushiness from sitting in acid; it describes positive results instead."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:300",
+          "pass": true,
+          "detail": "280 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "280 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "quick-pickle-early-acid",
+      "rep": 3,
+      "ok": true,
+      "reply": "Quick-pickled red onions are one of those things that actually get better with a little lead time, so making them today for tomorrow night's tacos is ideal.\n\n**What you need:**\n- 1 red onion, sliced thin (halve it first, then slice into half-moons)\n- 1 cup vinegar (white vinegar or apple cider vinegar; red wine vinegar works too)\n- 1 cup water\n- 1 tbsp sugar\n- 1\u00bd tsp salt\n- Optional: a few peppercorns, a bay leaf, or a pinch of red pepper flakes\n\n**Method:**\n1. Pack the sliced onion into a jar or heatproof container.\n2. Combine vinegar, water, sugar, and salt in a small pot and bring just to a simmer, stirring until the sugar and salt dissolve.\n3. Pour the hot brine over the onions \u2014 make sure they're fully submerged.\n4. Let them cool uncovered on the counter for about 30 minutes, until they've turned that bright pink color and gone slightly translucent at the edges.\n5. Cover and refrigerate. They're ready to eat once fully cool, but if you make them today they'll be even better by tomorrow \u2014 the bite mellows out and they turn a deeper pink the longer they sit.\n\nThey'll keep in the fridge for a couple weeks, so don't worry about using them all on taco night. Want me to save this one to your cookbook?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1699,
+          "outputTokens": 589,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12919,
+          "estimatedCostUsd": 0.0140337,
+          "estimatedCostWithoutCacheUsd": 0.048915,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 551,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12919,
+            "estimatedCostUsd": 0.0121467,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1697,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001887,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "acid-now",
+          "pass": true,
+          "evidence": "Pour the hot brine over the onions \u2014 make sure they're fully submerged.",
+          "rationale": "The reply instructs pouring the acidic brine over the onions immediately and letting them sit in it, which is the point of quick pickling."
+        },
+        {
+          "id": "no-hold-the-acid",
+          "pass": true,
+          "evidence": "",
+          "rationale": "The reply never suggests withholding the acid or adding it just before serving; it instructs adding it right away."
+        },
+        {
+          "id": "no-invented-risk",
+          "pass": true,
+          "evidence": "",
+          "rationale": "The reply does not warn of color or texture damage, softness, greying, or mushiness from the acid; it only describes desirable color/texture changes (bright pink, slightly translucent, mellowed bite)."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:300",
+          "pass": true,
+          "detail": "227 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "227 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "yogurt-lemon-marinade",
+      "rep": 1,
+      "ok": true,
+      "reply": "Yes \u2014 overnight is actually the better move for a yogurt marinade, not just an acceptable one. Chicken thighs are forgiving and have enough fat to hold up, and yogurt's mild acidity plus its fat coats the meat and tenderizes gently over time rather than \"cooking\" the surface the way a straight acidic marinade (all lemon juice, vinegar) would if left too long.\n\nThe one thing to watch: keep yogurt as the *base* and lemon as an accent, not the other way around. A marinade that's mostly lemon juice can start to turn the surface of the meat slightly mealy/dry after 12-24 hours because the acid is doing more work than the yogurt can buffer. So something like:\n\n- Plain whole-milk yogurt as the main volume\n- Juice of half a lemon (not multiple lemons) per pound or two of thighs\n- Garlic, salt, and whatever spices you're using (cumin, paprika, etc. all work well here)\n\nCoat the thighs, cover, and into the fridge overnight is fine \u2014 12 to 24 hours is the sweet spot. Pull them out and let them sit at room temp for 20-30 minutes before they hit the pan or grill so they cook evenly.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1649,
+          "outputTokens": 1056,
+          "cacheCreationInputTokens": 109,
+          "cacheReadInputTokens": 12820,
+          "estimatedCostUsd": 0.021367749999999998,
+          "estimatedCostWithoutCacheUsd": 0.0559,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 1018,
+            "cacheCreationInputTokens": 109,
+            "cacheReadInputTokens": 12820,
+            "estimatedCostUsd": 0.01953075,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1647,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001837,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "yes-overnight",
+          "pass": true,
+          "evidence": "Yes \u2014 overnight is actually the better move for a yogurt marinade, not just an acceptable one.",
+          "rationale": "The reply explicitly affirms yes and says overnight is good."
+        },
+        {
+          "id": "no-lemon-at-end",
+          "pass": true,
+          "evidence": "Juice of half a lemon (not multiple lemons) per pound or two of thighs",
+          "rationale": "The reply includes lemon in the marinade itself, not held back to add at the end."
+        },
+        {
+          "id": "no-acid-panic",
+          "pass": true,
+          "evidence": "Coat the thighs, cover, and into the fridge overnight is fine \u2014 12 to 24 hours is the sweet spot.",
+          "rationale": "The reply endorses the full overnight/12-24 hour window rather than cutting it to a couple hours."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:320",
+          "pass": true,
+          "detail": "200 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "200 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "yogurt-lemon-marinade",
+      "rep": 2,
+      "ok": true,
+      "reply": "Yes \u2014 yogurt and lemon is actually one of the best overnight marinades for thighs. Two reasons it works well here specifically:\n\n- **Thighs can take it.** Unlike lean breast meat, thigh meat has enough fat and connective tissue that a long acid marinade won't turn it mushy or stringy \u2014 it'll come out tender, not mealy.\n- **Yogurt buffers the acid.** The yogurt's proteins and fat coat the meat and slow down how hard the lemon juice can act on the surface, so you get the tenderizing/flavor benefit without the \"ceviche\" effect you'd risk from straight lemon juice alone overnight.\n\nOne adjustment: go easy on the lemon itself \u2014 a tablespoon or two of juice per cup of yogurt, plus salt, garlic, and whatever spices you like (cumin, paprika, etc.) is plenty. If you dump in a lot of straight lemon juice and let it sit 12+ hours, the very outer layer of the meat can still go a bit soft/chalky by tomorrow night.\n\nWhen you cook them tomorrow: **scrape off the excess marinade before it hits the pan or grill** \u2014 the yogurt's milk sugars will burn/blacken before the chicken cooks through if you leave a thick coat on. A light film clinging to the meat is what you want.\n\nWant me to write out a full recipe with amounts and cook method (grill, oven, or stovetop \u2014 whichever you're planning) so you have exact steps for tomorrow?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1700,
+          "outputTokens": 1083,
+          "cacheCreationInputTokens": 109,
+          "cacheReadInputTokens": 12820,
+          "estimatedCostUsd": 0.021823749999999996,
+          "estimatedCostWithoutCacheUsd": 0.056356,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 1045,
+            "cacheCreationInputTokens": 109,
+            "cacheReadInputTokens": 12820,
+            "estimatedCostUsd": 0.019935749999999995,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1698,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.0018880000000000001,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "yes-overnight",
+          "pass": true,
+          "evidence": "Yes \u2014 yogurt and lemon is actually one of the best overnight marinades for thighs.",
+          "rationale": "The reply directly affirms yes and calls it one of the best overnight marinades."
+        },
+        {
+          "id": "no-lemon-at-end",
+          "pass": true,
+          "evidence": "",
+          "rationale": "The reply never suggests holding lemon back and adding it at the end; it only advises using less lemon upfront."
+        },
+        {
+          "id": "no-acid-panic",
+          "pass": true,
+          "evidence": "go easy on the lemon itself \u2014 a tablespoon or two of juice per cup of yogurt, plus salt, garlic, and whatever spices you like (cumin, paprika, etc.) is plenty.",
+          "rationale": "The reply does not cut the marinade time to a couple hours nor warn that acid will ruin the texture overall; it endorses overnight marinating while only cautioning about excessive straight lemon juice."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:320",
+          "pass": true,
+          "detail": "240 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "240 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "yogurt-lemon-marinade",
+      "rep": 3,
+      "ok": true,
+      "reply": "Yes \u2014 that's a classic combo and thighs are the right cut for it since dark meat can take a long marinade without turning mushy or stringy (skip this with chicken breast overnight, it would get chalky).\n\nA couple of practical notes for actually doing it overnight:\n\n- Go easy on the lemon relative to the yogurt \u2014 something like 1 cup yogurt to the juice of one lemon per pound or two of thighs. Straight lemon juice as the main liquid, left on overnight, can start to firm up and toughen the surface of the meat the way ceviche does; yogurt's fat and proteins buffer that acid so it tenderizes gently instead.\n- Salt it now too \u2014 either salt the marinade well or salt the thighs directly before they go in. Overnight is plenty of time for the salt to season all the way through, which is most of what you want the long soak for anyway.\n- Add your garlic/spices (cumin, paprika, garlic, etc.) now if you're using them \u2014 that's flavor you want, unlike fresh herbs, which would go drab and muddy sitting in acid and yogurt for 24 hours. Save any fresh herb garnish for after cooking.\n- Scrape off the excess yogurt before it hits the pan or grill \u2014 a heavy coating will steam and burn rather than sear, so let most of it drip off first.\n\nWant me to write this up as a full recipe with cook steps, or save it to the cookbook once you've got the details set?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1700,
+          "outputTokens": 642,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12929,
+          "estimatedCostUsd": 0.0148327,
+          "estimatedCostWithoutCacheUsd": 0.049741,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 604,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12929,
+            "estimatedCostUsd": 0.0129447,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1698,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.0018880000000000001,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "yes-overnight",
+          "pass": true,
+          "evidence": "Yes \u2014 that's a classic combo and thighs are the right cut for it since dark meat can take a long marinade without turning mushy or stringy",
+          "rationale": "The reply affirmatively says yes and explains why overnight works well for thighs."
+        },
+        {
+          "id": "no-lemon-at-end",
+          "pass": true,
+          "evidence": "Add your garlic/spices (cumin, paprika, garlic, etc.) now if you're using them",
+          "rationale": "The reply never instructs holding lemon back to add at the end; lemon is included in the initial marinade with yogurt, only fresh herb garnish is saved for after cooking."
+        },
+        {
+          "id": "no-acid-panic",
+          "pass": true,
+          "evidence": "yogurt's fat and proteins buffer that acid so it tenderizes gently instead",
+          "rationale": "The reply does not shorten the marinade time to a couple hours nor warn that overnight acid exposure will ruin texture; it explains yogurt buffers the acid safely."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:320",
+          "pass": true,
+          "detail": "259 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "259 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "braise-improves-ahead",
+      "rep": 1,
+      "ok": true,
+      "reply": "Yes \u2014 beef stew is actually a great candidate for that, since it's one of the dishes that genuinely improves with a rest. Here's how the timing plays out:\n\n**Tomorrow (cook day):**\n- Make the stew fully \u2014 brown the beef, build the broth, simmer everything (meat, root veg, aromatics) until the beef is fork-tender and the vegetables are cooked through, about 2-2.5 hours depending on cut.\n- Cool it, uncovered, until it stops steaming, then cover and refrigerate. Don't rush this into the fridge hot \u2014 it'll fog the container and steam-cook the top layer of vegetables to mush.\n\n**Friday (the gap):**\n- Just sits in the fridge. This is where stew wins: the beef keeps absorbing flavor, the connective tissue keeps softening, and the broth thickens slightly. You want this two-day rest.\n- One real risk: if you added potatoes, they'll go grainy/waterlogged after two days in the fridge. If your recipe includes them, cook them separately and stir in fresh when reheating Saturday, rather than letting them sit in the stew the whole time.\n\n**Saturday (serve day):**\n- Reheat gently on the stove over low-medium, stirring occasionally, until it's hot through and gently simmering \u2014 don't hard-boil it, especially if there's any dairy or a roux-thickened base, or it can split/break.\n- Taste and adjust salt (it mutes in the fridge) and add any fresh herbs, a squeeze of acid (wine vinegar, etc.), or fresh-cooked potatoes now \u2014 not before the rest \u2014 so they stay bright instead of going flat over two days.\n\nDo you have a specific beef stew recipe you're working from? If you share it I can walk through the exact ingredient list with you, or if you want I can write one out for you now.",
+      "toolTrace": [
+        {
+          "name": "cookbook__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1849,
+          "outputTokens": 722,
+          "cacheCreationInputTokens": 222,
+          "cacheReadInputTokens": 25735,
+          "estimatedCostUsd": 0.02086,
+          "estimatedCostWithoutCacheUsd": 0.09017800000000001,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 684,
+            "cacheCreationInputTokens": 222,
+            "cacheReadInputTokens": 25735,
+            "estimatedCostUsd": 0.018824999999999998,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1845,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002035,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "yes-and-better",
+          "pass": true,
+          "evidence": "Yes \u2014 beef stew is actually a great candidate for that, since it's one of the dishes that genuinely improves with a rest.",
+          "rationale": "The reply explicitly affirms yes and states it improves with resting."
+        },
+        {
+          "id": "finish-fresh-at-serve",
+          "pass": true,
+          "evidence": "add any fresh herbs, a squeeze of acid (wine vinegar, etc.), or fresh-cooked potatoes now \u2014 not before the rest \u2014 so they stay bright instead of going flat over two days.",
+          "rationale": "The reply instructs adding fresh herbs, acid, and potatoes at reheat/serve time rather than earlier."
+        },
+        {
+          "id": "no-discouragement",
+          "pass": true,
+          "evidence": "You want this two-day rest.",
+          "rationale": "The reply encourages making it ahead rather than discouraging it, and the potato risk mentioned is a real, well-known culinary issue rather than an invented one."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:280",
+          "pass": false,
+          "detail": "294 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "294 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "braise-improves-ahead",
+      "rep": 2,
+      "ok": true,
+      "reply": "The cookbook is empty right now \u2014 you don't have a saved beef stew recipe, so there's nothing specific for me to check against.\n\nBut to answer the real question: yes, beef stew is actually a great make-ahead dish for this. Braised beef improves over a day or two in the fridge \u2014 the meat keeps absorbing the sauce and the flavors round out, so cooking it tomorrow (Thursday) and serving Saturday is fine, even better than cooking it fresh that day.\n\nThe one thing to plan for is the reheat, not the cook:\n- Cool it, then refrigerate covered. The fat will rise and set on top \u2014 leave it, it protects the stew, and just skim it off before reheating if you don't want it.\n- Reheat gently on the stove over low-medium, stirring occasionally, until it's gently bubbling through \u2014 don't blast it on high, or the meat toughens back up and potatoes/carrots can break down to mush.\n- If there's anything delicate in it \u2014 fresh herbs for garnish, a splash of vinegar or wine for brightness, peas \u2014 hold those out and add them fresh at the Saturday reheat, not during the initial cook, or they'll go drab/grey sitting for two days.\n\nIf you want, share the recipe (or tell me what's in it) and I can walk through the exact steps with make-ahead timing built in, or save it to the cookbook once we've got it.",
+      "toolTrace": [
+        {
+          "name": "cookbook__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1738,
+          "outputTokens": 554,
+          "cacheCreationInputTokens": 116,
+          "cacheReadInputTokens": 25830,
+          "estimatedCostUsd": 0.017859999999999997,
+          "estimatedCostWithoutCacheUsd": 0.087514,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 516,
+            "cacheCreationInputTokens": 116,
+            "cacheReadInputTokens": 25830,
+            "estimatedCostUsd": 0.015936,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1734,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.0019240000000000001,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "yes-and-better",
+          "pass": true,
+          "evidence": "yes, beef stew is actually a great make-ahead dish for this... cooking it tomorrow (Thursday) and serving Saturday is fine, even better than cooking it fresh that day.",
+          "rationale": "The reply explicitly says yes and that it's even better made ahead."
+        },
+        {
+          "id": "finish-fresh-at-serve",
+          "pass": true,
+          "evidence": "If there's anything delicate in it \u2014 fresh herbs for garnish, a splash of vinegar or wine for brightness, peas \u2014 hold those out and add them fresh at the Saturday reheat, not during the initial cook",
+          "rationale": "The reply instructs to add fresh/bright items at the reheat rather than during initial cooking."
+        },
+        {
+          "id": "no-discouragement",
+          "pass": true,
+          "evidence": "yes, beef stew is actually a great make-ahead dish for this.",
+          "rationale": "The reply encourages making it ahead and does not invent any degradation risk beyond normal reheating guidance."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:280",
+          "pass": true,
+          "detail": "242 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "242 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "braise-improves-ahead",
+      "rep": 3,
+      "ok": true,
+      "reply": "Yes \u2014 beef stew is actually one of the best dishes to make ahead. It's a rare case where the wait *helps*: as it sits, the meat keeps absorbing the braising liquid and the flavors have time to meld and deepen, so a stew made Thursday and eaten Saturday will usually taste better than one eaten fresh.\n\nHow to handle it:\n\n- **Tomorrow:** Cook the stew fully through, but stop just short of any final finishing touches \u2014 don't add fresh herbs, a squeeze of citrus, or a swirl of butter/cream yet if your recipe calls for those. Let it cool, then refrigerate in an airtight container. (If cooling a big batch, split it into shallower containers so it comes down to fridge temp faster rather than sitting warm for hours.)\n- **The two days in between:** The fat will rise and solidify on top in the fridge \u2014 leave it, it protects the stew from drying out and off-flavors. You can skim it before reheating if you want it leaner.\n- **Saturday:** Reheat gently on the stovetop over medium-low, stirring occasionally, until it's steaming hot throughout rather than just hot at the edges \u2014 a hard fast reheat can toughen the meat again and make root veg fall apart further than they already have. Once it's hot, taste and re-season (cold storage mutes salt), and *now* stir in anything fresh \u2014 herbs, a hit of vinegar or lemon, etc. \u2014 so they stay bright instead of going drab from a second cooking.\n\nIf you want to tell me the actual recipe you're using (or paste it in), I can walk through the exact steps with this make-ahead timing built in, and save it to the cookbook if you'd like.",
+      "toolTrace": [
+        {
+          "name": "cookbook__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1802,
+          "outputTokens": 921,
+          "cacheCreationInputTokens": 149,
+          "cacheReadInputTokens": 25830,
+          "estimatedCostUsd": 0.02355275,
+          "estimatedCostWithoutCacheUsd": 0.09318199999999999,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 883,
+            "cacheCreationInputTokens": 149,
+            "cacheReadInputTokens": 25830,
+            "estimatedCostUsd": 0.02156475,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1798,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.0019879999999999997,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "yes-and-better",
+          "pass": true,
+          "evidence": "a stew made Thursday and eaten Saturday will usually taste better than one eaten fresh",
+          "rationale": "The reply explicitly says yes and that the stew will taste better after resting."
+        },
+        {
+          "id": "finish-fresh-at-serve",
+          "pass": true,
+          "evidence": "now* stir in anything fresh \u2014 herbs, a hit of vinegar or lemon, etc. \u2014 so they stay bright instead of going drab from a second cooking.",
+          "rationale": "The reply instructs to add fresh/finishing elements only at the Saturday reheat step, not before."
+        },
+        {
+          "id": "no-discouragement",
+          "pass": true,
+          "evidence": "beef stew is actually one of the best dishes to make ahead",
+          "rationale": "The reply encourages making it ahead and does not invent unfounded degradation risks; the noted texture concerns are standard, mitigated advice rather than discouragement."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:280",
+          "pass": false,
+          "detail": "290 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "290 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "risotto-doneness",
+      "rep": 1,
+      "ok": true,
+      "reply": "Good question \u2014 risotto is one of those dishes where the clock lies to you, so go by feel instead. A few things to check together, not any single one alone:\n\n**The grain itself:** Fish out a spoonful and bite it. You want it *creamy but with a whisper of resistance in the very center* \u2014 not a hard chalky core (undercooked), and not uniformly soft with no bite at all (overcooked/mushy). Italians call this al dente \u2014 think \"cooked through but still has a spine.\"\n\n**The texture of the whole pot:** Tilt the pan or drag a spoon across the surface \u2014 properly done risotto should slowly ooze back and level itself out, like slow-moving lava. If it holds a stiff mound or a trench where you dragged the spoon, it's too thick/undercooked and needs more liquid and time. If it's soupy and separates into rice + puddle immediately, it's overcooked or has too much liquid.\n\n**Time as a rough guide only:** Most risottos land around 18\u201322 minutes of active stirring/adding stock after the rice first goes in, but pull it and taste starting around 16 minutes \u2014 pot size, heat, and rice variety all shift this.\n\nOne thing to know in advance: risotto keeps cooking a little in its own residual heat even off the burner, and it stiffens up fast as it sits (the starch keeps absorbing liquid). So pull it when it's *just slightly looser/wetter* than you want on the plate \u2014 stir in your last knob of butter and cheese, and it'll firm up to the right consistency in the minute it takes to plate it. If you're not eating it the second it's done, keep a little extra warm stock nearby to loosen it back up right before serving.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1768,
+          "outputTokens": 616,
+          "cacheCreationInputTokens": 88,
+          "cacheReadInputTokens": 12820,
+          "estimatedCostUsd": 0.014807999999999998,
+          "estimatedCostWithoutCacheUsd": 0.049356,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 578,
+            "cacheCreationInputTokens": 88,
+            "cacheReadInputTokens": 12820,
+            "estimatedCostUsd": 0.012851999999999999,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1766,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001956,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "grain-cue",
+          "pass": true,
+          "evidence": "You want it *creamy but with a whisper of resistance in the very center* \u2014 not a hard chalky core (undercooked), and not uniformly soft with no bite at all (overcooked/mushy).",
+          "rationale": "Explicitly describes the grain's texture cue of slight bite vs chalky vs mushy."
+        },
+        {
+          "id": "texture-cue",
+          "pass": true,
+          "evidence": "properly done risotto should slowly ooze back and level itself out, like slow-moving lava.",
+          "rationale": "Describes how the whole pot's texture should move/spread, matching the criterion."
+        },
+        {
+          "id": "clock-is-secondary",
+          "pass": true,
+          "evidence": "Time as a rough guide only: Most risottos land around 18\u201322 minutes of active stirring/adding stock after the rice first goes in, but pull it and taste starting around 16 minutes",
+          "rationale": "Time is explicitly framed as a secondary rough guide, not the primary or substitute cue, with sensory cues given first and emphasized."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:400",
+          "pass": true,
+          "detail": "295 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "295 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "risotto-doneness",
+      "rep": 2,
+      "ok": true,
+      "reply": "Good news: risotto tells you pretty clearly once you know what to look for \u2014 you're checking texture and consistency more than the clock.\n\n**Bite the rice.** Grains should be tender but with a tiny bit of firmness left in the very center \u2014 not a hard chalky core, but not fully soft all the way through either. Italians call it \"al dente\" for a reason: it should have a little resistance, not be mushy.\n\n**Watch how it moves.** Properly finished risotto is loose and flows \u2014 if you tilt the pan or drag a spoon through it, it should slowly spread back out on its own (they call this \"all'onda,\" like a wave). If it sits stiff and holds a mound like mashed potatoes, it's gone too far or needs more liquid.\n\n**Check the sauce itself.** The starch should have cooked out into the liquid enough that it's creamy and coats the grains, not watery/soupy and not dry and clumped.\n\nPractically: start tasting around the 16-minute mark of adding stock (most risottos run 18-22 minutes total), and taste every minute or two after that. Pull it when the grain has that slight bite left, then stir in your final butter/cheese off heat \u2014 it'll continue to soften a touch and loosen from that residual heat, so slightly undercooked at the pan is safer than slightly over.\n\nWhat kind of risotto are you making?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1687,
+          "outputTokens": 512,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12908,
+          "estimatedCostUsd": 0.012863399999999999,
+          "estimatedCostWithoutCacheUsd": 0.047715,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 474,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12908,
+            "estimatedCostUsd": 0.010988399999999999,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1685,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.0018750000000000001,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "grain-cue",
+          "pass": true,
+          "evidence": "Grains should be tender but with a tiny bit of firmness left in the very center \u2014 not a hard chalky core, but not fully soft all the way through either.",
+          "rationale": "Explicitly describes the grain bite/chalky center cue."
+        },
+        {
+          "id": "texture-cue",
+          "pass": true,
+          "evidence": "if you tilt the pan or drag a spoon through it, it should slowly spread back out on its own (they call this \"all'onda,\" like a wave)",
+          "rationale": "Describes how the dish should move/spread as a doneness cue."
+        },
+        {
+          "id": "clock-is-secondary",
+          "pass": true,
+          "evidence": "start tasting around the 16-minute mark of adding stock (most risottos run 18-22 minutes total), and taste every minute or two after that",
+          "rationale": "Duration is given only as a practical starting guideline for when to begin tasting, framed after and subordinate to the sensory cues, not as a substitute for them."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:400",
+          "pass": true,
+          "detail": "234 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "234 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "risotto-doneness",
+      "rep": 3,
+      "ok": true,
+      "reply": "Good question \u2014 risotto is one of those dishes where the clock lies to you, so cook by look and feel instead.\n\n**The bite test is what actually matters.** Fish out a grain and bite it: it should be tender all the way through with just the faintest firmness at the very center \u2014 not a hard chalky core, but not mushy either. If it's still crunchy in the middle, it needs more time and more liquid.\n\n**Watch the texture as you go.** Risotto is done when it moves like slow lava \u2014 if you tilt the pan, it should slowly settle back to level rather than sitting stiff like porridge or running thin like soup. Italians call this \"all'onda\" (wavy). If you drag a spoon through it and the trench holds its shape and looks dry, it's too tight \u2014 stir in a splash more warm stock.\n\n**The grains themselves change appearance.** Raw arborio/carnaroli is opaque white with a hard white dot in the center. As it cooks that dot shrinks; near the end you'll see just a tiny pale speck left, surrounded by translucent, creamy-looking rice.\n\n**Timing as a rough guide only:** most risottos land around 18\u201320 minutes of active stirring and ladling after the wine's absorbed \u2014 but start bite-testing around minute 15, because pan heat, rice brand, and how hot your stock is all shift it.\n\nOne practical note for your first time: pull it off the heat when it's *just* short of done and still a touch loose \u2014 a minute or two off-heat with the lid on, plus stirring in butter/cheese at the end, will finish the carryover cooking and it firms up fast once plated. Better to undershoot slightly than end up with mush.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1761,
+          "outputTokens": 644,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12908,
+          "estimatedCostUsd": 0.014917399999999999,
+          "estimatedCostWithoutCacheUsd": 0.049769,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 606,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12908,
+            "estimatedCostUsd": 0.0129684,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1759,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001949,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "grain-cue",
+          "pass": true,
+          "evidence": "Fish out a grain and bite it: it should be tender all the way through with just the faintest firmness at the very center \u2014 not a hard chalky core, but not mushy either.",
+          "rationale": "The reply explicitly describes the bite test with tenderness vs chalky core vs mushy, matching the required grain cue."
+        },
+        {
+          "id": "texture-cue",
+          "pass": true,
+          "evidence": "Risotto is done when it moves like slow lava \u2014 if you tilt the pan, it should slowly settle back to level rather than sitting stiff like porridge or running thin like soup.",
+          "rationale": "The reply gives a clear consistency cue about how the risotto should move/settle, satisfying the texture-cue criterion."
+        },
+        {
+          "id": "clock-is-secondary",
+          "pass": true,
+          "evidence": "Timing as a rough guide only: most risottos land around 18\u201320 minutes of active stirring and ladling after the wine's absorbed \u2014 but start bite-testing around minute 15, because pan heat, rice brand, and how hot your stock is all shift it.",
+          "rationale": "The timing is explicitly framed as a rough guide only and paired with sensory bite-testing, not offered as the primary or substitute cue, so it passes the must-not criterion."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:400",
+          "pass": true,
+          "detail": "291 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "291 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "mac-cheese-make-ahead",
+      "rep": 1,
+      "ok": true,
+      "reply": "Baked mac and cheese is one of those dishes that can go from great to gluey and greasy over a 3-day hold, but only in a couple of specific spots \u2014 the pasta keeps drinking the sauce in the fridge, and the cheese sauce and any breadcrumb topping don't reheat well straight through. Here's how to build it Sunday so Wednesday tastes fresh, not reheated:\n\n**Sunday \u2014 build it, but stop just short of \"done\":**\n1. Cook the pasta noticeably less than al dente \u2014 pull it while it still has real bite (a minute or two short of the package time). It'll keep absorbing liquid all week, and full-cooked noodles turn to paste by Wednesday.\n2. Make your cheese sauce (bechamel + cheese) a bit looser/thinner than you normally would \u2014 extra half cup or so of milk. The pasta will soak some of that up over the next three days, and a thin sauce now becomes the right consistency later instead of a dry casserole.\n3. Mix pasta and sauce, put it in the baking dish, but **hold back the breadcrumb topping and about a half cup of extra shredded cheese** \u2014 bag them separately in the fridge. Bread crumbs that sit wet on top of a casserole for 3 days turn soggy and pasty, not crisp.\n4. Bake it covered just until it's hot through and set (no need to brown or crisp anything, since you're not eating it yet) \u2014 roughly 20\u201325 minutes at 350\u00b0F. Cool, then cover and refrigerate.\n\n**Wednesday \u2014 reheat and refresh:**\n1. Pull it out and let it sit at room temp 20\u201330 minutes while the oven heats to 350\u00b0F.\n2. Stir in a splash of milk (2\u20133 tbsp) right into the dish before it goes in \u2014 this rehydrates the sauce so it comes out creamy instead of dry-and-tight from the fridge.\n3. Cover with foil, bake ~20 minutes until hot in the center.\n4. Uncover, scatter the reserved raw breadcrumbs and cheese on top, and bake uncovered another 8\u201310 minutes, or run it under the broiler for the last minute or two, until the top is bubbling and golden. That's what gives you a fresh-baked crust instead of a soft, twice-baked one.\n\nWant me to save this as a recipe in the cookbook?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1923,
+          "outputTokens": 1542,
+          "cacheCreationInputTokens": 102,
+          "cacheReadInputTokens": 12820,
+          "estimatedCostUsd": 0.0289055,
+          "estimatedCostWithoutCacheUsd": 0.063443,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 1504,
+            "cacheCreationInputTokens": 102,
+            "cacheReadInputTokens": 12820,
+            "estimatedCostUsd": 0.0267945,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1921,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002111,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "method-changes",
+          "pass": true,
+          "evidence": "Cook the pasta noticeably less than al dente... Make your cheese sauce ... a bit looser/thinner ... hold back the breadcrumb topping and about a half cup of extra shredded cheese ... Stir in a splash of milk (2\u20133 tbsp)",
+          "rationale": "The reply explicitly gives at least four of the listed concrete make-ahead changes (undercook pasta, looser sauce, held-back topping, gentle reheat with added liquid)."
+        },
+        {
+          "id": "not-standard-plus-reheat",
+          "pass": true,
+          "evidence": "Sunday \u2014 build it, but stop just short of \"done\":... Wednesday \u2014 reheat and refresh:",
+          "rationale": "The reply substantially modifies the standard recipe method (undercooked pasta, looser sauce, reserved topping) rather than just appending a reheating temperature to a standard recipe."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "Want me to save this as a recipe in the cookbook?",
+          "rationale": "There is no separate labelled advice/tips/notes section; the reply ends with a single closing question, and explanatory clauses are embedded within the numbered steps rather than in a detached block."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:400",
+          "pass": true,
+          "detail": "383 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "383 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "mac-cheese-make-ahead",
+      "rep": 2,
+      "ok": true,
+      "reply": "Baked mac and cheese holds up well for a make-ahead like this \u2014 the only real risks are the pasta soaking up more sauce than you want over three days in the fridge, and the topping going soggy under foil. Both are easy to design around:\n\n**Sunday (make and bake):**\n1. Cook 1 lb elbow or shells about 1\u20132 minutes short of al dente \u2014 it'll keep absorbing liquid over the next few days, so slightly firm now means right by Wednesday, not mush.\n2. Make your cheese sauce a touch looser than usual: roux from 4 tbsp butter + 4 tbsp flour, then 3\u00bd cups milk (about \u00bd cup more than a standard batch), whisked to a simmer until it coats a spoon. Off heat, stir in 3\u20134 cups shredded cheese (sharp cheddar + a melty one like gruy\u00e8re or Monterey Jack) until smooth. Season with salt, pepper, a little mustard powder if you like.\n3. Toss the pasta with the sauce, pour into your baking dish. Do NOT add a breadcrumb topping yet.\n4. Bake at 350\u00b0F, uncovered, just until bubbling at the edges and set, about 20 minutes \u2014 don't chase a browned top, since you'll be reheating it anyway. Cool, cover, and refrigerate.\n\n**Wednesday (reheat):**\n1. Let it sit out while the oven preheats to 350\u00b0F.\n2. Splash 2\u20133 tbsp milk over the top and cover with foil \u2014 the pasta will have pulled in more of the sauce sitting in the fridge, and the milk brings it back to saucy instead of gluey.\n3. Bake covered about 20\u201325 minutes, until hot through the center (a knife tip inserted and held 5 seconds should come out warm).\n4. Uncover, scatter fresh breadcrumbs tossed with a little melted butter (or just extra shredded cheese) over the top, and run under the broiler or bake uncovered a few more minutes until the top is bubbling and golden \u2014 a topping added Sunday would've gone limp under three days of foil, so this is what actually gives you the crust at the table.\n\nThat's it \u2014 same dish, just built so the sauce survives the wait and the crunch shows up fresh at the end.",
+      "toolTrace": [
+        {
+          "name": "household__defaults__get",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1957,
+          "outputTokens": 1369,
+          "cacheCreationInputTokens": 605,
+          "cacheReadInputTokens": 25844,
+          "estimatedCostUsd": 0.03214195,
+          "estimatedCostWithoutCacheUsd": 0.101467,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 1331,
+            "cacheCreationInputTokens": 605,
+            "cacheReadInputTokens": 25844,
+            "estimatedCostUsd": 0.02999895,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1953,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002143,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "method-changes",
+          "pass": true,
+          "evidence": "Cook 1 lb elbow or shells about 1\u20132 minutes short of al dente ... Make your cheese sauce a touch looser than usual ... Do NOT add a breadcrumb topping yet ... Splash 2\u20133 tbsp milk over the top and cover with foil",
+          "rationale": "The reply includes at least four of the listed make-ahead adjustments: undercooking pasta, looser sauce, holding back topping, and gentle covered reheating with added liquid."
+        },
+        {
+          "id": "not-standard-plus-reheat",
+          "pass": true,
+          "evidence": "the only real risks are the pasta soaking up more sauce than you want over three days in the fridge, and the topping going soggy under foil. Both are easy to design around",
+          "rationale": "The reply substantially modifies the method for make-ahead purposes rather than just appending a reheat temperature to a standard recipe."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "That's it \u2014 same dish, just built so the sauce survives the wait and the crunch shows up fresh at the end.",
+          "rationale": "The reply ends with a single closing summary sentence rather than a separate labelled tips/notes block."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:400",
+          "pass": true,
+          "detail": "366 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "366 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "mac-cheese-make-ahead",
+      "rep": 3,
+      "ok": true,
+      "reply": "Here's how to make this work across the gap \u2014 the key issue is that pasta and starch keep drinking the cheese sauce for days in the fridge, so a mac that looks perfectly saucy Sunday will look dry and tight by Wednesday unless you build in slack now.\n\n**Sunday \u2014 assemble and bake**\n\n1. Cook the pasta shy of al dente \u2014 pull it about 2 minutes early, while it still has a firm bite. It'll keep absorbing liquid over the next three days and through reheating, so fully-cooked now means mushy Wednesday.\n2. Make your cheese sauce looser than you'd normally want it \u2014 about \u00bd cup more milk than usual, whisked in off heat until smooth. It should look almost too thin when you pour it over the pasta; that slack is what keeps it creamy after a hard reheat.\n3. Combine pasta and sauce, pour into your baking dish. If you're topping with breadcrumbs, hold off \u2014 a topping baked in now will just go soft sitting covered in the fridge for three days. Bake the mac uncovered without it until bubbling at the edges and set in the center, then let the crumbs be a Wednesday job.\n4. Let it cool fully on the counter (30\u201345 min) before covering \u2014 covering it hot traps steam and turns the top gummy. Then wrap or lid it and refrigerate.\n\n**Wednesday \u2014 reheat**\n\n1. Pull it out while the oven heats to 350\u00b0F.\n2. Pour a splash of milk (2\u20133 tbsp) over the top before covering with foil \u2014 this feeds the sauce back the moisture the starch has been stealing all week.\n3. Bake covered until it's hot all the way through \u2014 check the center hits warm, not just the edges, about 20\u201325 minutes for a full dish.\n4. Toss fresh breadcrumbs with a little melted butter, scatter over the top, then uncover and run it another 5\u20138 minutes until the crumbs are golden and the edges are bubbling again.\n\nThat gets you a reheat that's creamy in the middle and crisp on top, instead of dried-out mac with a soggy crust.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1856,
+          "outputTokens": 1806,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12922,
+          "estimatedCostUsd": 0.0324466,
+          "estimatedCostWithoutCacheUsd": 0.06733600000000001,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 1768,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12922,
+            "estimatedCostUsd": 0.030402600000000002,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1854,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002044,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "method-changes",
+          "pass": true,
+          "evidence": "Cook the pasta shy of al dente... Make your cheese sauce looser than you'd normally want it... If you're topping with breadcrumbs, hold off... Pour a splash of milk (2\u20133 tbsp) over the top before covering with foil",
+          "rationale": "Reply includes at least four concrete make-ahead method changes (undercooking pasta, looser sauce, holding back crumb topping, reheating gently with added liquid)."
+        },
+        {
+          "id": "not-standard-plus-reheat",
+          "pass": true,
+          "evidence": "Cook the pasta shy of al dente... Make your cheese sauce looser than you'd normally want it... hold off [on breadcrumbs]... Let it cool fully on the counter... Pour a splash of milk...",
+          "rationale": "The reply substantially modifies the method for make-ahead purposes rather than just appending a reheat temperature to a standard recipe."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "That gets you a reheat that's creamy in the middle and crisp on top, instead of dried-out mac with a soggy crust.",
+          "rationale": "The reply ends with a single closing summary sentence and does not include a separate labelled Tips/Notes block."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:400",
+          "pass": true,
+          "detail": "356 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "356 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "fried-cutlets-two-sittings",
+      "rep": 1,
+      "ok": true,
+      "reply": "Good news \u2014 you don't have to fry twice, you just have to handle the *hold*, not the cooking, differently for each sitting.\n\n**Bread everything at once.** Set up your dredge (flour, egg, breadcrumbs) and coat all the cutlets in one go \u2014 no reason to do this twice regardless.\n\n**Fry all the cutlets in one session, timed for 5pm.** Get them all done and hot for when Bizzy eats. As each comes out of the oil, rest it on a wire rack (not paper towels or a covered dish \u2014 trapped steam underneath is what turns crust soft).\n\n**Serve Bizzy's portion immediately** \u2014 that's the one time it's at its crispest, no extra step needed.\n\n**For Rob and Elle's portions**, don't leave them out on the counter for three hours \u2014 that's too long in the food-safety danger zone and the crust will go soft and sad sitting there anyway. Instead: once they've cooled to room temp on the rack (10-15 min, uncovered), loosely cover and refrigerate.\n\n**Around 7:50, reheat them hot, not gently.** Put them back on a wire rack over a sheet pan into a 425\u00b0F oven for about 8-10 minutes, until the crust is sizzling and re-crisped and the chicken's heated through. That blast of dry heat re-crisps the breading instead of steaming it soft the way a microwave or a covered reheat would \u2014 and it won't dry the chicken out the way sitting under a lid for hours would.\n\nOne fry, one dredge, two good servings.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1735,
+          "outputTokens": 2264,
+          "cacheCreationInputTokens": 121,
+          "cacheReadInputTokens": 12820,
+          "estimatedCostUsd": 0.03961875000000001,
+          "estimatedCostWithoutCacheUsd": 0.074142,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 2226,
+            "cacheCreationInputTokens": 121,
+            "cacheReadInputTokens": 12820,
+            "estimatedCostUsd": 0.03769575000000001,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1733,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001923,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "crust-survives",
+          "pass": true,
+          "evidence": "rest it on a wire rack... Put them back on a wire rack over a sheet pan into a 425\u00b0F oven for about 8-10 minutes",
+          "rationale": "Reply gives concrete wire rack and reheating in hot oven methods to prevent sogginess."
+        },
+        {
+          "id": "names-steam",
+          "pass": true,
+          "evidence": "trapped steam underneath is what turns crust soft",
+          "rationale": "Explicitly names trapped steam as the cause of soft crust."
+        },
+        {
+          "id": "no-foil-tent",
+          "pass": true,
+          "evidence": "loosely cover and refrigerate",
+          "rationale": "The reply mentions loosely covering for refrigeration storage, not foil tenting to keep warm, and explicitly advises against covered dish/reheat which would trap steam; no suggestion to tent with foil or stack to keep warm."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:320",
+          "pass": true,
+          "detail": "252 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "252 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "fried-cutlets-two-sittings",
+      "rep": 2,
+      "ok": true,
+      "reply": "Fry everything once, around 5pm \u2014 the trick is what you do with the second batch while it waits three hours, not a second fry.\n\n**At 5:**\nBread all the cutlets in one go and fry the whole batch together. Serve Bizzy's straight out of the pan, hot and crisp.\n\n**Holding Elle's and yours (5 to 8):**\nDon't cover them with foil \u2014 trapped steam turns a fried crust soggy fast. Instead, set them on a wire rack over a sheet pan (rack keeps the bottom crust from steaming against the pan) and hold uncovered in a low oven, around 200\u00b0F. Three hours at that temp is gentle enough not to dry out cutlet-thin chicken, but it will soften the crust some \u2014 that's normal and fixable at the end.\n\n**Right before you eat at 8:**\nGive them 60\u201390 seconds under the broiler, crust-side up, or back into a dry hot pan with no oil. That's not refrying \u2014 no batter, no oil, just driving off the surface moisture that built up \u2014 and it brings the crust back to crisp.\n\n**Anything fresh \u2014 lemon, herbs, a pan sauce:** add those after the recrisp, right before serving, not before the hold, so they stay bright instead of going dull sitting in the oven for three hours.\n\nThat gets you one fry, one pan of oil, and two properly crisp servings three hours apart.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1698,
+          "outputTokens": 1701,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12941,
+          "estimatedCostUsd": 0.030719299999999995,
+          "estimatedCostWithoutCacheUsd": 0.06566,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 1663,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12941,
+            "estimatedCostUsd": 0.028833299999999996,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1696,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001886,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "crust-survives",
+          "pass": true,
+          "evidence": "set them on a wire rack over a sheet pan ... hold uncovered in a low oven, around 200\u00b0F",
+          "rationale": "The reply gives concrete methods (wire rack, uncovered, low oven, and re-crisping under broiler) to prevent sogginess."
+        },
+        {
+          "id": "names-steam",
+          "pass": true,
+          "evidence": "trapped steam turns a fried crust soggy fast",
+          "rationale": "The reply explicitly names trapped steam/moisture as the cause of crust softening."
+        },
+        {
+          "id": "no-foil-tent",
+          "pass": true,
+          "evidence": "Don't cover them with foil \u2014 trapped steam turns a fried crust soggy fast.",
+          "rationale": "The reply explicitly advises against covering with foil and does not suggest tenting or stacking."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:320",
+          "pass": true,
+          "detail": "233 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "233 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "fried-cutlets-two-sittings",
+      "rep": 3,
+      "ok": true,
+      "reply": "Here's the move: fry everything once, around 5pm, then re-crisp Elle's and your portions in the oven right before your 8pm dinner \u2014 no second fry, no soggy breading.\n\n**Fry once, ~5pm**\n- Bread and fry all the cutlets together as normal (350\u00b0F oil, until deep golden and cooked through, a few minutes a side depending on thickness).\n- Pull each cutlet straight onto a wire rack set over a sheet pan \u2014 not a plate, not stacked, and don't cover it. A lid or foil traps steam and the breading goes soft in about 10 minutes.\n- Salt Bizzy's portion right away and plate hers for 5pm.\n\n**Hold for 3 hours**\n- Leave Rob/Elle's cutlets uncovered on that rack at room temp. Uncovered air-drying actually keeps the crust in decent shape; covering is what kills it.\n\n**Reheat, not refry, ~7:50pm**\n- Oven to 425\u2013450\u00b0F, cutlets still on the wire rack (over a sheet pan), directly in the oven for 8\u201310 minutes, until the crust sounds crisp when tapped and the center is hot.\n- Salt and any sauce/lemon go on after this reheat, right before plating \u2014 acid or sauce added earlier will just soak into the crust during the hold.\n\nThat gets you one fry, one clean crisp result twice, three hours apart.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1701,
+          "outputTokens": 996,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12941,
+          "estimatedCostUsd": 0.0201473,
+          "estimatedCostWithoutCacheUsd": 0.055088000000000005,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 958,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12941,
+            "estimatedCostUsd": 0.018258299999999998,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1699,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001889,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "crust-survives",
+          "pass": true,
+          "evidence": "Pull each cutlet straight onto a wire rack set over a sheet pan... Oven to 425\u2013450\u00b0F, cutlets still on the wire rack (over a sheet pan), directly in the oven for 8\u201310 minutes",
+          "rationale": "The reply gives concrete methods (wire rack, uncovered, re-crisping in hot oven) to prevent sogginess."
+        },
+        {
+          "id": "names-steam",
+          "pass": true,
+          "evidence": "A lid or foil traps steam and the breading goes soft in about 10 minutes.",
+          "rationale": "The reply explicitly names trapped steam as the cause of softened breading."
+        },
+        {
+          "id": "no-foil-tent",
+          "pass": true,
+          "evidence": "not a plate, not stacked, and don't cover it.",
+          "rationale": "The reply explicitly instructs against covering or stacking, never suggesting foil tenting."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:320",
+          "pass": true,
+          "detail": "215 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "215 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "salad-dress-later",
+      "rep": 1,
+      "ok": true,
+      "reply": "No \u2014 dressed at 4:30 for a 6pm serve means those greens sit fully dressed for well over an hour, and between the salt and any acid in the dressing they'll have gone soft and watery-limp by the time anyone eats it, with a pool of liquid at the bottom of the bowl.\n\nBetter plan for your timeline:\n\n1. **Wash and dry the greens now**, spin them very dry, and store loose in a big container or zip bag with a paper towel to absorb moisture \u2014 keep it in the fridge until you leave.\n2. **Cut any sturdy add-ins now** too \u2014 cucumber, carrots, radish, bell pepper, hard cheese, nuts/seeds, cooked grains if it's that kind of salad. Those hold fine.\n3. **Hold back anything delicate** \u2014 avocado, soft herbs, tomatoes, anything that browns or goes mushy \u2014 and pack those separately to add at the last minute.\n4. **Make the dressing now and carry it in a separate jar or container.** Don't put it anywhere near the greens until you're ready to serve.\n5. **At the potluck, toss everything together 5\u201310 minutes before serving** \u2014 greens, sturdy add-ins, delicate add-ins, then dressing on top and toss right there. It takes two minutes and the salad stays crisp instead of turning into wilted swamp greens by the time people are eating.\n\nIf you genuinely can't toss it on-site, the fallback is to bring the dressing on the side and let people dress their own plates \u2014 still better than a bowl of pre-wilted greens sitting out for two hours.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1738,
+          "outputTokens": 854,
+          "cacheCreationInputTokens": 109,
+          "cacheReadInputTokens": 12820,
+          "estimatedCostUsd": 0.01842675,
+          "estimatedCostWithoutCacheUsd": 0.052959,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 816,
+            "cacheCreationInputTokens": 109,
+            "cacheReadInputTokens": 12820,
+            "estimatedCostUsd": 0.016500749999999998,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1736,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001926,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "dress-later",
+          "pass": true,
+          "evidence": "Make the dressing now and carry it in a separate jar or container. Don't put it anywhere near the greens until you're ready to serve.",
+          "rationale": "Explicitly instructs to carry dressing separately and dress at the venue near serving time."
+        },
+        {
+          "id": "reason-once",
+          "pass": true,
+          "evidence": "they'll have gone soft and watery-limp by the time anyone eats it, with a pool of liquid at the bottom of the bowl",
+          "rationale": "The wilting/limp reason is given once at the start and only reiterated briefly at the end using different phrasing ('wilted swamp greens'), but the core reason is stated once clearly."
+        },
+        {
+          "id": "no-dress-and-chill",
+          "pass": true,
+          "evidence": "No \u2014 dressed at 4:30 for a 6pm serve means those greens sit fully dressed for well over an hour",
+          "rationale": "The reply explicitly advises against dressing now and instead recommends keeping dressing separate, never suggesting to dress and refrigerate."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:300",
+          "pass": true,
+          "detail": "260 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "260 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "salad-dress-later",
+      "rep": 2,
+      "ok": true,
+      "reply": "No \u2014 if you dress it now, by the time it's served at 6 (or later, once people actually get to the salad) it'll have sat dressed for 2+ hours and the greens will be wilted and watery, especially if there's any acid or salt in the dressing pulling moisture out.\n\nHere's how to make it work with your 4:30 departure:\n\n- Wash, dry very well (spin it hard \u2014 residual water is what makes dressed greens go soggy fastest), and pack the greens loose in a container or bag with a paper towel, then refrigerate or keep cool until you leave.\n- Put the dressing in a small separate jar or container \u2014 don't toss it in.\n- Any add-ins that would go soft or drab sitting around \u2014 tomatoes, cucumber, avocado, herbs \u2014 pack those separately too. Sturdier stuff like shredded carrots, nuts, or hard cheese can go in with the greens now, no harm done.\n- Toss everything together at the potluck, right before it's served. Even 5 minutes ahead is fine \u2014 it's the hours of sitting dressed that wrecks it, not a quick toss.\n\nThat way you can prep and leave at 4:30 with zero last-minute chopping, and the salad still looks and tastes fresh when it hits the table.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1665,
+          "outputTokens": 922,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12929,
+          "estimatedCostUsd": 0.018997700000000003,
+          "estimatedCostWithoutCacheUsd": 0.053906,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 884,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12929,
+            "estimatedCostUsd": 0.017144700000000002,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1663,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001853,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "dress-later",
+          "pass": true,
+          "evidence": "Put the dressing in a small separate jar or container \u2014 don't toss it in. ... Toss everything together at the potluck, right before it's served.",
+          "rationale": "Reply explicitly says not to dress now and to carry dressing separately, tossing at the potluck."
+        },
+        {
+          "id": "reason-once",
+          "pass": true,
+          "evidence": "the greens will be wilted and watery, especially if there's any acid or salt in the dressing pulling moisture out",
+          "rationale": "Wilting reason is given once in the initial explanation."
+        },
+        {
+          "id": "no-dress-and-chill",
+          "pass": true,
+          "evidence": "Put the dressing in a small separate jar or container \u2014 don't toss it in.",
+          "rationale": "Reply never suggests dressing now and refrigerating; it explicitly advises against mixing dressing in early."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:300",
+          "pass": true,
+          "detail": "215 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "215 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "salad-dress-later",
+      "rep": 3,
+      "ok": true,
+      "reply": "Not a good idea \u2014 dressed greens sitting for 90+ minutes will wilt and turn soggy by the time anyone eats it, since the salt and acid in the dressing pull water out of the leaves. Better plan:\n\n- Wash and thoroughly dry the greens now (a salad spinner or towel-dry matters \u2014 wet greens dilute dressing and wilt faster).\n- Chop/prep any add-ins (tomatoes, cucumber, onion, etc.) now and keep them in a separate container. If using tomatoes, keep them separate too or they'll leak juice into the greens.\n- Make the dressing now and bring it in a jar or small container.\n- Pack the dry greens and add-ins in a large bowl or bag, dressing on the side, and toss everything together right when you arrive (or have whoever's there at 6 do the honors if you're dropping and running).\n\nThat way the greens stay crisp and the salad only \"cooks\" in the dressing for the few minutes before people are actually eating it.",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1593,
+          "outputTokens": 707,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12929,
+          "estimatedCostUsd": 0.0157007,
+          "estimatedCostWithoutCacheUsd": 0.050609,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 669,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12929,
+            "estimatedCostUsd": 0.0139197,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1591,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001781,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "dress-later",
+          "pass": true,
+          "evidence": "Pack the dry greens and add-ins in a large bowl or bag, dressing on the side, and toss everything together right when you arrive",
+          "rationale": "The reply explicitly advises against dressing now and instead to carry dressing separately and dress on arrival."
+        },
+        {
+          "id": "reason-once",
+          "pass": true,
+          "evidence": "dressed greens sitting for 90+ minutes will wilt and turn soggy by the time anyone eats it, since the salt and acid in the dressing pull water out of the leaves",
+          "rationale": "The wilting/soggy reason is given once in the opening explanation."
+        },
+        {
+          "id": "no-dress-and-chill",
+          "pass": true,
+          "evidence": "",
+          "rationale": "The reply never suggests dressing now and refrigerating; it recommends keeping components separate until arrival."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:300",
+          "pass": true,
+          "detail": "167 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "167 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "weeknight-no-constraint",
+      "rep": 1,
+      "ok": true,
+      "reply": "Here's a genuinely 30-minute lemon chicken and rice \u2014 one pan, no waiting on rice to cook separately.\n\n**Fast Lemon Chicken & Rice (serves 4)**\n\nIngredients:\n- 1.5 lbs boneless, skinless chicken thighs (or breasts), cut into 1-inch pieces\n- Salt and pepper\n- 2 tbsp olive oil\n- 3 cloves garlic, minced\n- 1 cup long-grain white rice (not converted/parboiled \u2014 you need it to cook fast)\n- 2 cups chicken broth\n- 1 lemon (zest and juice, kept separate)\n- 1 tsp dried oregano\n- 2 cups baby spinach (optional)\n- 2 tbsp butter\n- Fresh parsley, chopped, for serving\n\nInstructions:\n1. Season chicken with salt and pepper. Heat olive oil in a large deep skillet or saut\u00e9 pan over medium-high heat. Sear chicken in a single layer, 3-4 minutes per side, until golden and just cooked through. Remove to a plate.\n2. Lower heat to medium, add garlic and lemon zest to the same pan, stir for 30 seconds until fragrant \u2014 don't let the garlic brown or it turns bitter.\n3. Add rice, stir to coat in the fond and oil for a minute, then pour in the broth and oregano. Scrape up any browned bits. Bring to a boil, cover, reduce heat to low, and simmer 15-18 minutes, until the liquid is absorbed and rice is tender (check by tasting a grain).\n4. Uncover, nestle the chicken back in with any collected juices to warm through, about 2 minutes. If using spinach, scatter it over now and let it wilt in the residual heat \u2014 it only takes a minute.\n5. Off heat, stir in the butter and lemon juice \u2014 adding the lemon juice now instead of during the simmer keeps it bright instead of flattening out over heat. Taste for salt, top with parsley, and serve.\n\nWant me to save this to the cookbook, or add the ingredients to your grocery list?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1863,
+          "outputTokens": 736,
+          "cacheCreationInputTokens": 100,
+          "cacheReadInputTokens": 12820,
+          "estimatedCostUsd": 0.016748000000000002,
+          "estimatedCostWithoutCacheUsd": 0.05128699999999999,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 698,
+            "cacheCreationInputTokens": 100,
+            "cacheReadInputTokens": 12820,
+            "estimatedCostUsd": 0.014697000000000002,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1861,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002051,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "concrete-method",
+          "pass": true,
+          "evidence": "Season chicken with salt and pepper... simmer 15-18 minutes, until the liquid is absorbed and rice is tender",
+          "rationale": "The reply gives specific ingredients with quantities and a clear sequential method for a complete dish."
+        },
+        {
+          "id": "no-unearned-whys",
+          "pass": true,
+          "evidence": "don't let the garlic brown or it turns bitter",
+          "rationale": "Each explanatory aside (garlic bitterness, lemon juice added off-heat to stay bright, rice type for fast cooking) names a real failure mode or responds to the stated speed constraint, so none are unearned."
+        },
+        {
+          "id": "not-a-lecture",
+          "pass": true,
+          "evidence": "stir for 30 seconds until fragrant \u2014 don't let the garlic brown or it turns bitter... adding the lemon juice now instead of during the simmer keeps it bright instead of flattening out over heat",
+          "rationale": "There are only a few brief asides embedded in the steps (roughly 3), not five or more, and they do not crowd out the method."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "Instructions:\n1. Season chicken with salt and pepper...",
+          "rationale": "The reply has only Ingredients and Instructions sections with no separate Tips/Notes block."
+        },
+        {
+          "id": "no-unprompted-warnings",
+          "pass": false,
+          "evidence": "adding the lemon juice now instead of during the simmer keeps it bright instead of flattening out over heat",
+          "rationale": "This is an acid-timing explanation raised unprompted, which the criterion explicitly flags as disallowed even though it's framed as a technique note tied to a current step."
+        },
+        {
+          "id": "no-clarifying-question",
+          "pass": true,
+          "evidence": "Want me to save this to the cookbook, or add the ingredients to your grocery list?",
+          "rationale": "The full recipe is given first and the question at the end is an offer, not a withholding of the recipe pending clarification."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:440",
+          "pass": true,
+          "detail": "319 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "319 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "weeknight-no-constraint",
+      "rep": 2,
+      "ok": true,
+      "reply": "Here's a fast lemon chicken and rice that actually delivers in 30 minutes:\n\n**Fast Lemon Chicken and Rice**\n\n*Ingredients (serves 4):*\n- 1.5 lbs boneless, skinless chicken thighs (or breasts, sliced thin for speed), cut into bite-size pieces\n- Salt and pepper\n- 2 tbsp olive oil\n- 3 cloves garlic, minced\n- 2 cups low-sodium chicken broth\n- 1 cup white rice (not basmati/long-cook \u2014 regular long-grain, so it hits tender in ~18 min)\n- Zest of 1 lemon\n- Juice of 1 lemon, divided\n- 2 tbsp butter\n- 1/4 cup fresh parsley, chopped\n- Extra lemon wedges for serving\n\n*Instructions:*\n1. Pat chicken dry, season generously with salt and pepper.\n2. Heat olive oil in a large skillet or saut\u00e9 pan over medium-high until shimmering. Add chicken in a single layer and sear, undisturbed, until deeply golden on the bottom, about 4 minutes. Flip and cook another 3 minutes until just cooked through. Remove to a plate.\n3. Lower heat to medium, add garlic to the same pan and stir until fragrant, about 30 seconds \u2014 don't let it brown or it turns bitter.\n4. Pour in the broth, scraping up the browned bits from the bottom (that's where the flavor is). Stir in the rice and lemon zest, bring to a boil.\n5. Cover, drop heat to low, and simmer until the rice is tender and the liquid is absorbed, about 18 minutes \u2014 don't lift the lid partway through or it'll cook unevenly.\n6. Off heat, nestle the chicken back into the rice to warm through, then stir in the butter and half the lemon juice until glossy \u2014 adding it now instead of during the simmer keeps the sauce bright instead of flat.\n7. Taste, add the rest of the lemon juice if you want more punch, and stir in the parsley just before serving so it stays fresh and green instead of wilting into the hot rice.\n8. Serve with extra lemon wedges.\n\nThat's about 30 minutes total \u2014 7 minutes for the chicken, 18 for the rice, a couple minutes to bring it together. Want me to save this to the cookbook or add the ingredients to your grocery list?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1936,
+          "outputTokens": 836,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12920,
+          "estimatedCostUsd": 0.017976000000000002,
+          "estimatedCostWithoutCacheUsd": 0.05286,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 798,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12920,
+            "estimatedCostUsd": 0.015852,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1934,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002124,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "concrete-method",
+          "pass": true,
+          "evidence": "Ingredients (serves 4)... Instructions: 1. Pat chicken dry...",
+          "rationale": "The reply gives specific ingredients with quantities and numbered, actionable steps."
+        },
+        {
+          "id": "no-unearned-whys",
+          "pass": true,
+          "evidence": "don't let it brown or it turns bitter",
+          "rationale": "Each 'why' aside names a real failure mode (bitter garlic, uneven rice, flat sauce, wilted parsley) or ties to the stated time constraint, so none are unearned."
+        },
+        {
+          "id": "not-a-lecture",
+          "pass": true,
+          "evidence": "don't lift the lid partway through or it'll cook unevenly... adding it now instead of during the simmer keeps the sauce bright instead of flat... stir in the parsley just before serving so it stays fresh and green instead of wilting",
+          "rationale": "There are multiple short explanatory asides embedded in steps, but they remain tied to the method rather than crowding it out or reaching five separate lecture-style points as a block."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "*Instructions:* 1. Pat chicken dry...",
+          "rationale": "There is no separate labeled Tips/Notes section; all advice is embedded within the numbered steps."
+        },
+        {
+          "id": "no-unprompted-warnings",
+          "pass": true,
+          "evidence": "adding it now instead of during the simmer keeps the sauce bright instead of flat",
+          "rationale": "This is an in-the-moment technique note about the current step, not an unprompted warning about holding, make-ahead, or sitting."
+        },
+        {
+          "id": "no-clarifying-question",
+          "pass": true,
+          "evidence": "Want me to save this to the cookbook or add the ingredients to your grocery list?",
+          "rationale": "The full recipe is given first; the ending question is an offer, not a withheld recipe pending clarification."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:440",
+          "pass": true,
+          "detail": "368 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "368 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "weeknight-no-constraint",
+      "rep": 3,
+      "ok": true,
+      "reply": "Here's a real 30-minute version \u2014 the trick is starting the rice immediately since it's your bottleneck, then building the chicken and sauce around it.\n\n**Fast Lemon Chicken & Rice** (serves 4)\n\n**Ingredients**\n- 1 cup basmati or jasmine rice, rinsed\n- 1\u00bd cups chicken broth (or water)\n- 1\u00bc lb chicken breast, sliced horizontally into thin cutlets (or thin-pounded)\n- Salt and pepper\n- 3 tbsp flour, for dredging\n- 3 tbsp olive oil, divided\n- 3 tbsp butter, divided\n- 3 cloves garlic, minced\n- Zest of 1 lemon + juice of 1\u00bd lemons\n- 1 cup chicken broth (for the sauce)\n- Handful fresh parsley, chopped\n\n**Method**\n1. Put rice and 1\u00bd cups broth in a small pot, salt lightly, bring to a boil, then cover and drop to low \u2014 15 minutes, off heat. Do not lift the lid; let it sit covered once the timer's up so it stays fluffy while you finish the chicken.\n2. While the rice cooks: season the cutlets with salt and pepper, dredge lightly in flour, shaking off excess.\n3. Heat 2 tbsp oil and 1 tbsp butter in a large skillet over medium-high. Sear the cutlets 3-4 minutes a side, until deep golden and firm to the touch. Work in batches so they don't crowd \u2014 pull them to a plate once done.\n4. Drop heat to medium, add remaining 1 tbsp oil, garlic, and lemon zest \u2014 30 seconds, just until fragrant, don't let the garlic brown.\n5. Pour in the 1 cup broth, scraping up the browned bits from the bottom. Let it bubble and reduce by about a third, 3-4 minutes.\n6. Off the heat, stir in the remaining 2 tbsp butter and the lemon juice \u2014 adding the juice off heat keeps it bright instead of flattening into something bitter and dull. Taste and adjust salt.\n7. Return the chicken to the pan to warm through in the sauce, 1 minute. Stir the parsley in at the very end so it stays fresh and green instead of wilting into the sauce.\n8. Fluff the rice with a fork and serve the chicken and sauce spooned over it.\n\nThat's the whole 30 minutes if you start the rice the second you turn the stove on. Want me to save this one to the cookbook?",
+      "toolTrace": [],
+      "usage": {
+        "totals": {
+          "callCount": 2,
+          "inputTokens": 1973,
+          "outputTokens": 1471,
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 12920,
+          "estimatedCostUsd": 0.027538,
+          "estimatedCostWithoutCacheUsd": 0.062422,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 2,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 1,
+            "inputTokens": 2,
+            "outputTokens": 1433,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 12920,
+            "estimatedCostUsd": 0.025377,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1971,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002161,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "concrete-method",
+          "pass": true,
+          "evidence": "1 cup basmati or jasmine rice... Method: 1. Put rice and 1\u00bd cups broth in a small pot...",
+          "rationale": "The reply gives specific ingredients, quantities, and a numbered step-by-step method that is directly usable."
+        },
+        {
+          "id": "no-unearned-whys",
+          "pass": true,
+          "evidence": "adding the juice off heat keeps it bright instead of flattening into something bitter and dull",
+          "rationale": "The asides given (rice sitting covered for fluffiness, garlic not browning, acid added off heat to avoid bitterness, parsley added at end to stay fresh) each name a real failure mode at that step, so they are earned."
+        },
+        {
+          "id": "not-a-lecture",
+          "pass": true,
+          "evidence": "Do not lift the lid; let it sit covered once the timer's up so it stays fluffy while you finish the chicken.",
+          "rationale": "There are four brief explanatory asides embedded in steps, not five or more, and they do not crowd out the method, which remains the focus."
+        },
+        {
+          "id": "no-tips-section",
+          "pass": true,
+          "evidence": "8. Fluff the rice with a fork and serve the chicken and sauce spooned over it.",
+          "rationale": "There is no separate labelled advice block, heading, or bulleted tips list detached from the steps; all commentary is embedded within the numbered method."
+        },
+        {
+          "id": "no-unprompted-warnings",
+          "pass": false,
+          "evidence": "adding the juice off heat keeps it bright instead of flattening into something bitter and dull",
+          "rationale": "This is an acid-timing note that the user did not ask about, which the criterion explicitly flags as prohibited regardless of whether it's framed as a technique note."
+        },
+        {
+          "id": "no-clarifying-question",
+          "pass": true,
+          "evidence": "Want me to save this one to the cookbook?",
+          "rationale": "The reply provides a complete recipe and method, and only ends with an optional offer rather than withholding the recipe pending a question."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:440",
+          "pass": true,
+          "detail": "388 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "388 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "late-night-dinner",
+      "rep": 1,
+      "ok": true,
+      "reply": "It's already 9pm, so let's keep this quick rather than fussy. A few ideas that work for everyone (Bizzy's peanut allergy, no mushrooms, and she's happy with pasta/corn):\n\n1. **Pasta with a fast tomato-corn sauce** \u2014 saut\u00e9 garlic in olive oil, add a can of crushed tomatoes, a can of corn (or fresh if you have it), simmer 10 min while pasta cooks, finish with parmesan and basil. Done in ~20 minutes total, no mushrooms, and it's a straight win for Bizzy.\n\n2. **Sheet-pan sausage and veggies** \u2014 sausage of choice, cut up with bell peppers and whatever's in the fridge, one pan in the oven at 425\u00b0F for 20-25 minutes. Minimal cleanup, good for a late night.\n\n3. **Quesadillas** \u2014 cheese, maybe some shredded chicken if you have it on hand, flour tortillas in a hot pan 2-3 minutes a side until the cheese is melted and the outside is spotted golden. About as fast as dinner gets.\n\nAny of these appeal, or do you want me to check what's actually in your pantry first so I'm not suggesting something you'd need to shop for tonight?",
+      "toolTrace": [
+        {
+          "name": "household__defaults__get",
+          "input": {}
+        },
+        {
+          "name": "cookbook__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1754,
+          "outputTokens": 753,
+          "cacheCreationInputTokens": 6305,
+          "cacheReadInputTokens": 19884,
+          "estimatedCostUsd": 0.04228595,
+          "estimatedCostWithoutCacheUsd": 0.09124399999999999,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 715,
+            "cacheCreationInputTokens": 6305,
+            "cacheReadInputTokens": 19884,
+            "estimatedCostUsd": 0.040345950000000005,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1750,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.00194,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "suits-the-hour",
+          "pass": true,
+          "evidence": "It's already 9pm, so let's keep this quick rather than fussy.",
+          "rationale": "Explicitly acknowledges the late hour and offers fast, low-effort meals."
+        },
+        {
+          "id": "nothing-long",
+          "pass": true,
+          "evidence": "Done in ~20 minutes total... one pan in the oven at 425\u00b0F for 20-25 minutes... About as fast as dinner gets.",
+          "rationale": "All three suggestions are quick (20-25 minutes), nothing resembling a braise or roast requiring long cook times."
+        },
+        {
+          "id": "no-time-greeting",
+          "pass": true,
+          "evidence": "It's already 9pm, so let's keep this quick rather than fussy.",
+          "rationale": "This is a statement about timing for meal planning, not a greeting like 'Good evening' or 'Working late?'."
+        },
+        {
+          "id": "not-attributed-to-user",
+          "pass": true,
+          "evidence": "It's already 9pm, so let's keep this quick rather than fussy.",
+          "rationale": "The reply states the time as a fact rather than attributing it to something the user said."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:300",
+          "pass": true,
+          "detail": "187 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "187 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "late-night-dinner",
+      "rep": 2,
+      "ok": true,
+      "reply": "It's already 9pm, so let's keep this quick and simple \u2014 nothing planned yet for the week, and the pantry's just basics (butter, garlic, salt, olive oil). Since Bizzy's into pasta and corn (no mushrooms, and watch peanuts), here are three fast options that work for everyone:\n\n1. **Garlic butter pasta with corn and parmesan** \u2014 pasta water + butter + garlic + a can or bag of corn tossed in at the end, parm on top. Ready in ~20 minutes, no shopping needed if you've got pasta and parm on hand.\n\n2. **Sheet-pan sausage, corn, and peppers** \u2014 sausage links, corn, bell peppers roasted together, ~25 minutes hands-off.\n\n3. **Quick tomato pasta with corn stirred in** \u2014 jarred sauce simmered with a little garlic and butter, corn added at the end for sweetness/crunch, tossed with pasta.\n\nAll three are things Bizzy will actually eat, and none need a grocery run if you've got pasta, corn, and a protein in the freezer. Want me to firm one of these up as tonight's dinner (and add it to this week's plan), or point you toward what's actually in your fridge/freezer first?",
+      "toolTrace": [
+        {
+          "name": "plan__list",
+          "input": {}
+        },
+        {
+          "name": "pantry__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1784,
+          "outputTokens": 804,
+          "cacheCreationInputTokens": 6438,
+          "cacheReadInputTokens": 19884,
+          "estimatedCostUsd": 0.0435797,
+          "estimatedCostWithoutCacheUsd": 0.09243799999999999,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 766,
+            "cacheCreationInputTokens": 6438,
+            "cacheReadInputTokens": 19884,
+            "estimatedCostUsd": 0.0416097,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1780,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.00197,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "suits-the-hour",
+          "pass": true,
+          "evidence": "It's already 9pm, so let's keep this quick and simple",
+          "rationale": "Explicitly acknowledges the late hour and offers fast (~20-25 min) options."
+        },
+        {
+          "id": "nothing-long",
+          "pass": true,
+          "evidence": "Ready in ~20 minutes, no shopping needed... ~25 minutes hands-off.",
+          "rationale": "All three suggestions are quick dishes under 30 minutes, no braises or long roasts."
+        },
+        {
+          "id": "no-time-greeting",
+          "pass": true,
+          "evidence": "It's already 9pm, so let's keep this quick and simple",
+          "rationale": "This is a statement about the hour to justify quick suggestions, not a greeting like 'Good evening' or 'Working late?'."
+        },
+        {
+          "id": "not-attributed-to-user",
+          "pass": true,
+          "evidence": "It's already 9pm, so let's keep this quick and simple",
+          "rationale": "The reply states the time as a fact, not as something the user told it."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:300",
+          "pass": true,
+          "detail": "190 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "190 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "late-night-dinner",
+      "rep": 3,
+      "ok": true,
+      "reply": "Since it's already 9pm, let's keep it quick \u2014 something that comes together in 20-25 minutes tops. Given Bizzy likes pasta and corn (and no mushrooms), here are three fast options:\n\n1. **Garlic butter pasta with corn** \u2013 Boil pasta, saut\u00e9 garlic in butter and olive oil, toss with pasta, corn (frozen or canned), a splash of pasta water, and parmesan if you have it. Ready in ~20 minutes, and it's an easy win for Bizzy.\n\n2. **Sheet-pan sausage and veg** \u2013 If you've got any sausage on hand, toss it with whatever quick-cooking veg you have (peppers, zucchini) and roast at 425\u00b0F for 20 minutes while you do nothing else. Low effort, one pan.\n\n3. **Quesadillas** \u2013 Tortillas + cheese (+ any leftover chicken or beans) in a hot pan, 3-4 minutes a side. About as fast as dinner gets.\n\nYour pantry's pretty bare right now (just butter, garlic, salt, olive oil tracked), so the pasta one is closest to a sure thing if you've got noodles and corn in the house \u2014 tell me what you've actually got and I can tailor it, or if you want, I can build tonight's grocery list around one of these for next time.",
+      "toolTrace": [
+        {
+          "name": "household__defaults__get",
+          "input": {}
+        },
+        {
+          "name": "pantry__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1812,
+          "outputTokens": 721,
+          "cacheCreationInputTokens": 425,
+          "cacheReadInputTokens": 25842,
+          "estimatedCostUsd": 0.021601350000000002,
+          "estimatedCostWithoutCacheUsd": 0.091056,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 683,
+            "cacheCreationInputTokens": 425,
+            "cacheReadInputTokens": 25842,
+            "estimatedCostUsd": 0.019603350000000002,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1808,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.0019979999999999998,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "suits-the-hour",
+          "pass": true,
+          "evidence": "Since it's already 9pm, let's keep it quick \u2014 something that comes together in 20-25 minutes tops.",
+          "rationale": "Explicitly acknowledges the late hour and proposes fast options."
+        },
+        {
+          "id": "nothing-long",
+          "pass": true,
+          "evidence": "roast at 425\u00b0F for 20 minutes",
+          "rationale": "All suggested dishes take 20-25 minutes, nothing long or slow-cooked."
+        },
+        {
+          "id": "no-time-greeting",
+          "pass": true,
+          "evidence": "Since it's already 9pm, let's keep it quick",
+          "rationale": "No greeting like 'Good evening' or 'Working late?' is used, just a factual mention of time."
+        },
+        {
+          "id": "not-attributed-to-user",
+          "pass": true,
+          "evidence": "Since it's already 9pm, let's keep it quick",
+          "rationale": "The reply states the time as a fact, not as something the user told it."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "max_words:300",
+          "pass": true,
+          "detail": "202 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "202 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "regression-grocery-add",
+      "rep": 1,
+      "ok": true,
+      "reply": "Added buttermilk, cornmeal, and a pound of chicken thighs to the grocery list \u2014 all new, nothing was already on there.",
+      "toolTrace": [
+        {
+          "name": "grocery__list",
+          "input": {}
+        },
+        {
+          "name": "grocery__write",
+          "input": {
+            "items": [
+              {
+                "name": "buttermilk",
+                "section": "dairy"
+              },
+              {
+                "name": "cornmeal",
+                "section": "dry"
+              },
+              {
+                "name": "chicken thighs",
+                "quantity": "1 lb",
+                "section": "meat"
+              }
+            ],
+            "source": "explicit_items"
+          }
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 6,
+          "outputTokens": 253,
+          "cacheCreationInputTokens": 422,
+          "cacheReadInputTokens": 38771,
+          "estimatedCostUsd": 0.0170268,
+          "estimatedCostWithoutCacheUsd": 0.121392,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 3,
+            "inputTokens": 6,
+            "outputTokens": 253,
+            "cacheCreationInputTokens": 422,
+            "cacheReadInputTokens": 38771,
+            "estimatedCostUsd": 0.0170268,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 3,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "no-craft-chatter",
+          "pass": true,
+          "evidence": "Added buttermilk, cornmeal, and a pound of chicken thighs to the grocery list \u2014 all new, nothing was already on there.",
+          "rationale": "The reply only confirms the items were added and notes none were duplicates, without offering any cooking advice, technique commentary, or explanatory aside."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "tool_called:grocery.write",
+          "pass": true,
+          "detail": "called: grocery__list, grocery__write"
+        },
+        {
+          "id": "grocery_contains:buttermilk+cornmeal+chicken thighs",
+          "pass": true,
+          "detail": "have: buttermilk, cornmeal, chicken thighs"
+        },
+        {
+          "id": "max_words:70",
+          "pass": true,
+          "detail": "21 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "21 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "regression-grocery-add",
+      "rep": 2,
+      "ok": true,
+      "reply": "Added all three to the grocery list: buttermilk, cornmeal, and 1 lb of chicken thighs. The list was empty before, so nothing was a duplicate.",
+      "toolTrace": [
+        {
+          "name": "grocery__list",
+          "input": {}
+        },
+        {
+          "name": "grocery__write",
+          "input": {
+            "items": [
+              {
+                "name": "buttermilk",
+                "section": "dairy"
+              },
+              {
+                "name": "cornmeal",
+                "section": "dry"
+              },
+              {
+                "name": "chicken thighs",
+                "section": "meat",
+                "quantity": "1 lb"
+              }
+            ],
+            "source": "explicit_items"
+          }
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 6,
+          "outputTokens": 273,
+          "cacheCreationInputTokens": 326,
+          "cacheReadInputTokens": 38883,
+          "estimatedCostUsd": 0.0170004,
+          "estimatedCostWithoutCacheUsd": 0.12174,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 3,
+            "inputTokens": 6,
+            "outputTokens": 273,
+            "cacheCreationInputTokens": 326,
+            "cacheReadInputTokens": 38883,
+            "estimatedCostUsd": 0.0170004,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 3,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "no-craft-chatter",
+          "pass": true,
+          "evidence": "Added all three to the grocery list: buttermilk, cornmeal, and 1 lb of chicken thighs. The list was empty before, so nothing was a duplicate.",
+          "rationale": "The reply only confirms the addition and notes duplicate status, without offering cooking advice, technique commentary, or a why aside."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "tool_called:grocery.write",
+          "pass": true,
+          "detail": "called: grocery__list, grocery__write"
+        },
+        {
+          "id": "grocery_contains:buttermilk+cornmeal+chicken thighs",
+          "pass": true,
+          "detail": "have: buttermilk, cornmeal, chicken thighs"
+        },
+        {
+          "id": "max_words:70",
+          "pass": true,
+          "detail": "25 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "25 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "regression-grocery-add",
+      "rep": 3,
+      "ok": true,
+      "reply": "Added buttermilk, cornmeal, and a pound of chicken thighs to the grocery list \u2014 the list was empty before, so all three are new.",
+      "toolTrace": [
+        {
+          "name": "grocery__list",
+          "input": {}
+        },
+        {
+          "name": "grocery__write",
+          "input": {
+            "items": [
+              {
+                "name": "buttermilk",
+                "section": "dairy",
+                "quantity": "1 quart"
+              },
+              {
+                "name": "cornmeal",
+                "section": "dry",
+                "quantity": "1 bag"
+              },
+              {
+                "name": "chicken thighs",
+                "section": "meat",
+                "quantity": "1 lb"
+              }
+            ],
+            "source": "explicit_items"
+          }
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 6,
+          "outputTokens": 286,
+          "cacheCreationInputTokens": 349,
+          "cacheReadInputTokens": 38884,
+          "estimatedCostUsd": 0.017281949999999997,
+          "estimatedCostWithoutCacheUsd": 0.122007,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 3,
+            "inputTokens": 6,
+            "outputTokens": 286,
+            "cacheCreationInputTokens": 349,
+            "cacheReadInputTokens": 38884,
+            "estimatedCostUsd": 0.017281949999999997,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 3,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "no-craft-chatter",
+          "pass": true,
+          "evidence": "the list was empty before, so all three are new.",
+          "rationale": "The reply only states a factual observation about the list's prior state, not cooking advice, technique commentary, or a why aside about the food itself."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "tool_called:grocery.write",
+          "pass": true,
+          "detail": "called: grocery__list, grocery__write"
+        },
+        {
+          "id": "grocery_contains:buttermilk+cornmeal+chicken thighs",
+          "pass": true,
+          "detail": "have: buttermilk, cornmeal, chicken thighs"
+        },
+        {
+          "id": "max_words:70",
+          "pass": true,
+          "detail": "24 words"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "24 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "regression-allergy-plan",
+      "rep": 1,
+      "ok": true,
+      "reply": "Here are three dinners that should work well for everyone \u2014 Bizzy's peanut allergy is easy to steer clear of, and all three lean into pasta/corn, which she already loves, without any mushrooms:\n\n**1. Creamy Corn & Bacon Pasta**\nSaut\u00e9ed bacon, sweet corn (fresh or frozen), garlic, and a splash of pasta water finished with butter and parmesan over short pasta (penne or fusilli). Kid-friendly, no mushrooms, and it's basically built around Bizzy's two favorite foods.\n\n**2. Sheet-Pan Chicken Fajitas**\nChicken thighs, bell peppers, and onions roasted with a simple chili-lime seasoning, served with warm tortillas, shredded cheese, and sour cream on the side so everyone builds their own. Easy weeknight cooking, no allergens, and customizable if Bizzy wants hers plain with just chicken and cheese.\n\n**3. Baked Ziti with Ground Beef**\nZiti tossed with a simple marinara and ground beef, layered with mozzarella and ricotta, baked until bubbly. Big comforting pasta dish, freezes well for leftovers, and squarely in Bizzy's wheelhouse.\n\nWant me to add these to this week's plan and build out the grocery list for them?",
+      "toolTrace": [
+        {
+          "name": "person__profile__get",
+          "input": {}
+        },
+        {
+          "name": "household__defaults__get",
+          "input": {}
+        },
+        {
+          "name": "pantry__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1882,
+          "outputTokens": 604,
+          "cacheCreationInputTokens": 590,
+          "cacheReadInputTokens": 25731,
+          "estimatedCostUsd": 0.0205018,
+          "estimatedCostWithoutCacheUsd": 0.089533,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 566,
+            "cacheCreationInputTokens": 590,
+            "cacheReadInputTokens": 25731,
+            "estimatedCostUsd": 0.0184338,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1878,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.002068,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "three-dinners",
+          "pass": true,
+          "evidence": "1. Creamy Corn & Bacon Pasta ... 2. Sheet-Pan Chicken Fajitas ... 3. Baked Ziti with Ground Beef",
+          "rationale": "Three distinct, specific dinners are named with details."
+        },
+        {
+          "id": "no-peanuts",
+          "pass": true,
+          "evidence": "Bizzy's peanut allergy is easy to steer clear of",
+          "rationale": "No dish contains peanuts; allergy explicitly avoided."
+        },
+        {
+          "id": "no-mushrooms",
+          "pass": true,
+          "evidence": "without any mushrooms",
+          "rationale": "No dish contains or is built on mushrooms."
+        },
+        {
+          "id": "no-allergy-requiz",
+          "pass": true,
+          "evidence": "Bizzy's peanut allergy is easy to steer clear of",
+          "rationale": "The assistant references the known allergy without asking the user to confirm it."
+        },
+        {
+          "id": "no-unbacked-write-claim",
+          "pass": true,
+          "evidence": "Want me to add these to this week's plan and build out the grocery list for them?",
+          "rationale": "The assistant only offers to add the meals, not claiming they have already been added."
+        }
+      ],
+      "missing": [],
+      "checkResults": [],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "179 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "regression-allergy-plan",
+      "rep": 2,
+      "ok": true,
+      "reply": "Here are three dinners that should work for everyone \u2014 no mushrooms, no peanuts, and Bizzy gets her pasta/corn wins built right in:\n\n**1. Skillet chicken with corn & orzo**\nSeared chicken thighs over a one-pan orzo with sweet corn, cherry tomatoes, and a little parmesan. Kid-friendly (corn + small pasta shape), easy weeknight pace, and nothing hidden that Bizzy would pick out.\n\n**2. Weeknight beef & tomato pasta**\nA simple ground beef ragu (onion, garlic, canned tomatoes, basil) over penne or rigatoni. Straightforward, no mushrooms anywhere, and pasta is a guaranteed hit with Bizzy.\n\n**3. Sheet-pan sausage with corn and peppers**\nSliced sausage, corn (fresh or frozen cobs cut into rounds are fun for kids), bell peppers, and red onion roasted together, served with rice or crusty bread. Low effort, colorful, and corn does double duty as the \"safe\" vegetable.\n\nAll three avoid peanuts and mushrooms entirely, so there's no last-minute substituting.\n\nWant me to add these to this week's plan, and/or build the grocery list for them?",
+      "toolTrace": [
+        {
+          "name": "person__profile__get",
+          "input": {}
+        },
+        {
+          "name": "household__defaults__get",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1763,
+          "outputTokens": 582,
+          "cacheCreationInputTokens": 342,
+          "cacheReadInputTokens": 25822,
+          "estimatedCostUsd": 0.0191501,
+          "estimatedCostWithoutCacheUsd": 0.088613,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 544,
+            "cacheCreationInputTokens": 342,
+            "cacheReadInputTokens": 25822,
+            "estimatedCostUsd": 0.0172011,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1759,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.001949,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "three-dinners",
+          "pass": true,
+          "evidence": "**1. Skillet chicken with corn & orzo** ... **2. Weeknight beef & tomato pasta** ... **3. Sheet-pan sausage with corn and peppers**",
+          "rationale": "Three concrete, specific dinners are named with details."
+        },
+        {
+          "id": "no-peanuts",
+          "pass": true,
+          "evidence": "All three avoid peanuts and mushrooms entirely",
+          "rationale": "No dish contains peanuts; explicitly stated to avoid peanuts."
+        },
+        {
+          "id": "no-mushrooms",
+          "pass": true,
+          "evidence": "nothing hidden that Bizzy would pick out ... no mushrooms anywhere ... All three avoid peanuts and mushrooms entirely",
+          "rationale": "No dish contains mushrooms; explicitly avoided."
+        },
+        {
+          "id": "no-allergy-requiz",
+          "pass": true,
+          "evidence": "no mushrooms, no peanuts, and Bizzy gets her pasta/corn wins built right in",
+          "rationale": "The reply does not ask the user to confirm the allergy; it simply states it's accounted for."
+        },
+        {
+          "id": "no-unbacked-write-claim",
+          "pass": true,
+          "evidence": "Want me to add these to this week's plan, and/or build the grocery list for them?",
+          "rationale": "The reply only offers to add the meals, not claims they have already been added."
+        }
+      ],
+      "missing": [],
+      "checkResults": [],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "169 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "regression-allergy-plan",
+      "rep": 3,
+      "ok": true,
+      "reply": "Here are three dinners that hit Bizzy's must-haves (pasta, corn, no mushrooms, no peanuts) and are easy enough for a normal weeknight:\n\n**1. Skillet Sausage & Corn Pasta**\nPenne or rotini tossed with saut\u00e9ed Italian sausage, sweet corn kernels, garlic, a splash of cream, and parmesan. Rob and Elle get red pepper flakes on the side if they want heat; Bizzy's portion stays plain.\n\n**2. Chicken & Corn Tacos**\nSeared or shredded chicken thighs, warm tortillas, a quick corn-and-lime salad, shredded cheese, avocado. Everyone builds their own, so it flexes for different spice tolerances.\n\n**3. Baked Ziti with Corn & Sausage**\nA hearty baked pasta \u2014 ziti, marinara, ricotta, mozzarella, with corn and browned sausage folded in. Good for a night you want leftovers, and it reheats well since it's already a baked casserole (no crisp element to lose).\n\nAll three sidestep mushrooms and peanuts entirely, lean on pasta/corn that Bizzy already likes, and give Rob and Elle room to season theirs up.\n\nWant me to add these to this week's plan, and/or build the grocery list for them (checking against what's already in your pantry)?",
+      "toolTrace": [
+        {
+          "name": "person__profile__get",
+          "input": {}
+        },
+        {
+          "name": "household__defaults__get",
+          "input": {}
+        },
+        {
+          "name": "pantry__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1910,
+          "outputTokens": 625,
+          "cacheCreationInputTokens": 513,
+          "cacheReadInputTokens": 25822,
+          "estimatedCostUsd": 0.02058335,
+          "estimatedCostWithoutCacheUsd": 0.089918,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 587,
+            "cacheCreationInputTokens": 513,
+            "cacheReadInputTokens": 25822,
+            "estimatedCostUsd": 0.01848735,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1906,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.0020959999999999998,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "three-dinners",
+          "pass": true,
+          "evidence": "1. Skillet Sausage & Corn Pasta ... 2. Chicken & Corn Tacos ... 3. Baked Ziti with Corn & Sausage",
+          "rationale": "Three concrete, specific dinners are named."
+        },
+        {
+          "id": "no-peanuts",
+          "pass": true,
+          "evidence": "All three sidestep mushrooms and peanuts entirely",
+          "rationale": "No dish contains peanuts or peanut products."
+        },
+        {
+          "id": "no-mushrooms",
+          "pass": true,
+          "evidence": "All three sidestep mushrooms and peanuts entirely",
+          "rationale": "No dish is built on mushrooms."
+        },
+        {
+          "id": "no-allergy-requiz",
+          "pass": true,
+          "evidence": "",
+          "rationale": "The reply does not ask the user to confirm the allergy; it simply states the dishes avoid peanuts."
+        },
+        {
+          "id": "no-unbacked-write-claim",
+          "pass": true,
+          "evidence": "Want me to add these to this week's plan, and/or build the grocery list for them",
+          "rationale": "The assistant only offers to add the meals, not claims it already did."
+        }
+      ],
+      "missing": [],
+      "checkResults": [],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "186 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "regression-plan-recall",
+      "rep": 1,
+      "ok": true,
+      "reply": "Here's what's on this week's plan so far, all still to cook:\n\n1. **Seared cod with corn succotash**\n2. **Weeknight tomato pasta**\n3. **Chicken thighs with rice**\n\nNone of these are marked cooked yet, and none are linked to saved cookbook recipes yet either. Want me to flesh out full recipes for any of them, or add more meals to round out the week?",
+      "toolTrace": [
+        {
+          "name": "plan__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1554,
+          "outputTokens": 212,
+          "cacheCreationInputTokens": 271,
+          "cacheReadInputTokens": 25720,
+          "estimatedCostUsd": 0.01309425,
+          "estimatedCostWithoutCacheUsd": 0.082335,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 174,
+            "cacheCreationInputTokens": 271,
+            "cacheReadInputTokens": 25720,
+            "estimatedCostUsd": 0.01135425,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1550,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.00174,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "names-the-three",
+          "pass": true,
+          "evidence": "1. **Seared cod with corn succotash** 2. **Weeknight tomato pasta** 3. **Chicken thighs with rice**",
+          "rationale": "The reply names all three meals exactly as required."
+        },
+        {
+          "id": "no-invention",
+          "pass": true,
+          "evidence": "1. **Seared cod with corn succotash** 2. **Weeknight tomato pasta** 3. **Chicken thighs with rice**",
+          "rationale": "Only the three specified meals are listed; no additional meals are named."
+        },
+        {
+          "id": "no-write-claim",
+          "pass": true,
+          "evidence": "Want me to flesh out full recipes for any of them, or add more meals to round out the week?",
+          "rationale": "The reply only offers to make changes in the future and does not claim any addition, change, or save has already occurred."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "tool_called:plan.list",
+          "pass": true,
+          "detail": "called: plan__list"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "64 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "regression-plan-recall",
+      "rep": 2,
+      "ok": true,
+      "reply": "Here's what's on the plan for this week \u2014 all still to cook:\n\n1. **Seared cod with corn succotash**\n2. **Weeknight tomato pasta**\n3. **Chicken thighs with rice**\n\nNone marked cooked yet. Want help figuring out which night to cook which, or building a grocery list for all three?",
+      "toolTrace": [
+        {
+          "name": "plan__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1537,
+          "outputTokens": 186,
+          "cacheCreationInputTokens": 191,
+          "cacheReadInputTokens": 25800,
+          "estimatedCostUsd": 0.012411249999999999,
+          "estimatedCostWithoutCacheUsd": 0.081928,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 148,
+            "cacheCreationInputTokens": 191,
+            "cacheReadInputTokens": 25800,
+            "estimatedCostUsd": 0.01068825,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1533,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.0017230000000000001,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "names-the-three",
+          "pass": true,
+          "evidence": "1. **Seared cod with corn succotash** 2. **Weeknight tomato pasta** 3. **Chicken thighs with rice**",
+          "rationale": "The reply lists all three meals exactly as specified."
+        },
+        {
+          "id": "no-invention",
+          "pass": true,
+          "evidence": "1. **Seared cod with corn succotash** 2. **Weeknight tomato pasta** 3. **Chicken thighs with rice**",
+          "rationale": "No additional meals beyond the three are mentioned."
+        },
+        {
+          "id": "no-write-claim",
+          "pass": true,
+          "evidence": "None marked cooked yet.",
+          "rationale": "The reply does not claim to have added, changed, or saved anything; it only reports current status and offers further help."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "tool_called:plan.list",
+          "pass": true,
+          "detail": "called: plan__list"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "49 words"
+        }
+      ],
+      "judgeError": null
+    },
+    {
+      "scenarioId": "regression-plan-recall",
+      "rep": 3,
+      "ok": true,
+      "reply": "Here's what's on the plan for this week \u2014 all still to cook:\n\n1. **Seared cod with corn succotash**\n2. **Weeknight tomato pasta**\n3. **Chicken thighs with rice**\n\nNothing's been marked cooked yet. Want me to pull these into a grocery list, suggest a cooking order for the week, or add anything else to the plan?",
+      "toolTrace": [
+        {
+          "name": "plan__list",
+          "input": {}
+        }
+      ],
+      "usage": {
+        "totals": {
+          "callCount": 3,
+          "inputTokens": 1545,
+          "outputTokens": 203,
+          "cacheCreationInputTokens": 192,
+          "cacheReadInputTokens": 25800,
+          "estimatedCostUsd": 0.012677999999999998,
+          "estimatedCostWithoutCacheUsd": 0.08219400000000002,
+          "estimatedCostAvailable": true,
+          "estimatedCostPartial": false,
+          "estimatedCostKnownCallCount": 3,
+          "estimatedCostUnknownCallCount": 0
+        },
+        "byPurpose": [
+          {
+            "key": "kb_agent_loop",
+            "callCount": 2,
+            "inputTokens": 4,
+            "outputTokens": 165,
+            "cacheCreationInputTokens": 192,
+            "cacheReadInputTokens": 25800,
+            "estimatedCostUsd": 0.010946999999999998,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 2,
+            "estimatedCostUnknownCallCount": 0
+          },
+          {
+            "key": "kb_truthfulness_check",
+            "callCount": 1,
+            "inputTokens": 1541,
+            "outputTokens": 38,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "estimatedCostUsd": 0.0017310000000000001,
+            "estimatedCostAvailable": true,
+            "estimatedCostPartial": false,
+            "estimatedCostKnownCallCount": 1,
+            "estimatedCostUnknownCallCount": 0
+          }
+        ]
+      },
+      "verdicts": [
+        {
+          "id": "names-the-three",
+          "pass": true,
+          "evidence": "1. **Seared cod with corn succotash** 2. **Weeknight tomato pasta** 3. **Chicken thighs with rice**",
+          "rationale": "All three meals are explicitly named as stated."
+        },
+        {
+          "id": "no-invention",
+          "pass": true,
+          "evidence": "1. **Seared cod with corn succotash** 2. **Weeknight tomato pasta** 3. **Chicken thighs with rice**",
+          "rationale": "No additional meals beyond the three are mentioned."
+        },
+        {
+          "id": "no-write-claim",
+          "pass": true,
+          "evidence": "Nothing's been marked cooked yet.",
+          "rationale": "The reply only offers to make changes (pull into a grocery list, suggest order, add to plan) but does not claim any action has already been taken."
+        }
+      ],
+      "missing": [],
+      "checkResults": [
+        {
+          "id": "tool_called:plan.list",
+          "pass": true,
+          "detail": "called: plan__list"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "system_is_one_cached_block",
+          "pass": true,
+          "detail": "system block counts per request: 1, 1"
+        },
+        {
+          "id": "reply_not_empty",
+          "pass": true,
+          "detail": "56 words"
+        }
+      ],
+      "judgeError": null
+    }
+  ],
+  "notes": [
+    "Promoted 2026-07-27 as the post-change reference: craft principles + time context. 10/13 scenarios, 177/183 criteria, vs 6/13 and 157/180 at pre-craft. Two known costs remain and are NOT fixed: weeknight/no-unprompted-warnings (it volunteers acid-timing notes on a turn that raised none) and ~19% longer replies. succotash/names-the-reason is 3/3 in most runs but not all - it improved from a consistent 0/3, it did not become deterministic."
+  ]
+}

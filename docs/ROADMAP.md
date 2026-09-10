@@ -486,6 +486,45 @@ tests added).
     (vanilla-modular / Svelte / React), which stays deliberately open. The restructure is done; what
     is left is the part that changes how the app *looks and feels* on a phone.
 
+## Cooking quality — the craft pass (2026-07-27)
+
+An outside review of Rob's real chats landed on *"KB is a decent assistant but a terrible cook."*
+The case: a corn-and-lima succotash he said he'd cook ahead, leave 30 minutes for bedtime, then
+finish — and KB put the vinegar in before the hold. The acid kept working; the limas went grey and
+soft.
+
+**Root cause:** `buildLoopSystemPrompt` had 30 principles and not one was about food. The model
+knows the chemistry perfectly well; it had never been asked to reason as a cook, so it printed a
+canonical recipe and read the stated constraint as scheduling.
+
+**What shipped (on `dev`):**
+- ✅ **Five craft principles** in the cached system block (~600 tokens, ~$0.0002/call): cook rather
+  than print a recipe; execution constraints change the METHOD; doneness as a sensory state; explain
+  WHY only where it changes what they do; don't re-pitch a dish they already chose.
+- ✅ **Local day + rough hour** finally reaches the brain. The client had been posting it since day
+  one and the server was discarding it. Whitelisted, because it is browser input entering a prompt.
+- ✅ **`evals/`** — 13 scenarios × 3 reps against the real brain, a rubric-based LLM judge, and
+  deterministic checks. `npm run eval:craft`, deliberately outside `npm test` because it is the only
+  thing in the repo that spends money. Baselines in `evals/baselines/` are committed; the diff
+  between them is the evidence.
+
+**Result:** 6/13 → **10/13 scenarios**, 157/180 → **177/183 criteria**. The succotash case went from
+never naming the reason to naming it in most runs.
+
+**Known costs, unfixed:**
+- KB now volunteers acid-timing notes on turns that raised none (`weeknight/no-unprompted-warnings`
+  3/3 → 1/3). A real violation of "explain only where it changes what I do". One attempt to scope it
+  made the main win worse and was reverted.
+- Replies are ~19% longer (median 212 → 234 words).
+- At 3 reps the remaining deltas are at the noise floor. Further prompt tuning would fit noise, not
+  cooking — raise reps before touching the principles again.
+
+**Next, if this is worth pushing further:** the app records no outcome. `meal_plan_items.status` is
+a binary planned/cooked on a row that gets deleted weekly, `cookbook_entries.last_used_at` is never
+written, and `cookbook.update` cannot even append a note — so nothing distinguishes a recipe cooked
+five times and loved from one cooked once and hated. That, not more prompt text, is what would make
+KB a better cook *for this household* over months.
+
 ## Open threads / known paper-cuts
 
 _All three long-standing paper-cuts (stored XSS + CSP, the "Move to pantry" red delete-base, and
